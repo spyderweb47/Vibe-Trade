@@ -68,6 +68,7 @@ export function RightSidebar() {
   const removeIndicator = useStore((s) => s.removeIndicator);
   const addScript = useStore((s) => s.addScript);
   const removeScript = useStore((s) => s.removeScript);
+  const addCustomIndicator = useStore((s) => s.addCustomIndicator);
   const setPatternMatches = useStore((s) => s.setPatternMatches);
   const patternMatches = useStore((s) => s.patternMatches);
   const chatInputDraft = useStore((s) => s.chatInputDraft);
@@ -102,9 +103,34 @@ export function RightSidebar() {
 
       addMessage({ role: "agent", content: result.reply });
 
-      if (result.script) {
+      if (result.script && result.script_type === "indicator") {
+        // Add as a custom indicator to Resources
+        const indName = (result.data as Record<string, unknown>)?.indicator_name as string || "Custom";
+        const defaultParams = (result.data as Record<string, unknown>)?.default_params as Record<string, string> || {};
+        const colors = ["#f59e0b", "#8b5cf6", "#06b6d4", "#ec4899", "#6366f1", "#14b8a6", "#f97316"];
+        const color = colors[indicators.length % colors.length];
+
+        addCustomIndicator({
+          name: indName,
+          backendName: indName.toLowerCase().replace(/\s+/g, "_"),
+          active: true,
+          params: defaultParams,
+          script: result.script,
+          custom: true,
+          color,
+        });
+        addMessage({ role: "agent", content: `Custom indicator "${indName}" added to Resources and enabled on chart.` });
+      } else if (result.script) {
+        const isEdit = currentScript.length > 0;
         setCurrentScript(result.script);
-        setView("code");
+        // Only auto-switch to code on first script generation, not edits
+        if (!isEdit) {
+          setView("code");
+        }
+        // Show script update notification
+        if (isEdit) {
+          addMessage({ role: "agent", content: "Script updated. Switch to CODE tab to see changes, then click Run." });
+        }
       }
     } catch (err) {
       addMessage({
@@ -120,9 +146,13 @@ export function RightSidebar() {
   const chartData = useStore((s) => s.chartData);
 
   const handleRun = async () => {
-    if (!currentScript || !activeDataset) return;
+    // Use currentScript state, or fall back to textarea DOM value
+    const script = currentScript || (document.querySelector('textarea') as HTMLTextAreaElement)?.value || "";
+    if (!script || !activeDataset) return;
+    if (!currentScript) setCurrentScript(script);
 
-    const runData = datasetRawData[activeDataset] || chartData;
+    // Use chart data (resampled) for pattern detection — much faster than raw 137k bars
+    const runData = chartData;
     if (!runData || runData.length === 0) {
       addMessage({ role: "agent", content: "No data available. Upload a dataset first." });
       return;
@@ -131,7 +161,7 @@ export function RightSidebar() {
     setRunState("running");
 
     try {
-      const matches = await executePatternScript(currentScript, runData);
+      const matches = await executePatternScript(script, runData);
       setPatternMatches(matches);
       setRunState("done");
       addMessage({

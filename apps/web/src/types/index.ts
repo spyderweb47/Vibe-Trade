@@ -87,6 +87,12 @@ export interface IndicatorConfig {
   backendName: string;
   active: boolean;
   params: Record<string, number | string>;
+  /** Custom JS script for user-created indicators */
+  script?: string;
+  /** Whether this is a custom (AI-generated) indicator */
+  custom?: boolean;
+  /** Color for chart line */
+  color?: string;
 }
 
 export interface Script {
@@ -97,12 +103,13 @@ export interface Script {
 }
 
 export interface CapturedPatternData {
-  triggerBars: OHLCBar[];
-  tradeBars: OHLCBar[];
-  entryPrice: number;
-  exitPrice: number;
-  direction: 'long' | 'short';
-  triggerTimeRange: [number, number];
-  tradeTimeRange: [number, number];
+  bars: OHLCBar[];
+  timeRange: [number, number];
   priceRange: [number, number];
+  indicators: Record<string, (number | null)[]>;
+  priceChangePercent: number;
+  volatility: number;
+  volumeProfile: number[];
+  trendAngle: number;
+  patternShape: number[];
 }

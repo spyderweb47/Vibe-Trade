@@ -9,6 +9,7 @@ import type {
   IndicatorConfig,
   CapturedPatternData,
 } from '@/types';
+import type { Drawing, DrawingType } from '@/lib/chart-primitives/drawingTypes';
 
 export type Mode = 'pattern' | 'strategy' | 'backtest';
 
@@ -51,6 +52,7 @@ interface AppState {
   toggleIndicator: (name: string) => void;
   updateIndicatorParams: (name: string, params: Record<string, number | string>) => void;
   removeIndicator: (name: string) => void;
+  addCustomIndicator: (ind: IndicatorConfig) => void;
 
   // Chart data (derived from activeDataset)
   chartData: OHLCBar[];
@@ -76,6 +78,13 @@ interface AppState {
   // Chart focus — zoom to a specific time range
   chartFocus: { startTime: number; endTime: number } | null;
   setChartFocus: (focus: { startTime: number; endTime: number } | null) => void;
+
+  // Drawing tools
+  activeDrawingTool: DrawingType | null;
+  setActiveDrawingTool: (tool: DrawingType | null) => void;
+  drawings: Drawing[];
+  setDrawings: (drawings: Drawing[]) => void;
+  deleteSelectedDrawing: () => void;
 }
 
 export const useStore = create<AppState>((set) => ({
@@ -159,6 +168,10 @@ export const useStore = create<AppState>((set) => ({
     set((state) => ({
       indicators: state.indicators.filter((ind) => ind.name !== name),
     })),
+  addCustomIndicator: (ind) =>
+    set((state) => ({
+      indicators: [...state.indicators, ind],
+    })),
 
   // Chart data
   chartData: [],
@@ -184,4 +197,14 @@ export const useStore = create<AppState>((set) => ({
   // Chart focus
   chartFocus: null,
   setChartFocus: (focus) => set({ chartFocus: focus }),
+
+  // Drawing tools
+  activeDrawingTool: null,
+  setActiveDrawingTool: (tool) => set({ activeDrawingTool: tool }),
+  drawings: [],
+  setDrawings: (drawings) => set({ drawings }),
+  deleteSelectedDrawing: () =>
+    set((state) => ({
+      drawings: state.drawings.filter((d) => !d.selected),
+    })),
 }));

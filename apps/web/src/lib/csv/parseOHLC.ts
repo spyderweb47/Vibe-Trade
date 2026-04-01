@@ -2,12 +2,12 @@ import Papa from "papaparse";
 import type { OHLCBar } from "@/types";
 
 const COLUMN_ALIASES: Record<string, string[]> = {
-  time: ["time", "timestamp", "unix_timestamp", "date", "datetime", "t"],
+  time: ["time", "timestamp", "unix_timestamp", "date", "datetime", "t", "open time", "open_time", "opentime"],
   open: ["open", "o"],
   high: ["high", "h"],
   low: ["low", "l"],
   close: ["close", "c"],
-  volume: ["volume", "vol", "v", "volume_usd", "volume_btc"],
+  volume: ["volume", "vol", "v", "volume_usd", "volume_btc", "quote asset volume"],
 };
 
 export interface ParseResult {
@@ -57,14 +57,20 @@ function parseTimestamp(value: string | number): number {
 }
 
 export function parseOHLC(csvText: string): ParseResult {
-  const parsed = Papa.parse<Record<string, string>>(csvText, {
+  // Strip BOM if present
+  const text = csvText.charCodeAt(0) === 0xFEFF ? csvText.slice(1) : csvText;
+
+  const parsed = Papa.parse<Record<string, string>>(text, {
     header: true,
     skipEmptyLines: true,
     dynamicTyping: false,
+    delimiter: ",", // Force comma — most OHLC CSVs use commas
   });
 
-  if (parsed.errors.length > 0 && parsed.data.length === 0) {
-    throw new Error(`CSV parse error: ${parsed.errors[0].message}`);
+  // Only throw if truly no data was parsed (ignore delimiter warnings)
+  if (parsed.data.length === 0) {
+    const errMsg = parsed.errors.length > 0 ? parsed.errors[0].message : "No data rows found";
+    throw new Error(`CSV parse error: ${errMsg}`);
   }
 
   if (parsed.data.length === 0) {

@@ -42,6 +42,7 @@ export async function syncDatasetToBackend(
 export interface ChatResponse {
   reply: string;
   script?: string | null;
+  script_type?: "pattern" | "indicator" | null;
   data?: Record<string, unknown> | null;
 }
 

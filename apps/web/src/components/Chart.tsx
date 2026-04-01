@@ -16,7 +16,11 @@ import {
 import type { OHLCBar, PatternMatch } from "@/types";
 import { useStore } from "@/store/useStore";
 import { calculateIndicatorLocal } from "@/lib/indicators";
+import { executeIndicatorScript } from "@/lib/scriptExecutor";
+import { extractFingerprint } from "@/lib/patternFingerprint";
 import { PatternSelectorPrimitive } from "@/lib/chart-primitives/PatternSelectorPrimitive";
+import { DrawingToolsPrimitive } from "@/lib/chart-primitives/DrawingToolsPrimitive";
+import { PatternHighlightPrimitive, setTriggerRatio } from "@/lib/chart-primitives/PatternHighlightPrimitive";
 import type { DrawingPhase } from "@/lib/chart-primitives/patternSelectorTypes";
 import { PatternSelectorToolbar } from "./PatternSelectorToolbar";
 
@@ -47,12 +51,18 @@ export function Chart({
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const indicatorSeriesRef = useRef<Map<string, ISeriesApi<"Line">>>(new Map());
   const patternPrimitiveRef = useRef<PatternSelectorPrimitive | null>(null);
+  const drawingPrimitiveRef = useRef<DrawingToolsPrimitive | null>(null);
+  const highlightPrimitiveRef = useRef<PatternHighlightPrimitive | null>(null);
 
   const indicators = useStore((s) => s.indicators);
   const setCapturedPattern = useStore((s) => s.setCapturedPattern);
   const chartFocus = useStore((s) => s.chartFocus);
   const setChartFocus = useStore((s) => s.setChartFocus);
+  const activeDrawingTool = useStore((s) => s.activeDrawingTool);
+  const setActiveDrawingTool = useStore((s) => s.setActiveDrawingTool);
+  const setDrawings = useStore((s) => s.setDrawings);
   const setChatInputDraft = useStore((s) => s.setChatInputDraft);
+  const addMessage = useStore((s) => s.addMessage);
 
   const [drawingPhase, setDrawingPhase] = useState<DrawingPhase>("idle");
   const [hasSelection, setHasSelection] = useState(false);
@@ -102,6 +112,19 @@ export function Chart({
     series.attachPrimitive(primitive);
     patternPrimitiveRef.current = primitive;
 
+    // Drawing tools primitive
+    const drawPrimitive = new DrawingToolsPrimitive();
+    drawPrimitive.setOnChange((drawings) => {
+      useStore.getState().setDrawings(drawings);
+    });
+    series.attachPrimitive(drawPrimitive);
+    drawingPrimitiveRef.current = drawPrimitive;
+
+    // Pattern highlight boxes primitive
+    const highlightPrimitive = new PatternHighlightPrimitive();
+    series.attachPrimitive(highlightPrimitive);
+    highlightPrimitiveRef.current = highlightPrimitive;
+
     chartRef.current = chart;
     seriesRef.current = series;
 
@@ -119,14 +142,32 @@ export function Chart({
     window.addEventListener("resize", handleResize);
     handleResize();
 
-    // Mouse handlers for pattern selector
+    // Mouse handlers — route based on active tool
     const el = containerRef.current;
 
     const onMouseDown = (e: MouseEvent) => {
-      if (!primitive) return;
       const rect = el.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
+      const tool = useStore.getState().activeDrawingTool;
+
+      if (tool === "pattern_select") {
+        if (primitive.onMouseDown(x, y)) {
+          e.preventDefault();
+          e.stopPropagation();
+          el.setPointerCapture(e.pointerId || 0);
+        }
+        return;
+      }
+
+      if (drawPrimitive.onMouseDown(x, y)) {
+        e.preventDefault();
+        e.stopPropagation();
+        el.setPointerCapture(e.pointerId || 0);
+        return;
+      }
+
+      // Allow pattern selector selection/drag in idle
       if (primitive.onMouseDown(x, y)) {
         e.preventDefault();
         e.stopPropagation();
@@ -135,15 +176,34 @@ export function Chart({
     };
 
     const onMouseMove = (e: MouseEvent) => {
-      if (!primitive) return;
       const rect = el.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
+      const tool = useStore.getState().activeDrawingTool;
+
+      if (tool === "pattern_select") {
+        primitive.onMouseMove(x, y);
+        return;
+      }
+      if (drawPrimitive.onMouseMove(x, y)) return;
       primitive.onMouseMove(x, y);
     };
 
     const onMouseUp = (e: MouseEvent) => {
-      if (!primitive) return;
+      const tool = useStore.getState().activeDrawingTool;
+
+      if (tool === "pattern_select") {
+        if (primitive.onMouseUp()) {
+          setDrawingPhase(primitive.drawingPhase);
+          setHasSelection(!!(primitive.triggerBox && primitive.tradeBox));
+          el.releasePointerCapture(e.pointerId || 0);
+        }
+        return;
+      }
+      if (drawPrimitive.onMouseUp()) {
+        el.releasePointerCapture(e.pointerId || 0);
+        return;
+      }
       if (primitive.onMouseUp()) {
         setDrawingPhase(primitive.drawingPhase);
         setHasSelection(!!(primitive.triggerBox && primitive.tradeBox));
@@ -166,7 +226,11 @@ export function Chart({
         markersRef.current = null;
       }
       series.detachPrimitive(primitive);
+      series.detachPrimitive(drawPrimitive);
+      series.detachPrimitive(highlightPrimitive);
       patternPrimitiveRef.current = null;
+      drawingPrimitiveRef.current = null;
+      highlightPrimitiveRef.current = null;
       chart.remove();
       chartRef.current = null;
       seriesRef.current = null;
@@ -194,59 +258,53 @@ export function Chart({
     }
   }, [data]);
 
-  // Update pattern markers
+  // Update pattern highlight boxes
   useEffect(() => {
-    if (!markersRef.current || data.length === 0) return;
+    const hp = highlightPrimitiveRef.current;
+    if (!hp) return;
 
-    if (patternMatches.length === 0) {
-      markersRef.current.setMarkers([]);
+    if (patternMatches.length === 0 || data.length === 0) {
+      hp.clear();
+      // Also clear markers
+      if (markersRef.current) markersRef.current.setMarkers([]);
       return;
     }
 
-    // Build a set of valid chart bar times for snapping
-    const chartTimes = data.map((b) => b.time as number);
+    // Render as transparent highlight boxes
+    hp.setMatches(patternMatches, data);
 
-    // Snap a raw timestamp to the nearest chart bar time
-    const snapToChart = (rawTime: number): number | null => {
-      let best = chartTimes[0];
-      let bestDist = Math.abs(rawTime - best);
-      for (const t of chartTimes) {
-        const d = Math.abs(rawTime - t);
-        if (d < bestDist) {
-          bestDist = d;
-          best = t;
+    // Also set small markers at start points for quick navigation
+    if (markersRef.current) {
+      const chartTimes = data.map((b) => b.time as number);
+      const snapToChart = (raw: number): number => {
+        let best = chartTimes[0], bestDist = Math.abs(raw - best);
+        for (const t of chartTimes) {
+          const d = Math.abs(raw - t);
+          if (d < bestDist) { bestDist = d; best = t; }
         }
-      }
-      return best;
-    };
+        return best;
+      };
 
-    // Deduplicate markers by snapped time (keep highest confidence per time)
-    const byTime = new Map<number, (typeof patternMatches)[0]>();
-    for (const match of patternMatches) {
-      const rawTime = typeof match.startTime === "string" ? Number(match.startTime) : match.startTime as number;
-      const snapped = snapToChart(rawTime);
-      if (snapped === null) continue;
-      const existing = byTime.get(snapped);
-      if (!existing || match.confidence > existing.confidence) {
-        byTime.set(snapped, match);
+      const byTime = new Map<number, (typeof patternMatches)[0]>();
+      for (const m of patternMatches) {
+        const raw = typeof m.startTime === "string" ? Number(m.startTime) : m.startTime as number;
+        const snapped = snapToChart(raw);
+        const existing = byTime.get(snapped);
+        if (!existing || m.confidence > existing.confidence) byTime.set(snapped, m);
       }
+
+      const markers = Array.from(byTime.entries())
+        .sort(([a], [b]) => a - b)
+        .map(([time, m]) => ({
+          time: time as unknown as Time,
+          position: "aboveBar" as const,
+          color: m.direction === "bullish" ? "#22c55e" : m.direction === "bearish" ? "#ef4444" : "#6366f1",
+          shape: "circle" as const,
+          text: "",
+        }));
+
+      markersRef.current.setMarkers(markers);
     }
-
-    const markerData = Array.from(byTime.entries())
-      .sort(([a], [b]) => a - b)
-      .map(([time, match]) => ({
-        time: time as unknown as Time,
-        position: (match.direction === "bullish" ? "belowBar" : "aboveBar") as
-          | "belowBar"
-          | "aboveBar",
-        color: match.direction === "bullish" ? "#22c55e" : "#ef4444",
-        shape: (match.direction === "bullish" ? "arrowUp" : "arrowDown") as
-          | "arrowUp"
-          | "arrowDown",
-        text: match.name,
-      }));
-
-    markersRef.current.setMarkers(markerData);
   }, [patternMatches, data]);
 
   // Update S/R lines
@@ -265,7 +323,7 @@ export function Chart({
     });
   }, [supportResistance]);
 
-  // Handle indicator overlays
+  // Handle indicator overlays (built-in + custom)
   useEffect(() => {
     if (!chartRef.current || data.length === 0) return;
 
@@ -276,19 +334,18 @@ export function Chart({
       const key = ind.name;
 
       if (ind.active && !existingSeries.has(key)) {
-        try {
-          const parsedParams = Object.fromEntries(
-            Object.entries(ind.params).map(([k, v]) => [
-              k,
-              typeof v === "string" ? (isNaN(Number(v)) ? v : Number(v)) : v,
-            ])
-          );
+        const parsedParams = Object.fromEntries(
+          Object.entries(ind.params).map(([k, v]) => [
+            k,
+            typeof v === "string" ? (isNaN(Number(v)) ? v : Number(v)) : v,
+          ])
+        );
 
-          const values = calculateIndicatorLocal(data, ind.backendName, parsedParams);
-
-          const lineSeries = chart.addSeries(LineSeries, {
-            color: INDICATOR_COLORS[key] || "#8b5cf6",
-            lineWidth: 1,
+        const addLine = (values: (number | null)[]) => {
+          if (!chartRef.current) return;
+          const lineSeries = chartRef.current.addSeries(LineSeries, {
+            color: ind.color || INDICATOR_COLORS[key] || "#8b5cf6",
+            lineWidth: ind.custom ? 2 : 1,
             priceLineVisible: false,
             lastValueVisible: false,
           });
@@ -303,8 +360,21 @@ export function Chart({
 
           lineSeries.setData(lineData);
           existingSeries.set(key, lineSeries);
-        } catch {
-          // Silently fail
+        };
+
+        if (ind.custom && ind.script) {
+          // Custom indicator — run script in Web Worker
+          executeIndicatorScript(ind.script, data, parsedParams)
+            .then(addLine)
+            .catch(() => {}); // silently fail
+        } else {
+          // Built-in indicator
+          try {
+            const values = calculateIndicatorLocal(data, ind.backendName, parsedParams);
+            addLine(values);
+          } catch {
+            // Silently fail
+          }
         }
       } else if (!ind.active && existingSeries.has(key)) {
         const series = existingSeries.get(key)!;
@@ -313,6 +383,51 @@ export function Chart({
       }
     });
   }, [indicators, data]);
+
+  const storeDrawings = useStore((s) => s.drawings);
+
+  // Sync active drawing tool from store to primitive
+  useEffect(() => {
+    const p = drawingPrimitiveRef.current;
+    const ps = patternPrimitiveRef.current;
+    if (!p || !ps) return;
+
+    if (activeDrawingTool === "pattern_select") {
+      // Activate pattern selector, deactivate drawing tools
+      p.setActiveTool(null);
+      ps.clear();
+      ps.setDrawingPhase("trigger");
+      setDrawingPhase("trigger");
+      setHasSelection(false);
+      chartRef.current?.applyOptions({
+        crosshair: { vertLine: { visible: false }, horzLine: { visible: false } },
+      });
+    } else {
+      // Deactivate pattern selector if switching away
+      if (drawingPhase !== "idle") {
+        ps.clear();
+        setDrawingPhase("idle");
+        setHasSelection(false);
+        chartRef.current?.applyOptions({
+          crosshair: { vertLine: { visible: true }, horzLine: { visible: true } },
+        });
+      }
+      p.setActiveTool(activeDrawingTool);
+    }
+  }, [activeDrawingTool]);
+
+  // Sync drawings from store to primitive ONLY for external deletions
+  const prevDrawingCountRef = useRef(0);
+  useEffect(() => {
+    const p = drawingPrimitiveRef.current;
+    if (!p) return;
+    // Only push store→primitive when a drawing was deleted externally
+    // (store count dropped without the primitive initiating it)
+    if (storeDrawings.length < prevDrawingCountRef.current && storeDrawings.length < p.drawings.length) {
+      p.setDrawings(storeDrawings);
+    }
+    prevDrawingCountRef.current = storeDrawings.length;
+  }, [storeDrawings]);
 
   // Zoom chart to focused time range (from clicking a pattern row)
   useEffect(() => {
@@ -328,18 +443,19 @@ export function Chart({
 
   // --- Pattern Selector handlers ---
 
-  const handleStartDrawing = useCallback(() => {
+  // Get selected bars from BOTH trigger and trade boxes
+  const getSelectedBars = useCallback(() => {
     const p = patternPrimitiveRef.current;
-    if (!p) return;
-    p.clear();
-    p.setDrawingPhase("trigger");
-    setDrawingPhase("trigger");
-    setHasSelection(false);
-    // Disable crosshair during drawing
-    chartRef.current?.applyOptions({
-      crosshair: { vertLine: { visible: false }, horzLine: { visible: false } },
-    });
-  }, []);
+    if (!p || !p.triggerBox) return null;
+    const tb = p.triggerBox;
+    const tr = p.tradeBox;
+    const startT = tb.startTime as number;
+    const endT = tr ? (tr.endTime as number) : (tb.endTime as number);
+    const bars = data.filter(
+      (b) => (b.time as number) >= startT && (b.time as number) <= endT
+    );
+    return bars.length > 0 ? bars : null;
+  }, [data]);
 
   const handleClear = useCallback(() => {
     const p = patternPrimitiveRef.current;
@@ -348,57 +464,83 @@ export function Chart({
     setDrawingPhase("idle");
     setHasSelection(false);
     setCapturedPattern(null);
-    // Re-enable crosshair
+    setActiveDrawingTool(null);
     chartRef.current?.applyOptions({
       crosshair: { vertLine: { visible: true }, horzLine: { visible: true } },
     });
-  }, [setCapturedPattern]);
+  }, [setCapturedPattern, setActiveDrawingTool]);
 
-  const handleSendToChat = useCallback(() => {
+  const handleSendToAgent = useCallback(() => {
+    const bars = getSelectedBars();
+    if (!bars || bars.length === 0) return;
+
+    const activeInds = useStore.getState().indicators;
+    const fingerprint = extractFingerprint(bars, data, activeInds);
+    setCapturedPattern(fingerprint);
+
+    // Build a scale-free pattern template — NO absolute prices
+    // Normalize shape to ~15 sample points
+    const shape = fingerprint.patternShape;
+    const sampleCount = Math.min(15, shape.length);
+    const step = Math.max(1, Math.floor(shape.length / sampleCount));
+    const sampled = [];
+    for (let i = 0; i < shape.length; i += step) sampled.push(shape[i]);
+    const shapeStr = sampled.map(v => v.toFixed(2)).join(", ");
+
+    // Compute normalized volume profile (also ~15 points)
+    const volSampled = [];
+    for (let i = 0; i < fingerprint.volumeProfile.length; i += step) {
+      volSampled.push(fingerprint.volumeProfile[i]);
+    }
+    const volStr = volSampled.map(v => v.toFixed(2)).join(", ");
+
+    // Describe relative indicator behavior (rising/falling/flat), not values
+    const indBehavior = Object.entries(fingerprint.indicators)
+      .map(([name, vals]) => {
+        const valid = vals.filter((v): v is number => v !== null);
+        if (valid.length < 2) return null;
+        const first = valid[0], last = valid[valid.length - 1];
+        const mid = valid[Math.floor(valid.length / 2)];
+        let behavior = "flat";
+        const change = (last - first) / (Math.abs(first) || 1);
+        if (change > 0.02) behavior = "rising";
+        else if (change < -0.02) behavior = "falling";
+        // Check for crossover patterns
+        if (first < mid && mid > last) behavior = "peaked";
+        if (first > mid && mid < last) behavior = "dipped";
+        return `${name}: ${behavior}`;
+      })
+      .filter(Boolean)
+      .join(", ");
+
+    // Find where trigger ends and trade begins (relative position)
     const p = patternPrimitiveRef.current;
-    if (!p || !p.triggerBox || !p.tradeBox) return;
+    const triggerLen = p?.triggerBox
+      ? data.filter(b => (b.time as number) >= (p.triggerBox!.startTime as number) && (b.time as number) <= (p.triggerBox!.endTime as number)).length
+      : bars.length;
+    const triggerRatio = Math.round((triggerLen / bars.length) * 100);
 
-    const tb = p.triggerBox;
-    const tr = p.tradeBox;
+    // Set the trigger/trade split ratio for highlight rendering
+    setTriggerRatio(triggerLen / bars.length);
 
-    // Extract bars within trigger and trade ranges
-    const triggerBars = data.filter(
-      (b) => (b.time as number) >= (tb.startTime as number) && (b.time as number) <= (tb.endTime as number)
-    );
-    const tradeBars = data.filter(
-      (b) => (b.time as number) >= (tr.startTime as number) && (b.time as number) <= (tr.endTime as number)
-    );
+    const windowSize = sampled.length;
+    const draft = [
+      `Detect this pattern template (scale-independent, works at any price level).`,
+      `The reference shape has exactly ${windowSize} points: [${shapeStr}].`,
+      `First ${triggerRatio}% is setup, last ${100 - triggerRatio}% is the move.`,
+      `Trend: ${fingerprint.trendAngle > 0 ? "upward" : "downward"}.`,
+      indBehavior ? `Indicator context: ${indBehavior}.` : "",
+      `RULES: Use a sliding window of EXACTLY ${windowSize} bars (same as the pattern length). For each window, normalize the ${windowSize} closes to 0-1 (min=0, max=1). Compute Pearson correlation between the normalized window and the reference pattern array. If correlation > 0.65, add to results. The pattern array and the window MUST be the same length (${windowSize}). Do NOT use a different window size. Set pattern_type to the trend direction.`,
+    ].filter(Boolean).join(" ");
 
-    const entryPrice = (tr.topPrice + tr.bottomPrice) / 2;
-    const exitPrice = tradeBars.length > 0 ? tradeBars[tradeBars.length - 1].close : entryPrice;
-    const direction = exitPrice >= entryPrice ? "long" : "short";
-
-    const captured = {
-      triggerBars,
-      tradeBars,
-      entryPrice: Math.round(entryPrice * 100) / 100,
-      exitPrice: Math.round(exitPrice * 100) / 100,
-      direction: direction as "long" | "short",
-      triggerTimeRange: [tb.startTime as number, tb.endTime as number] as [number, number],
-      tradeTimeRange: [tr.startTime as number, tr.endTime as number] as [number, number],
-      priceRange: [Math.min(tb.bottomPrice, tr.bottomPrice), Math.max(tb.topPrice, tr.topPrice)] as [number, number],
-    };
-
-    setCapturedPattern(captured);
-
-    // Prefill chat input — user can edit before sending
-    const startDate = new Date((tb.startTime as number) * 1000).toLocaleDateString();
-    const endDate = new Date((tb.endTime as number) * 1000).toLocaleDateString();
-    const draft = `Analyze this pattern: Trigger ${triggerBars.length} bars (${startDate}-${endDate}), ${direction.toUpperCase()} entry ~$${captured.entryPrice} exit ~$${captured.exitPrice}`;
     setChatInputDraft(draft);
 
-    // Re-enable crosshair
     chartRef.current?.applyOptions({
       crosshair: { vertLine: { visible: true }, horzLine: { visible: true } },
     });
-  }, [data, setCapturedPattern, setChatInputDraft]);
+  }, [data, getSelectedBars, setCapturedPattern, setChatInputDraft]);
 
-  // Re-enable crosshair when drawing finishes
+  // Re-enable crosshair when selection completes
   useEffect(() => {
     if (drawingPhase === "idle" && hasSelection) {
       chartRef.current?.applyOptions({
@@ -411,13 +553,12 @@ export function Chart({
     <div className="relative h-full w-full rounded-lg border border-slate-200 bg-white">
       <div ref={containerRef} className="absolute inset-0" />
 
-      {data.length > 0 && (
+      {data.length > 0 && (activeDrawingTool === "pattern_select" || hasSelection) && (
         <PatternSelectorToolbar
           drawingPhase={drawingPhase}
           hasSelection={hasSelection}
-          onStartDrawing={handleStartDrawing}
+          onSendToAgent={handleSendToAgent}
           onClear={handleClear}
-          onSendToChat={handleSendToChat}
         />
       )}
 

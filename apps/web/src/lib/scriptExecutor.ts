@@ -19,12 +19,9 @@ export async function executePatternScript(
   script: string,
   data: OHLCBar[]
 ): Promise<PatternMatch[]> {
-  // Safety checks
-  const blocked = [
-    "import ", "require(", "fetch(", "XMLHttpRequest",
-    "eval(", "document.", "window.", "globalThis",
-    "process.", "localStorage", "sessionStorage",
-  ];
+  // Safety checks — only block network/file access. The script runs in an
+  // isolated Web Worker with no DOM, so window/document refs are harmless (they're undefined).
+  const blocked = ["import ", "require(", "fetch(", "XMLHttpRequest"];
   for (const token of blocked) {
     if (script.includes(token)) {
       throw new Error(`Script contains blocked token: "${token}"`);
@@ -51,9 +48,9 @@ export async function executePatternScript(
     const ptype = m.pattern_type || "unknown";
     const lower = ptype.toLowerCase();
     let direction: "bullish" | "bearish" | "neutral" = "neutral";
-    if (["bullish", "bottom", "breakout", "buy", "engulfing"].some((k) => lower.includes(k))) {
+    if (["bullish", "bottom", "breakout", "buy", "engulfing", "upward", "up", "long"].some((k) => lower.includes(k))) {
       direction = "bullish";
-    } else if (["bearish", "top", "breakdown", "sell"].some((k) => lower.includes(k))) {
+    } else if (["bearish", "top", "breakdown", "sell", "downward", "down", "short"].some((k) => lower.includes(k))) {
       direction = "bearish";
     }
 
@@ -70,15 +67,31 @@ export async function executePatternScript(
   });
 }
 
-function runInWorker(scriptBody: string, data: OHLCBar[]): Promise<RawMatch[]> {
+/**
+ * Execute a custom indicator script against OHLC data.
+ *
+ * The script receives `data` (OHLCBar[]) and `params` (Record<string, unknown>)
+ * and must return an array of (number | null), one per bar.
+ */
+export async function executeIndicatorScript(
+  script: string,
+  data: OHLCBar[],
+  params: Record<string, unknown>
+): Promise<(number | null)[]> {
+  let body = script.trim();
+  if (!body.includes("return values") && !body.includes("return data.map")) {
+    body += "\nreturn values;";
+  }
+
   return new Promise((resolve, reject) => {
     const workerCode = `
       self.onmessage = function(e) {
         try {
-          const data = e.data;
-          const fn = new Function("data", "Math", ${JSON.stringify(scriptBody)});
-          const results = fn(data, Math);
-          self.postMessage({ ok: true, results });
+          const data = e.data.data;
+          const params = e.data.params;
+          const fn = new Function("data", "params", "Math", ${JSON.stringify(body)});
+          const result = fn(data, params, Math);
+          self.postMessage({ ok: true, result });
         } catch (err) {
           self.postMessage({ ok: false, error: err.message || String(err) });
         }
@@ -92,8 +105,57 @@ function runInWorker(scriptBody: string, data: OHLCBar[]): Promise<RawMatch[]> {
     const timeout = setTimeout(() => {
       worker.terminate();
       URL.revokeObjectURL(url);
-      reject(new Error("Script execution timed out (10s)"));
+      reject(new Error("Indicator script timed out (10s)"));
     }, 10000);
+
+    worker.onmessage = (e) => {
+      clearTimeout(timeout);
+      worker.terminate();
+      URL.revokeObjectURL(url);
+      if (e.data.ok) {
+        resolve(e.data.result);
+      } else {
+        reject(new Error(`Indicator script failed: ${e.data.error}`));
+      }
+    };
+
+    worker.onerror = (e) => {
+      clearTimeout(timeout);
+      worker.terminate();
+      URL.revokeObjectURL(url);
+      reject(new Error(`Worker error: ${e.message}`));
+    };
+
+    worker.postMessage({ data, params });
+  });
+}
+
+function runInWorker(scriptBody: string, data: OHLCBar[]): Promise<RawMatch[]> {
+  return new Promise((resolve, reject) => {
+    // Pass script via postMessage to avoid template literal escaping issues
+    const workerCode = `
+      self.onmessage = function(e) {
+        try {
+          var data = e.data.data;
+          var script = e.data.script;
+          var fn = new Function("data", "Math", script);
+          var results = fn(data, Math);
+          self.postMessage({ ok: true, results: results });
+        } catch (err) {
+          self.postMessage({ ok: false, error: (err.message || String(err)) });
+        }
+      };
+    `;
+
+    const blob = new Blob([workerCode], { type: "application/javascript" });
+    const url = URL.createObjectURL(blob);
+    const worker = new Worker(url);
+
+    const timeout = setTimeout(() => {
+      worker.terminate();
+      URL.revokeObjectURL(url);
+      reject(new Error("Script execution timed out (30s)"));
+    }, 30000);
 
     worker.onmessage = (e) => {
       clearTimeout(timeout);
@@ -113,6 +175,6 @@ function runInWorker(scriptBody: string, data: OHLCBar[]): Promise<RawMatch[]> {
       reject(new Error(`Worker error: ${e.message}`));
     };
 
-    worker.postMessage(data);
+    worker.postMessage({ data, script: scriptBody });
   });
 }

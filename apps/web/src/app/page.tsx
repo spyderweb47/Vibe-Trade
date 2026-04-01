@@ -5,6 +5,7 @@ import { TopBar } from "@/components/TopBar";
 import { RightSidebar } from "@/components/RightSidebar";
 import { BottomPanel } from "@/components/BottomPanel";
 import { Chart } from "@/components/Chart";
+import { DrawingToolbar } from "@/components/DrawingToolbar";
 import { useStore } from "@/store/useStore";
 
 export default function Home() {
@@ -30,9 +31,12 @@ export default function Home() {
         {/* Top Bar */}
         <TopBar />
 
-        {/* Chart Area */}
-        <div className="flex-1 min-h-0 p-2">
-          <Chart data={chartData} patternMatches={patternMatches} />
+        {/* Chart Area with Drawing Toolbar */}
+        <div className="flex flex-1 min-h-0">
+          <DrawingToolbar />
+          <div className="flex-1 min-h-0 p-2">
+            <Chart data={chartData} patternMatches={patternMatches} />
+          </div>
         </div>
 
         {/* Bottom Panel - collapsible, contextual by mode */}

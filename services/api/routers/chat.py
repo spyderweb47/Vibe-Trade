@@ -29,6 +29,7 @@ class ChatResponse(BaseModel):
     """Chat response from the agent."""
     reply: str
     script: str | None = None
+    script_type: str | None = None  # "pattern" or "indicator"
     data: dict | None = None
 
 
@@ -79,16 +80,86 @@ async def chat(req: ChatRequest) -> ChatResponse:
 
 
 async def _handle_pattern(message: str, context: dict) -> ChatResponse:
-    """Handle pattern mode: generate JavaScript pattern detection scripts."""
+    """Handle pattern mode: generate JS pattern or indicator scripts."""
+    current_script = context.get("pattern_script", "")
+
+    # If there's an existing script, treat the message as an edit request
+    if current_script and current_script.strip():
+        return await _handle_script_edit(message, current_script)
+
     result = _pattern_agent.generate(message)
+    data: dict = {
+        "parameters": result["parameters"],
+        "indicators_used": result.get("indicators_used", []),
+    }
+    if result.get("script_type") == "indicator":
+        data["default_params"] = result.get("default_params", {})
+        data["indicator_name"] = result.get("indicator_name", "Custom")
     return ChatResponse(
         reply=result["explanation"],
         script=result["script"],
-        data={
-            "parameters": result["parameters"],
-            "indicators_used": result["indicators_used"],
-        },
+        script_type=result.get("script_type", "pattern"),
+        data=data,
     )
+
+
+SCRIPT_EDIT_PROMPT = """You are a JavaScript trading script editor.
+
+You have an existing pattern detection script. The user wants to modify it.
+Apply their requested changes and return the COMPLETE modified script.
+
+## Rules
+- Return ONLY the complete modified JavaScript code
+- Keep the same structure: const results = [], sliding window, return results
+- Preserve working logic — only change what the user asks
+- No markdown fences, no explanations — just the code
+
+## Current script:
+{script}
+
+## User request:
+{request}"""
+
+
+async def _handle_script_edit(message: str, current_script: str) -> ChatResponse:
+    """Edit an existing script based on user instructions."""
+    if llm_available():
+        # Generate modified script
+        edited = chat_completion(
+            system_prompt=SCRIPT_EDIT_PROMPT.format(
+                script=current_script,
+                request=message,
+            ),
+            user_message=message,
+            temperature=0.3,
+        )
+        edited = edited.strip()
+        if edited.startswith("```"):
+            nl = edited.index("\n") if "\n" in edited else len(edited)
+            edited = edited[nl + 1:]
+            if edited.endswith("```"):
+                edited = edited[:-3]
+            edited = edited.strip()
+
+        # Get explanation of changes
+        explanation = chat_completion(
+            system_prompt="You are a trading analyst. In 1-2 sentences, explain what changed in this script edit. Be concise.",
+            user_message=f"User asked: {message}\n\nThe script was modified accordingly.",
+            temperature=0.3,
+            max_tokens=150,
+        )
+
+        return ChatResponse(
+            reply=explanation,
+            script=edited,
+            script_type="pattern",
+        )
+    else:
+        return ChatResponse(
+            reply=f"I can't edit the script without an LLM connection. You can modify it directly in the code editor.",
+            script=current_script,
+            script_type="pattern",
+        )
 
 
 async def _handle_strategy(message: str, context: dict) -> ChatResponse:
