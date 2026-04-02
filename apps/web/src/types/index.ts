@@ -114,4 +114,24 @@ export interface CapturedPatternData {
   volumeProfile: number[];
   trendAngle: number;
   patternShape: number[];
+  // Extended mathematical fingerprint
+  candleSequence?: { bodySize: number; upperWick: number; lowerWick: number; direction: number; totalRange: number; bodyRatio: number }[];
+  normOpen?: number[];
+  normHigh?: number[];
+  normLow?: number[];
+  triggerRatio?: number;
+  triggerHeightRatio?: number;
+  tradeHeightRatio?: number;
+  heightShift?: number;
+  triggerTrend?: number;
+  tradeTrend?: number;
+  indicatorMath?: Record<string, {
+    slope: number;
+    curvature: number;
+    positionRelativeToPrice: string;
+    normalizedValues: number[];
+    crossesPrice: number;
+    triggerSlope: number;
+    tradeSlope: number;
+  }>;
 }

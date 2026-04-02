@@ -76,7 +76,8 @@ interface AppState {
 
   // Pine drawings
   pineDrawings: any | null;
-  setPineDrawings: (drawings: any | null) => void;
+  pineDrawingsPlotData: Record<string, (number | null)[]> | null;
+  setPineDrawings: (drawings: any | null, plotData?: Record<string, (number | null)[]>) => void;
 
   // Theme
   darkMode: boolean;
@@ -193,9 +194,11 @@ export const useStore = create<AppState>((set) => ({
       indicators: state.indicators.filter((ind) => ind.name !== name),
     })),
   addCustomIndicator: (ind) =>
-    set((state) => ({
-      indicators: [...state.indicators, ind],
-    })),
+    set((state) => {
+      // Prevent duplicates — replace if same name exists
+      const filtered = state.indicators.filter((i) => i.name !== ind.name);
+      return { indicators: [...filtered, ind] };
+    }),
 
   // Chart data
   chartData: [],
@@ -230,7 +233,8 @@ export const useStore = create<AppState>((set) => ({
 
   // Pine drawings
   pineDrawings: null,
-  setPineDrawings: (drawings) => set({ pineDrawings: drawings }),
+  pineDrawingsPlotData: null,
+  setPineDrawings: (drawings, plotData) => set({ pineDrawings: drawings, pineDrawingsPlotData: plotData || null }),
 
   // Theme
   darkMode: true,

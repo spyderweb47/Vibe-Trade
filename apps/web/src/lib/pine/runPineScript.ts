@@ -1,6 +1,7 @@
 import { PineTS } from "pinets";
 import { LocalProvider } from "./localProvider";
-import { extractPineDrawings, type PineDrawings } from "./pineDrawings";
+import { extractPineDrawings } from "./pineDrawings";
+import type { PineDrawings } from "./pineDrawings";
 import type { OHLCBar } from "@/types";
 
 export interface PineResult {
@@ -36,7 +37,7 @@ export async function runPineScript(
   timeframe = "D"
 ): Promise<PineResult> {
   if (!data || data.length === 0) {
-    return { plots: {}, plotNames: [], drawings: { boxes: [], lines: [], labels: [] }, error: "No data provided" };
+    return { plots: {}, plotNames: [], drawings: { boxes: [], lines: [], labels: [], fills: [] }, error: "No data provided" };
   }
 
   try {
@@ -50,9 +51,11 @@ export async function runPineScript(
     // Run the Pine Script — returns a Context object
     const ctx = await pine.run(pineCode);
 
-    // Extract plot data from Context
+    // Extract plot data and plotshape markers from Context
     const plots: Record<string, (number | null)[]> = {};
     const plotNames: string[] = [];
+    const shapeLabels: PineDrawings["labels"] = [];
+    const dynamicLines: PineDrawings["lines"] = [];
 
     if (ctx && ctx.plots) {
       for (const [name, plotObj] of Object.entries(ctx.plots)) {
@@ -60,9 +63,79 @@ export async function runPineScript(
         if (INTERNAL_PLOTS.has(name)) continue;
 
         const obj = plotObj as any;
+        if (!obj?.data || !Array.isArray(obj.data)) continue;
 
-        // PineTS plots are objects with a .data array of { time, value, options }
-        if (obj && obj.data && Array.isArray(obj.data)) {
+        const opts = obj.options || {};
+
+        // plotshape / plotchar — extract as label markers
+        if (opts.style === "shape" || opts.style === "char") {
+          const shapeType = opts.shape || "shape_circle";
+          const isAbove = shapeType.includes("down") || shapeType.includes("triangledown");
+          const color = opts.color || "#ffffff";
+          const textColor = opts.textcolor || "#ffffff";
+          const text = opts.text || "";
+
+          for (let i = 0; i < obj.data.length; i++) {
+            const d = obj.data[i];
+            if (d.value === null || d.value === undefined) continue;
+            const val = Number(d.value);
+            if (isNaN(val)) continue;
+
+            shapeLabels.push({
+              x: i, // bar index
+              y: val,
+              text: text,
+              color: color,
+              textColor: textColor,
+              style: isAbove ? "style_label_down" : "style_label_up",
+              size: opts.size || "small",
+            });
+          }
+          continue;
+        }
+
+        // Skip fill() plots — they reference other plots, not data
+        if (opts.style === "fill") continue;
+
+        // Check if plot has dynamic (per-bar) colors
+        const colors = new Set<string>();
+        for (const d of obj.data) {
+          if (d.options?.color) colors.add(d.options.color);
+          if (colors.size > 1) break;
+        }
+
+        const hasDynamicColor = colors.size > 1;
+
+        if (hasDynamicColor) {
+          // Dynamic color plot — render as colored line segments in drawings
+          // Still add to plots for fill references
+          plotNames.push(name);
+          plots[name] = obj.data.map((d: any) =>
+            d.value === null || d.value === undefined || (typeof d.value === "number" && isNaN(d.value))
+              ? null : Number(d.value)
+          );
+
+          // Create per-bar line segments with correct colors
+          const lineWidth = opts.linewidth || 2;
+
+          for (let i = 1; i < obj.data.length; i++) {
+            const prev = obj.data[i - 1];
+            const curr = obj.data[i];
+            const prevVal = prev.value;
+            const currVal = curr.value;
+
+            if (prevVal == null || currVal == null || isNaN(Number(prevVal)) || isNaN(Number(currVal))) continue;
+
+            const col = curr.options?.color || prev.options?.color || "#ffffff";
+            dynamicLines.push({
+              x1: i - 1, y1: Number(prevVal),
+              x2: i, y2: Number(currVal),
+              color: col, width: lineWidth,
+              style: "style_solid", extend: "none",
+            });
+          }
+        } else {
+          // Static color plot — regular line series
           plotNames.push(name);
           plots[name] = obj.data.map((d: any) =>
             d.value === null || d.value === undefined || (typeof d.value === "number" && isNaN(d.value))
@@ -73,16 +146,21 @@ export async function runPineScript(
       }
     }
 
-    // Extract drawing objects (boxes, lines, labels)
-    const drawings = ctx?.plots ? extractPineDrawings(ctx.plots) : { boxes: [], lines: [], labels: [] };
+    // Extract drawing objects (boxes, lines, labels from drawing APIs)
+    const drawings = ctx?.plots ? extractPineDrawings(ctx.plots) : { boxes: [], lines: [], labels: [], fills: [] };
+
+    // Merge plotshape labels and dynamic-color lines into drawings
+    drawings.labels.push(...shapeLabels);
+    drawings.lines.push(...dynamicLines);
 
     return { plots, plotNames, drawings };
   } catch (err) {
     return {
       plots: {},
       plotNames: [],
-      drawings: { boxes: [], lines: [], labels: [] },
+      drawings: { boxes: [], lines: [], labels: [], fills: [] },
       error: err instanceof Error ? err.message : String(err),
     };
   }
 }
+

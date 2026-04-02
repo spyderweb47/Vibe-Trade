@@ -179,12 +179,14 @@ export function RightSidebar() {
     try {
       const matches = await executePatternScript(script, runData);
       setPatternMatches(matches);
-      setRunState("done");
+      setRunState(matches.length > 0 ? "done" : "idle");
       addMessage({
         role: "agent",
-        content: `Found ${matches.length} pattern matches.`,
+        content: matches.length > 0
+          ? `Found ${matches.length} pattern matches.`
+          : `Script ran on ${runData.length} bars but found 0 matches. Try lowering the correlation threshold or adjusting the pattern.`,
       });
-      setTimeout(() => setRunState("idle"), 2000);
+      if (matches.length > 0) setTimeout(() => setRunState("idle"), 2000);
     } catch (err) {
       setRunState("error");
       addMessage({
@@ -302,11 +304,11 @@ export function RightSidebar() {
 
       const result = await runPineScript(pineInput, runData, ds?.name || "LOCAL", tf);
 
-      const hasDrawings = result.drawings && (result.drawings.boxes.length > 0 || result.drawings.lines.length > 0 || result.drawings.labels.length > 0);
+      const hasDrawings = result.drawings && (result.drawings.boxes.length > 0 || result.drawings.lines.length > 0 || result.drawings.labels.length > 0 || (result.drawings.fills?.length || 0) > 0);
 
-      // Store drawings on chart if any exist
-      if (hasDrawings) {
-        useStore.getState().setPineDrawings(result.drawings);
+      // Store drawings + plots on chart
+      if (hasDrawings || result.plotNames.length > 0) {
+        useStore.getState().setPineDrawings(result.drawings, result.plots);
       }
 
       if (result.error && !hasDrawings && result.plotNames.length === 0) {
@@ -457,8 +459,8 @@ export function RightSidebar() {
       <Section title="Resources">
         {/* Indicators */}
         <div className="space-y-1">
-          {indicators.map((ind) => (
-            <div key={ind.name}>
+          {indicators.map((ind, idx) => (
+            <div key={`ind-${idx}-${ind.backendName}`}>
               <div className="flex items-center gap-1.5 py-0.5">
                 <button
                   onClick={() => toggleIndicator(ind.name)}

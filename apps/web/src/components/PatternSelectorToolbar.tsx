@@ -25,29 +25,36 @@ export function PatternSelectorToolbar({
   if (drawingPhase === "idle" && !hasSelection) return null;
 
   return (
-    <div className="absolute top-2 left-2 z-10 flex items-center gap-1.5">
+    <>
+      {/* Drawing phase instructions — top left */}
       {drawingPhase !== "idle" && (
-        <div className="rounded bg-blue-50/90 border border-blue-200 px-2.5 py-1 text-[10px] font-medium text-blue-600 shadow-sm backdrop-blur-sm">
-          {phaseText[drawingPhase]}
+        <div className="absolute top-2 left-2 z-10">
+          <div className="rounded px-2.5 py-1 text-[10px] font-medium shadow-sm backdrop-blur-sm"
+            style={{ background: "rgba(41,98,255,0.15)", color: "#2962ff", border: "1px solid rgba(41,98,255,0.3)" }}>
+            {phaseText[drawingPhase]}
+          </div>
         </div>
       )}
 
+      {/* Action buttons — top right */}
       {hasSelection && drawingPhase === "idle" && (
-        <>
+        <div className="absolute top-2 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5">
           <button
             onClick={onSendToAgent}
-            className="rounded bg-slate-900 px-2.5 py-1 text-[10px] font-semibold text-white hover:bg-slate-800 shadow-sm"
+            className="rounded px-2.5 py-1 text-[10px] font-semibold text-white shadow-sm"
+            style={{ background: "var(--accent)" }}
           >
             Send to Agent
           </button>
           <button
             onClick={onClear}
-            className="rounded bg-white/90 border border-slate-200 px-2.5 py-1 text-[10px] font-semibold text-slate-400 hover:text-red-500 shadow-sm backdrop-blur-sm"
+            className="rounded px-2.5 py-1 text-[10px] font-semibold shadow-sm backdrop-blur-sm"
+            style={{ background: "var(--surface-2)", color: "var(--text-tertiary)", border: "1px solid var(--border)" }}
           >
             Clear
           </button>
-        </>
+        </div>
       )}
-    </div>
+    </>
   );
 }

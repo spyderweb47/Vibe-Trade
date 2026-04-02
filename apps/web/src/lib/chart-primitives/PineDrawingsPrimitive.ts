@@ -9,25 +9,46 @@ import type {
 } from "lightweight-charts";
 import type { CanvasRenderingTarget2D } from "fancy-canvas";
 import type { OHLCBar } from "@/types";
-import type { PineDrawings, PineBox, PineLine, PineLabel } from "@/lib/pine/pineDrawings";
+import type { PineDrawings, PineBox, PineLine, PineLabel, PineFill } from "@/lib/pine/pineDrawings";
 
 class PineDrawingsRenderer implements IPrimitivePaneRenderer {
   private _boxes: { x1: number; y1: number; x2: number; y2: number; bgColor: string; borderColor: string; borderWidth: number; text: string; textColor: string }[] = [];
   private _lines: { x1: number; y1: number; x2: number; y2: number; color: string; width: number; dashed: boolean }[] = [];
   private _labels: { x: number; y: number; text: string; color: string; textColor: string; above: boolean }[] = [];
+  private _fills: { points1: { x: number; y: number }[]; points2: { x: number; y: number }[]; color: string }[] = [];
 
   update(
     boxes: typeof this._boxes,
     lines: typeof this._lines,
     labels: typeof this._labels,
+    fills: typeof this._fills,
   ) {
     this._boxes = boxes;
     this._lines = lines;
     this._labels = labels;
+    this._fills = fills;
   }
 
   drawBackground(target: CanvasRenderingTarget2D): void {
     target.useMediaCoordinateSpace(({ context: ctx }) => {
+      // Draw fills (between two plot lines)
+      for (const f of this._fills) {
+        if (f.points1.length < 2 || f.points2.length < 2) continue;
+        ctx.fillStyle = f.color;
+        ctx.beginPath();
+        // Trace forward along plot1
+        ctx.moveTo(f.points1[0].x, f.points1[0].y);
+        for (let i = 1; i < f.points1.length; i++) {
+          ctx.lineTo(f.points1[i].x, f.points1[i].y);
+        }
+        // Trace backward along plot2
+        for (let i = f.points2.length - 1; i >= 0; i--) {
+          ctx.lineTo(f.points2[i].x, f.points2[i].y);
+        }
+        ctx.closePath();
+        ctx.fill();
+      }
+
       // Draw boxes (behind everything)
       for (const b of this._boxes) {
         const x = Math.min(b.x1, b.x2);
@@ -121,8 +142,9 @@ class PineDrawingsPaneView implements IPrimitivePaneView {
     boxes: Parameters<PineDrawingsRenderer["update"]>[0],
     lines: Parameters<PineDrawingsRenderer["update"]>[1],
     labels: Parameters<PineDrawingsRenderer["update"]>[2],
+    fills: Parameters<PineDrawingsRenderer["update"]>[3],
   ) {
-    this._renderer.update(boxes, lines, labels);
+    this._renderer.update(boxes, lines, labels, fills);
   }
 
   zOrder(): "normal" { return "normal"; }
@@ -135,8 +157,9 @@ export class PineDrawingsPrimitive implements ISeriesPrimitive<Time> {
   private _requestUpdate: (() => void) | null = null;
   private _paneView = new PineDrawingsPaneView();
 
-  private _drawings: PineDrawings = { boxes: [], lines: [], labels: [] };
+  private _drawings: PineDrawings = { boxes: [], lines: [], labels: [], fills: [] };
   private _data: OHLCBar[] = [];
+  private _plotData: Record<string, (number | null)[]> = {};
 
   attached(param: SeriesAttachedParameter<Time, "Candlestick">) {
     this._chart = param.chart as IChartApi;
@@ -150,16 +173,18 @@ export class PineDrawingsPrimitive implements ISeriesPrimitive<Time> {
     this._requestUpdate = null;
   }
 
-  setDrawings(drawings: PineDrawings, data: OHLCBar[]) {
+  setDrawings(drawings: PineDrawings, data: OHLCBar[], plotData?: Record<string, (number | null)[]>) {
     this._drawings = drawings;
     this._data = data;
+    this._plotData = plotData || {};
     this.updateAllViews();
     this._requestUpdate?.();
   }
 
   clear() {
-    this._drawings = { boxes: [], lines: [], labels: [] };
-    this._paneView.update([], [], []);
+    this._drawings = { boxes: [], lines: [], labels: [], fills: [] };
+    this._plotData = {};
+    this._paneView.update([], [], [], []);
     this._requestUpdate?.();
   }
 
@@ -187,7 +212,7 @@ export class PineDrawingsPrimitive implements ISeriesPrimitive<Time> {
 
   updateAllViews() {
     if (!this._chart || !this._series || this._data.length === 0) {
-      this._paneView.update([], [], []);
+      this._paneView.update([], [], [], []);
       return;
     }
 
@@ -238,7 +263,33 @@ export class PineDrawingsPrimitive implements ISeriesPrimitive<Time> {
       return { x, y, text: lb.text, color: lb.color, textColor: lb.textColor, above };
     }).filter(Boolean) as any[];
 
-    this._paneView.update(pixelBoxes, pixelLines, pixelLabels);
+    // Convert fills — map plot1/plot2 values to pixel coordinates
+    const pixelFills = (this._drawings.fills || []).map(f => {
+      const vals1 = this._plotData[f.plot1Name];
+      const vals2 = this._plotData[f.plot2Name];
+      if (!vals1 || !vals2) return null;
+
+      const points1: { x: number; y: number }[] = [];
+      const points2: { x: number; y: number }[] = [];
+
+      for (let i = 0; i < this._data.length; i++) {
+        const v1 = vals1[i];
+        const v2 = vals2[i];
+        if (v1 == null || v2 == null) continue;
+
+        const x = this._barIdxToX(i);
+        const y1 = this._priceToY(v1);
+        const y2 = this._priceToY(v2);
+        if (x == null || y1 == null || y2 == null) continue;
+
+        points1.push({ x, y: y1 });
+        points2.push({ x, y: y2 });
+      }
+
+      return { points1, points2, color: f.color };
+    }).filter(Boolean) as any[];
+
+    this._paneView.update(pixelBoxes, pixelLines, pixelLabels, pixelFills);
   }
 
   paneViews(): readonly IPrimitivePaneView[] {

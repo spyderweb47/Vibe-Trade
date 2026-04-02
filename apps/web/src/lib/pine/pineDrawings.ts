@@ -38,10 +38,17 @@ export interface PineLabel {
   size: string;
 }
 
+export interface PineFill {
+  plot1Name: string;
+  plot2Name: string;
+  color: string;
+}
+
 export interface PineDrawings {
   boxes: PineBox[];
   lines: PineLine[];
   labels: PineLabel[];
+  fills: PineFill[];
 }
 
 /**
@@ -49,7 +56,19 @@ export interface PineDrawings {
  * Drawing data is stored in the last entry of each __type__ plot data array.
  */
 export function extractPineDrawings(plots: Record<string, any>): PineDrawings {
-  const result: PineDrawings = { boxes: [], lines: [], labels: [] };
+  const result: PineDrawings = { boxes: [], lines: [], labels: [], fills: [] };
+
+  // Extract fill() references
+  for (const [name, plotObj] of Object.entries(plots)) {
+    const obj = plotObj as any;
+    if (obj?.options?.style === "fill" && obj.options.plot1 && obj.options.plot2) {
+      result.fills.push({
+        plot1Name: obj.options.plot1,
+        plot2Name: obj.options.plot2,
+        color: obj.options.color || obj.data?.[0]?.options?.color || "rgba(33,150,243,0.1)",
+      });
+    }
+  }
 
   // Extract boxes
   if (plots.__boxes__?.data) {

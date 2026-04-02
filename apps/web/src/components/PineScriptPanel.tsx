@@ -3,6 +3,7 @@
 import { useState, useCallback } from "react";
 import { useStore } from "@/store/useStore";
 import { runPineScript } from "@/lib/pine/runPineScript";
+import { sendChat } from "@/lib/api";
 
 const PINE_TEMPLATES: { name: string; code: string }[] = [
   {
@@ -82,15 +83,57 @@ export function PineScriptPanel() {
 
       const result = await runPineScript(code, chartData, ds?.name || "LOCAL", tf);
 
-      if (result.error) {
-        setStatus("error");
-        setErrorMsg(result.error);
-        return;
+      const hasDrawings = result.drawings && (
+        result.drawings.boxes.length > 0 ||
+        result.drawings.lines.length > 0 ||
+        result.drawings.labels.length > 0 ||
+        (result.drawings.fills?.length || 0) > 0
+      );
+
+      // Always store drawings + plots when any exist (including fills)
+      if (hasDrawings || result.plotNames.length > 0) {
+        useStore.getState().setPineDrawings(result.drawings, result.plots);
       }
 
-      if (result.plotNames.length === 0) {
+      // If PineTS failed or produced no output, fall back to LLM conversion
+      if (result.error || (result.plotNames.length === 0 && !hasDrawings)) {
+        setStatus("running");
+        setResultInfo("Converting via AI agent...");
+
+        try {
+          const llmResult = await sendChat(
+            `Convert this Pine Script to a JavaScript indicator. Extract the main computation logic and return values array.\n\n${code}`,
+            "pattern",
+            {}
+          );
+
+          if (llmResult.script) {
+            const nameMatch = code.match(/(?:indicator|strategy|study)\s*\(\s*["']([^"']+)["']/);
+            const indName = nameMatch ? nameMatch[1] : "Pine Import";
+            const color = INDICATOR_COLORS[(indicators.length) % INDICATOR_COLORS.length];
+
+            addCustomIndicator({
+              name: indName,
+              backendName: indName.toLowerCase().replace(/\s+/g, "_"),
+              active: true,
+              params: (llmResult.data as Record<string, unknown>)?.default_params as Record<string, string> || {},
+              script: llmResult.script,
+              custom: true,
+              color,
+            });
+
+            setStatus("success");
+            setResultInfo(`Converted via AI: "${indName}" added to chart`);
+            addMessage({ role: "agent", content: llmResult.reply || `"${indName}" converted and added.` });
+            setTimeout(() => setStatus("idle"), 3000);
+            return;
+          }
+        } catch {
+          // LLM also failed
+        }
+
         setStatus("error");
-        setErrorMsg("No plot output — add plot() calls to your script");
+        setErrorMsg(`PineTS: ${errMsg}. AI conversion also failed.`);
         return;
       }
 
@@ -118,10 +161,13 @@ export function PineScriptPanel() {
       }
 
       setStatus("success");
-      setResultInfo(`${result.plotNames.length} plot(s) added: ${result.plotNames.join(", ")}`);
+      const drawingInfo = hasDrawings
+        ? `, ${result.drawings.boxes.length} boxes, ${result.drawings.lines.length} lines, ${result.drawings.labels.length} labels`
+        : "";
+      setResultInfo(`${result.plotNames.length} plot(s)${drawingInfo}`);
       addMessage({
         role: "agent",
-        content: `Pine Script "${indName}" executed — ${result.plotNames.length} indicator(s) added to chart.`,
+        content: `Pine Script "${indName}" executed — ${result.plotNames.length} plot(s)${drawingInfo} added to chart.`,
       });
 
       setTimeout(() => setStatus("idle"), 3000);

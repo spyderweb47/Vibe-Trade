@@ -448,21 +448,31 @@ export function Chart({
         existingSeries.delete(key);
       }
     });
+
+    // Clean up series for deleted indicators (no longer in the array)
+    const activeKeys = new Set(indicators.map((ind) => ind.name));
+    for (const [key, series] of existingSeries) {
+      if (!activeKeys.has(key)) {
+        chart.removeSeries(series);
+        existingSeries.delete(key);
+      }
+    }
   }, [indicators, data]);
 
   const storeDrawings = useStore((s) => s.drawings);
 
   // Render Pine Script drawings
   const pineDrawings = useStore((s) => s.pineDrawings);
+  const pineDrawingsPlotData = useStore((s) => s.pineDrawingsPlotData);
   useEffect(() => {
     const p = pineDrawingsRef.current;
     if (!p) return;
     if (pineDrawings && data.length > 0) {
-      p.setDrawings(pineDrawings, data);
+      p.setDrawings(pineDrawings, data, pineDrawingsPlotData || undefined);
     } else {
       p.clear();
     }
-  }, [pineDrawings, data]);
+  }, [pineDrawings, pineDrawingsPlotData, data]);
 
   // Sync active drawing tool from store to primitive
   useEffect(() => {
@@ -552,64 +562,66 @@ export function Chart({
     const bars = getSelectedBars();
     if (!bars || bars.length === 0) return;
 
-    const activeInds = useStore.getState().indicators;
-    const fingerprint = extractFingerprint(bars, data, activeInds);
-    setCapturedPattern(fingerprint);
-
-    // Build a scale-free pattern template — NO absolute prices
-    // Normalize shape to ~15 sample points
-    const shape = fingerprint.patternShape;
-    const sampleCount = Math.min(15, shape.length);
-    const step = Math.max(1, Math.floor(shape.length / sampleCount));
-    const sampled = [];
-    for (let i = 0; i < shape.length; i += step) sampled.push(shape[i]);
-    const shapeStr = sampled.map(v => v.toFixed(2)).join(", ");
-
-    // Compute normalized volume profile (also ~15 points)
-    const volSampled = [];
-    for (let i = 0; i < fingerprint.volumeProfile.length; i += step) {
-      volSampled.push(fingerprint.volumeProfile[i]);
-    }
-    const volStr = volSampled.map(v => v.toFixed(2)).join(", ");
-
-    // Describe relative indicator behavior (rising/falling/flat), not values
-    const indBehavior = Object.entries(fingerprint.indicators)
-      .map(([name, vals]) => {
-        const valid = vals.filter((v): v is number => v !== null);
-        if (valid.length < 2) return null;
-        const first = valid[0], last = valid[valid.length - 1];
-        const mid = valid[Math.floor(valid.length / 2)];
-        let behavior = "flat";
-        const change = (last - first) / (Math.abs(first) || 1);
-        if (change > 0.02) behavior = "rising";
-        else if (change < -0.02) behavior = "falling";
-        // Check for crossover patterns
-        if (first < mid && mid > last) behavior = "peaked";
-        if (first > mid && mid < last) behavior = "dipped";
-        return `${name}: ${behavior}`;
-      })
-      .filter(Boolean)
-      .join(", ");
-
-    // Find where trigger ends and trade begins (relative position)
     const p = patternPrimitiveRef.current;
-    const triggerLen = p?.triggerBox
-      ? data.filter(b => (b.time as number) >= (p.triggerBox!.startTime as number) && (b.time as number) <= (p.triggerBox!.endTime as number)).length
-      : bars.length;
-    const triggerRatio = Math.round((triggerLen / bars.length) * 100);
+    const triggerBars = p?.triggerBox
+      ? data.filter(b => (b.time as number) >= (p.triggerBox!.startTime as number) && (b.time as number) <= (p.triggerBox!.endTime as number))
+      : [];
+    const tradeBars = p?.tradeBox
+      ? data.filter(b => (b.time as number) > (p.tradeBox!.startTime as number) && (b.time as number) <= (p.tradeBox!.endTime as number))
+      : [];
+    const triggerLen = triggerBars.length || Math.round(bars.length * 0.6);
+    const tradeLen = tradeBars.length || (bars.length - triggerLen);
 
-    // Set the trigger/trade split ratio for highlight rendering
+    const activeInds = useStore.getState().indicators;
+    const fingerprint = extractFingerprint(bars, data, activeInds, triggerLen);
+    setCapturedPattern(fingerprint);
     setTriggerRatio(triggerLen / bars.length);
 
-    const windowSize = sampled.length;
+    // ── BUILD MATHEMATICAL PROMPT ──
+    // Sample shape to ~15 points
+    const shape = fingerprint.patternShape;
+    const step = Math.max(1, Math.floor(shape.length / 15));
+    const sampled = shape.filter((_, i) => i % step === 0);
+    const shapeStr = sampled.map(v => v.toFixed(2)).join(", ");
+
+    // Candle structure summary
+    const cs = fingerprint.candleSequence || [];
+    const bullCount = cs.filter(c => c.direction > 0).length;
+    const bearCount = cs.length - bullCount;
+    const avgBody = cs.length > 0 ? cs.reduce((s, c) => s + c.bodySize, 0) / cs.length : 0;
+    const avgWickRatio = cs.length > 0 ? cs.reduce((s, c) => s + c.bodyRatio, 0) / cs.length : 0;
+
+    // Box geometry
+    const triggerRatio = Math.round((fingerprint.triggerRatio || 0.6) * 100);
+    const boxGeometry = [
+      `Trigger: ${triggerRatio}% width, ${((fingerprint.triggerHeightRatio || 0) * 100).toFixed(1)}% height.`,
+      `Trade: ${100 - triggerRatio}% width, ${((fingerprint.tradeHeightRatio || 0) * 100).toFixed(1)}% height.`,
+      `Trade shifts ${fingerprint.heightShift! > 0 ? "up" : "down"} ${Math.abs((fingerprint.heightShift || 0) * 100).toFixed(1)}% from trigger center.`,
+    ].join(" ");
+
+    // Indicator math
+    const indMath = Object.entries(fingerprint.indicatorMath || {})
+      .map(([name, m]) => {
+        return `${name}: ${m.positionRelativeToPrice} price, trigger slope=${m.triggerSlope}, trade slope=${m.tradeSlope}, curvature=${m.curvature}, crosses price ${m.crossesPrice}x`;
+      })
+      .join(". ");
+
+    // Trend comparison
+    const triggerDir = (fingerprint.triggerTrend || 0) > 0 ? "rising" : "falling";
+    const tradeDir = (fingerprint.tradeTrend || 0) > 0 ? "rising" : "falling";
+
     const draft = [
-      `Detect this pattern template (scale-independent, works at any price level).`,
-      `The reference shape has exactly ${windowSize} points: [${shapeStr}].`,
-      `First ${triggerRatio}% is setup, last ${100 - triggerRatio}% is the move.`,
-      `Trend: ${fingerprint.trendAngle > 0 ? "upward" : "downward"}.`,
-      indBehavior ? `Indicator context: ${indBehavior}.` : "",
-      `RULES: Use a sliding window of EXACTLY ${windowSize} bars (same as the pattern length). For each window, normalize the ${windowSize} closes to 0-1 (min=0, max=1). Compute Pearson correlation between the normalized window and the reference pattern array. If correlation > 0.65, add to results. The pattern array and the window MUST be the same length (${windowSize}). Do NOT use a different window size. Set pattern_type to the trend direction.`,
-    ].filter(Boolean).join(" ");
+      `Find this ${bars.length}-bar pattern (${triggerLen} trigger + ${tradeLen} trade bars, scale-free):`,
+      ``,
+      `SHAPE: [${shapeStr}] (${sampled.length} points, normalized 0-1)`,
+      `STRUCTURE: ${bullCount} bull / ${bearCount} bear candles, avg body=${(avgBody * 100).toFixed(1)}%, avg body/range=${(avgWickRatio * 100).toFixed(0)}%`,
+      `TRIGGER BOX: ${triggerRatio}% of pattern, height ${((fingerprint.triggerHeightRatio || 0) * 100).toFixed(1)}% of range, trend ${triggerDir}`,
+      `TRADE BOX: ${100 - triggerRatio}% of pattern, height ${((fingerprint.tradeHeightRatio || 0) * 100).toFixed(1)}% of range, trend ${tradeDir}, shifts ${fingerprint.heightShift! > 0 ? "up" : "down"} ${Math.abs((fingerprint.heightShift || 0) * 100).toFixed(1)}%`,
+      `OVERALL: ${fingerprint.trendAngle > 0 ? "up" : "down"} ${Math.abs(fingerprint.priceChangePercent).toFixed(1)}%, volatility ${fingerprint.volatility > 0.02 ? "high" : fingerprint.volatility > 0.01 ? "moderate" : "low"}`,
+      indMath ? `INDICATORS: ${indMath}` : "",
+      ``,
+      `RULES: Sliding window of EXACTLY ${sampled.length} bars. Normalize each window's closes to 0-1 (min=0, max=1). Compute Pearson correlation with reference shape. Match if correlation > 0.55 (use 0.55 NOT higher). Do NOT add extra filters — only correlation. Set pattern_type to "${tradeDir}".`,
+    ].filter(v => v !== undefined && v !== "").join("\n");
 
     setChatInputDraft(draft);
 
