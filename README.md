@@ -2,6 +2,10 @@
 
 AI-powered trading pattern detection, strategy building, and replay-based practice platform. Upload historical OHLC data, detect patterns with AI agents, generate and backtest strategies, then practice discretionary trading in a simulated real-time environment.
 
+## Demo
+
+<video src="DEMO/final.mp4" controls width="600"></video>
+
 ## Features
 
 ### Building Mode
