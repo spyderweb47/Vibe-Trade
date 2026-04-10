@@ -13,7 +13,7 @@ import { TradingPanel } from "./playground/TradingPanel";
 import type { StrategyConfig } from "@/types";
 
 const TAG_STYLES: Record<string, { bg: string; color: string }> = {
-  indicator: { bg: "rgba(41,98,255,0.15)", color: "#2962ff" },
+  indicator: { bg: "rgba(255,107,0,0.15)", color: "#ff6b00" },
   pattern: { bg: "rgba(255,152,0,0.15)", color: "#ff9800" },
   strategy: { bg: "rgba(38,166,154,0.15)", color: "#26a69a" },
 };

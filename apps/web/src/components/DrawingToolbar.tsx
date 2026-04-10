@@ -51,7 +51,7 @@ const tools: { key: DrawingType | "pointer" | "delete"; label: string; icon: Rea
     label: "Rectangle",
     icon: (
       <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
-        <rect x="4" y="6" width="16" height="12" rx="1" fill="rgba(99,102,241,0.15)" stroke="#6366f1" />
+        <rect x="4" y="6" width="16" height="12" rx="1" fill="rgba(255,107,0,0.15)" stroke="#ff6b00" />
       </svg>
     ),
   },
@@ -64,7 +64,7 @@ const tools: { key: DrawingType | "pointer" | "delete"; label: string; icon: Rea
         <line x1="3" y1="8" x2="21" y2="8" stroke="#f44336" strokeDasharray="3 2" />
         <line x1="3" y1="11" x2="21" y2="11" stroke="#4caf50" strokeDasharray="3 2" />
         <line x1="3" y1="14.5" x2="21" y2="14.5" stroke="#00bcd4" strokeDasharray="3 2" />
-        <line x1="3" y1="17" x2="21" y2="17" stroke="#2962ff" strokeDasharray="3 2" />
+        <line x1="3" y1="17" x2="21" y2="17" stroke="#ff6b00" strokeDasharray="3 2" />
         <line x1="3" y1="20" x2="21" y2="20" stroke="#787b86" />
       </svg>
     ),

@@ -27,8 +27,8 @@ const TRADE_BULLISH_FILL = "rgba(34, 197, 94, 0.10)";
 const TRADE_BULLISH_BORDER = "rgba(34, 197, 94, 0.45)";
 const TRADE_BEARISH_FILL = "rgba(239, 68, 68, 0.10)";
 const TRADE_BEARISH_BORDER = "rgba(239, 68, 68, 0.45)";
-const TRADE_NEUTRAL_FILL = "rgba(99, 102, 241, 0.10)";
-const TRADE_NEUTRAL_BORDER = "rgba(99, 102, 241, 0.45)";
+const TRADE_NEUTRAL_FILL = "rgba(255, 107, 0, 0.10)";
+const TRADE_NEUTRAL_BORDER = "rgba(255, 107, 0, 0.45)";
 
 class HighlightRenderer implements IPrimitivePaneRenderer {
   private _boxes: HighlightBox[] = [];

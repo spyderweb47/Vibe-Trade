@@ -202,7 +202,7 @@ export function PineScriptPanel() {
           <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--text-tertiary)" }}>
             Pine Script Editor
           </span>
-          <span className="rounded px-1.5 py-0.5 text-[9px] font-medium" style={{ background: "rgba(41,98,255,0.15)", color: "#2962ff" }}>
+          <span className="rounded px-1.5 py-0.5 text-[9px] font-medium" style={{ background: "rgba(255,107,0,0.15)", color: "#ff6b00" }}>
             v5
           </span>
           <div className="flex-1" />

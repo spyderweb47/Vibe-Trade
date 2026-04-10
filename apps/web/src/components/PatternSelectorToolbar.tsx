@@ -30,7 +30,7 @@ export function PatternSelectorToolbar({
       {drawingPhase !== "idle" && (
         <div className="absolute top-2 left-2 z-10">
           <div className="rounded px-2.5 py-1 text-[10px] font-medium shadow-sm backdrop-blur-sm"
-            style={{ background: "rgba(41,98,255,0.15)", color: "#2962ff", border: "1px solid rgba(41,98,255,0.3)" }}>
+            style={{ background: "rgba(255,107,0,0.15)", color: "#ff6b00", border: "1px solid rgba(255,107,0,0.3)" }}>
             {phaseText[drawingPhase]}
           </div>
         </div>

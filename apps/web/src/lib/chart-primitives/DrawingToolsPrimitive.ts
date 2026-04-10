@@ -13,16 +13,16 @@ import type { Drawing, DrawingType, AnchorPoint, DrawingPhase } from "./drawingT
 
 const ANCHOR_RADIUS = 4;
 const HIT_TOLERANCE = 8;
-const TRENDLINE_COLOR = "#6366f1";
-const HLINE_COLOR = "#f59e0b";
-const VLINE_COLOR = "#8b5cf6";
-const RECT_COLOR = "rgba(99,102,241,0.15)";
-const RECT_BORDER = "rgba(99,102,241,0.6)";
-const FIB_COLOR = "#f59e0b";
+const TRENDLINE_COLOR = "#ff6b00";
+const HLINE_COLOR = "#ffb020";
+const VLINE_COLOR = "#a855f7";
+const RECT_COLOR = "rgba(255,107,0,0.12)";
+const RECT_BORDER = "rgba(255,107,0,0.6)";
+const FIB_COLOR = "#ffb020";
 const FIB_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
 const FIB_LEVEL_COLORS: Record<number, string> = {
-  0: "#787b86", 0.236: "#f44336", 0.382: "#ff9800", 0.5: "#4caf50",
-  0.618: "#00bcd4", 0.786: "#2962ff", 1: "#787b86",
+  0: "#787b86", 0.236: "#ff4d4d", 0.382: "#ffb020", 0.5: "#00d68f",
+  0.618: "#00bcd4", 0.786: "#ff6b00", 1: "#787b86",
 };
 const LONG_TP_COLOR = "rgba(34,197,94,0.15)";
 const LONG_SL_COLOR = "rgba(239,68,68,0.15)";
@@ -174,7 +174,7 @@ class DrawingRenderer implements IPrimitivePaneRenderer {
     const w = Math.abs(d.rectX2 - d.rectX1);
     const h = Math.abs(d.rectY2 - d.rectY1);
 
-    ctx.fillStyle = d.selected ? "rgba(99,102,241,0.2)" : RECT_COLOR;
+    ctx.fillStyle = d.selected ? "rgba(255,107,0,0.2)" : RECT_COLOR;
     ctx.fillRect(x, y, w, h);
     ctx.strokeStyle = d.selected ? "#4f46e5" : RECT_BORDER;
     ctx.lineWidth = d.selected ? 2 : 1;
