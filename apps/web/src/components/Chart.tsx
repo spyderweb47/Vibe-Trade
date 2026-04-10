@@ -229,6 +229,31 @@ export function Chart({
     // Mouse handlers — route based on active tool
     const el = containerRef.current;
 
+    // Double-click anywhere on the chart in playground mode → snap view back
+    // to the replay cursor (TradingView-style "go to current price" behavior).
+    // Runs during capture phase to intercept before lightweight-charts fires
+    // its own fitContent, then stops propagation.
+    const onDoubleClick = (e: MouseEvent) => {
+      const state = useStore.getState();
+      if (state.appMode !== "playground") return;
+      const cursor = state.playgroundReplay.currentBarIndex;
+      const total = state.playgroundReplay.totalBars;
+      if (total === 0) return;
+      const from = Math.max(0, cursor - 60);
+      const to = Math.min(total - 1, cursor + 15);
+      // Use rAF so our set runs after lightweight-charts' default handler
+      requestAnimationFrame(() => {
+        chart.timeScale().setVisibleLogicalRange({ from, to });
+      });
+      // A second rAF to guarantee we win against any async snap lightweight-charts does
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          chart.timeScale().setVisibleLogicalRange({ from, to });
+        });
+      });
+    };
+    el.addEventListener("dblclick", onDoubleClick);
+
     const onMouseDown = (e: PointerEvent) => {
       const rect = el.getBoundingClientRect();
       const x = e.clientX - rect.left;
@@ -315,6 +340,7 @@ export function Chart({
       series.detachPrimitive(pineDrawingsPrimitive);
       series.detachPrimitive(tradeBoxPrimitive);
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(onLogicalRangeChange);
+      el.removeEventListener("dblclick", onDoubleClick);
       patternPrimitiveRef.current = null;
       pineDrawingsRef.current = null;
       tradeBoxRef.current = null;
