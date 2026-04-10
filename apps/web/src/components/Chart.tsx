@@ -213,10 +213,13 @@ export function Chart({
       // Detect fitContent: range covers from ~0 to ~(total-1), much larger than cursor+buffer
       const covers_all_data = range.from <= 2 && range.to >= total - 5;
       if (covers_all_data && !lastRangeChangeByUser) {
-        // User triggered a fit that included spacer bars — snap back to real candles
+        // User triggered a fit that included spacer bars — snap back to a
+        // view centered around the cursor (where the current candle is forming).
         lastRangeChangeByUser = true;
         requestAnimationFrame(() => {
-          chart.timeScale().setVisibleLogicalRange({ from: 0, to: cursor });
+          const from = Math.max(0, cursor - 60);
+          const to = Math.min(total - 1, cursor + 15);
+          chart.timeScale().setVisibleLogicalRange({ from, to });
           lastRangeChangeByUser = false;
         });
       }
@@ -406,7 +409,15 @@ export function Chart({
       }
 
       if (isPlayground && !playgroundInitializedRef.current && data.length > 0) {
-        chartRef.current?.timeScale().fitContent();
+        // Center initial view around the cursor — show ~60 past bars + a bit of
+        // future space to the right so the current candle has room to grow into.
+        const ts = chartRef.current?.timeScale();
+        if (ts) {
+          const from = Math.max(0, playgroundCursor - 60);
+          const to = Math.min(data.length - 1, playgroundCursor + 15);
+          // setVisibleLogicalRange works on logical bar indices (matches our array)
+          ts.setVisibleLogicalRange({ from, to });
+        }
         playgroundInitializedRef.current = true;
       } else if (!isPlayground) {
         chartRef.current?.timeScale().fitContent();
