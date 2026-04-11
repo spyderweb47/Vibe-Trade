@@ -29,7 +29,28 @@ export async function executePatternScript(
   }
 
   let body = script.trim();
-  if (!body.includes("return results")) {
+
+  // Detect if the LLM wrapped the code in a function declaration and unwrap it.
+  // Matches: `const detectPattern = (data) => { ... }`, `function detectPattern(data) { ... }`,
+  // `const foo = function(data) { ... }`. Picks the LAST such definition (helpers come first).
+  const arrowMatches = [...body.matchAll(/(?:const|let|var)\s+(\w+)\s*=\s*(?:\([^)]*\)|\w+)\s*=>/g)];
+  const funcMatches = [...body.matchAll(/function\s+(\w+)\s*\([^)]*\)/g)];
+  const funcExprMatches = [...body.matchAll(/(?:const|let|var)\s+(\w+)\s*=\s*function\s*\([^)]*\)/g)];
+
+  const allFns = [...arrowMatches, ...funcMatches, ...funcExprMatches];
+  const hasTopLevelResults =
+    /^(?:const|let|var)\s+results\s*=/m.test(body) ||
+    /^\s*results\s*=/m.test(body);
+  const hasTopLevelCall = allFns.some((m) =>
+    new RegExp(`(?<!function\\s+)(?<!=\\s*)\\b${m[1]}\\s*\\(\\s*data`).test(body)
+  );
+
+  if (allFns.length > 0 && !hasTopLevelResults && !hasTopLevelCall) {
+    // Script is function-wrapped with no top-level call → append one to the
+    // last-defined function (usually the main detector, after any helpers).
+    const mainFn = allFns[allFns.length - 1][1];
+    body += `\nreturn ${mainFn}(data);`;
+  } else if (!body.includes("return results") && !body.includes("return ")) {
     body += "\nreturn results;";
   }
 

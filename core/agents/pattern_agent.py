@@ -36,14 +36,53 @@ script that detects occurrences of that pattern in OHLC data.
 - Do NOT use async/await or Promises.
 
 ## CRITICAL RULES
-1. Always initialize: const results = [];
-2. Use array index access: data[i].close, data[i].open, etc.
-3. Use for loops: for (let i = 0; i < data.length; i++) { ... }
-4. Include a confidence score (0.0 to 1.0) based on pattern quality.
-5. Handle edge cases: check data.length >= minimum required bars.
-6. Keep the script concise — under 50 lines of logic.
-7. Use helper variables for readability: const closes = data.map(d => d.close);
-8. End the script with: return results;
+1. WRITE A FLAT TOP-LEVEL SCRIPT. Do NOT wrap your logic in an outer function like
+   `const detectPattern = (data) => { ... }` or `function detect(data) { ... }`.
+   The `data` variable is already injected as a function argument — your script
+   runs inside `new Function("data", "Math", YOUR_CODE)`. Write code at the top level.
+2. Always initialize at the TOP SCOPE: const results = [];
+3. Use array index access: data[i].close, data[i].open, etc.
+4. Use for loops: for (let i = 0; i < data.length; i++) { ... }
+5. Include a confidence score (0.0 to 1.0) based on pattern quality. Do NOT hardcode 1.0 —
+   vary it with some measurable quality signal (e.g. candle body ratio, volume relative
+   to average, pattern depth, etc.).
+6. Handle edge cases: check data.length >= minimum required bars.
+7. Keep the script concise — under 50 lines of logic.
+8. Use helper variables for readability: const closes = data.map(d => d.close);
+9. End the script with: return results;
+
+## Example of the CORRECT shape
+
+```javascript
+// ✅ Flat script — `results` and `data` are at top scope
+const results = [];
+const closes = data.map(d => d.close);
+
+if (data.length < 5) return results;
+
+for (let i = 1; i < data.length - 1; i++) {
+  // ... pattern check using closes[i-1], closes[i], closes[i+1] ...
+  if (isPattern) {
+    const confidence = Math.min(1, someQualityMetric);
+    results.push({ start_idx: i - 1, end_idx: i + 1, confidence, pattern_type: 'my_pattern' });
+  }
+}
+
+return results;
+```
+
+## Example of the WRONG shape
+
+```javascript
+// ❌ Function-wrapped — `results` is trapped inside, outer `return results;` fails
+const detectPattern = (data) => {
+  const results = [];
+  // ...
+  return results;
+};
+// Script ends here — no call to detectPattern, and the executor's
+// appended `return results;` throws ReferenceError
+```
 
 ## Output format
 Return ONLY the JavaScript code. No markdown fences, no explanations outside comments."""
@@ -66,13 +105,16 @@ script that computes the indicator values for OHLC data.
 - Do NOT use async/await or Promises.
 
 ## CRITICAL RULES
-1. Initialize output: const values = new Array(data.length).fill(null);
-2. Access params for tunable settings: const period = params.period || 20;
-3. Use array index access: data[i].close, data[i].high, etc.
-4. Return null for bars before the indicator has enough data to compute.
-5. Handle edge cases: check data.length >= minimum required bars.
-6. Keep the script concise — under 40 lines.
-7. End the script with: return values;
+1. WRITE A FLAT TOP-LEVEL SCRIPT. Do NOT wrap your logic in an outer function like
+   `const calc = (data, params) => { ... }`. The `data` and `params` variables are
+   already injected — your script runs inside `new Function("data", "params", "Math", YOUR_CODE)`.
+2. Initialize output at TOP SCOPE: const values = new Array(data.length).fill(null);
+3. Access params for tunable settings: const period = params.period || 20;
+4. Use array index access: data[i].close, data[i].high, etc.
+5. Return null for bars before the indicator has enough data to compute.
+6. Handle edge cases: check data.length >= minimum required bars.
+7. Keep the script concise — under 40 lines.
+8. End the script with: return values;
 
 ## Common parameter names to use
 - period: lookback window length (default depends on indicator)
