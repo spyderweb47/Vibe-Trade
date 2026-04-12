@@ -120,9 +120,14 @@ class ChartSupportAgent:
         current = None
         for b in bars:
             t = b.get("time", 0)
-            if isinstance(t, str):
-                t = float(t)
-            bucket = int(t // bucket_seconds) * bucket_seconds
+            # Handle pandas Timestamp, string, or numeric time values
+            if hasattr(t, "timestamp"):
+                t = int(t.timestamp())
+            elif isinstance(t, str):
+                t = int(float(t))
+            else:
+                t = int(t)
+            bucket = (t // bucket_seconds) * bucket_seconds
             if bucket != bucket_start:
                 if current:
                     result.append(current)
