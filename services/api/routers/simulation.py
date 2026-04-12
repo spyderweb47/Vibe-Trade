@@ -29,7 +29,7 @@ router = APIRouter(tags=["simulation"])
 class DebateRequest(BaseModel):
     dataset_id: str = Field(..., description="UUID of the uploaded dataset")
     bars_count: int = Field(default=100, ge=10, le=500)
-    context: str = Field(default="", description="Optional user question or focus area")
+    context: str = Field(default="", description="Research report text or user context to generate specialized agent personas")
 
 
 class AgentResultResponse(BaseModel):
@@ -82,21 +82,22 @@ async def run_debate(request: DebateRequest) -> DebateResponse:
     if meta and hasattr(meta, "symbol") and meta.symbol:
         symbol = meta.symbol
 
-    # Run the DAG
+    # Run the DAG — pass report text for dynamic agent generation
     orchestrator = DebateOrchestrator()
-    results = await orchestrator.run(bars, symbol)
+    results = await orchestrator.run(bars, symbol, report_text=request.context or "")
 
-    # Build response
+    # Build response — dynamic agent keys (not fixed bull/bear/risk/pm)
     agents_resp: Dict[str, AgentResultResponse] = {}
-    for role in ["bull", "bear", "risk", "pm"]:
-        r = results[role]
-        agents_resp[role] = AgentResultResponse(
-            role=r["role"],
-            label=r["label"],
-            argument=r["argument"],
-            key_points=r.get("key_points", []),
-            sentiment=r.get("sentiment", 0.0),
-            signals=r.get("signals", []),
+    for key, value in results.items():
+        if key == "decision":
+            continue  # handled separately
+        agents_resp[key] = AgentResultResponse(
+            role=value["role"],
+            label=value["label"],
+            argument=value["argument"],
+            key_points=value.get("key_points", []),
+            sentiment=value.get("sentiment", 0.0),
+            signals=value.get("signals", []),
         )
 
     dec = results["decision"]

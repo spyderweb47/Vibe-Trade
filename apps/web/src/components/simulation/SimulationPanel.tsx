@@ -1,12 +1,10 @@
 "use client";
 
+import { useRef } from "react";
 import { useStore } from "@/store/useStore";
-import { DAGFlowchart } from "./DAGFlowchart";
 import { AgentCard } from "./AgentCard";
 import { DecisionCard } from "./DecisionCard";
 import type { AgentRole } from "@/types";
-
-const AGENT_ORDER: AgentRole[] = ["bull", "bear", "risk", "pm"];
 
 export function SimulationPanel() {
   const activeDataset = useStore((s) => s.activeDataset);
@@ -14,6 +12,20 @@ export function SimulationPanel() {
   const loading = useStore((s) => s.simulationLoading);
   const runDebate = useStore((s) => s.runDebate);
   const resetSimulation = useStore((s) => s.resetSimulation);
+  const report = useStore((s) => s.simulationReport);
+  const setReport = useStore((s) => s.setSimulationReport);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    setReport(text);
+  };
+
+  const agentRoles = debate
+    ? (Object.keys(debate.agents) as AgentRole[])
+    : [];
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -27,7 +39,7 @@ export function SimulationPanel() {
             Simulation
           </div>
           <div className="text-[11px] font-semibold" style={{ color: "var(--text-primary)" }}>
-            Committee Debate
+            Multi-Agent Debate
           </div>
         </div>
         {debate && debate.status === "complete" && (
@@ -39,6 +51,48 @@ export function SimulationPanel() {
             Clear
           </button>
         )}
+      </div>
+
+      {/* Report Upload */}
+      <div className="px-3 py-2 shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
+        <div className="text-[9px] font-semibold uppercase tracking-wide mb-1.5" style={{ color: "var(--text-muted)" }}>
+          Research Report (optional)
+        </div>
+        {report ? (
+          <div className="flex items-center gap-2">
+            <div
+              className="flex-1 rounded px-2 py-1.5 text-[10px] line-clamp-2"
+              style={{ background: "var(--surface-2)", color: "var(--text-secondary)", border: "1px solid var(--border)" }}
+            >
+              {report.slice(0, 120)}...
+            </div>
+            <button
+              onClick={() => setReport("")}
+              className="text-[9px] font-semibold px-1.5 py-1 rounded"
+              style={{ color: "var(--danger)" }}
+            >
+              Remove
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={() => fileRef.current?.click()}
+            className="w-full rounded py-2 text-[10px] font-semibold border-dashed border-2 transition-colors hover:border-[var(--accent)]"
+            style={{ borderColor: "var(--border)", color: "var(--text-tertiary)", background: "var(--surface-2)" }}
+          >
+            Upload Report (.txt, .md, .pdf)
+          </button>
+        )}
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".txt,.md,.csv,.pdf"
+          onChange={handleFileUpload}
+          className="hidden"
+        />
+        <p className="text-[8px] mt-1" style={{ color: "var(--text-muted)" }}>
+          Agents will use this report to create specialized analysis personas.
+        </p>
       </div>
 
       {/* Run Button */}
@@ -58,24 +112,21 @@ export function SimulationPanel() {
         )}
       </div>
 
-      {/* DAG Visualization */}
-      <DAGFlowchart debate={debate} />
-
       {/* Agent Cards (scrollable) */}
       <div className="flex-1 overflow-y-auto py-1">
         {!debate && !loading && (
           <div className="flex items-center justify-center h-full text-[10px]" style={{ color: "var(--text-tertiary)" }}>
             <div className="text-center space-y-2 px-6">
               <div className="text-2xl">🏛</div>
-              <p>Run a committee debate to get a multi-agent trade recommendation.</p>
+              <p>Run a debate to see agent analysis.</p>
               <p className="text-[9px]" style={{ color: "var(--text-muted)" }}>
-                4 AI agents (Bull, Bear, Risk, PM) will analyze your data and debate whether to BUY, SELL, or HOLD.
+                Upload a report to generate specialized agent personas, or run with just OHLC data for the default committee.
               </p>
             </div>
           </div>
         )}
 
-        {debate && AGENT_ORDER.map((role) => (
+        {debate && agentRoles.map((role) => (
           <AgentCard key={role} result={debate.agents[role]} />
         ))}
       </div>
@@ -90,7 +141,7 @@ export function SimulationPanel() {
       {/* Error state */}
       {debate?.status === "error" && (
         <div className="mx-3 mb-3 rounded-md p-3 text-[10px]" style={{ background: "rgba(255,77,77,0.1)", color: "#ff4d4d", border: "1px solid rgba(255,77,77,0.3)" }}>
-          Debate failed: {debate.error || "Unknown error"}
+          {debate.error || "Unknown error"}
         </div>
       )}
     </div>

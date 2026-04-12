@@ -251,6 +251,147 @@ Respond with ONLY valid JSON (no markdown fences):
 # Agent Classes
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Architect Agent — dynamically generates agent personas from a report
+# ---------------------------------------------------------------------------
+
+ARCHITECT_PROMPT = """You are a simulation architect. Given a research report and/or asset information,
+create 4-6 specialized analyst personas that would be relevant to debating the next price action of this asset.
+
+Each persona should have a unique perspective based on their specialty — different from the others.
+For example, for a crypto asset you might create: On-chain Analyst, Macro Strategist, DeFi Protocol Specialist, Whale Tracker, Regulatory Analyst.
+For a stock: Fundamental Analyst, Technical Analyst, Industry Specialist, Macro Economist, Sentiment Analyst.
+
+Consider the report content to create RELEVANT personas. If the report mentions specific topics (e.g., earnings, Fed policy, protocol upgrades), create analysts that specialize in those areas.
+
+Respond with ONLY valid JSON (no markdown fences):
+{
+  "agents": [
+    {
+      "role": "on_chain_analyst",
+      "label": "On-Chain Analyst",
+      "focus": "Analyze on-chain metrics: active addresses, whale movements, exchange flows, TVL changes",
+      "bias": "neutral"
+    },
+    {
+      "role": "macro_strategist",
+      "label": "Macro Strategist",
+      "focus": "Evaluate macroeconomic factors: interest rates, dollar strength, liquidity conditions, correlation with risk assets",
+      "bias": "neutral"
+    }
+  ]
+}
+
+bias can be: "bullish", "bearish", or "neutral" — set based on the persona's natural leaning given their specialty.
+Create exactly 4-6 agents. Make role names snake_case and unique."""
+
+
+class ArchitectAgent:
+    """Generates dynamic agent personas from report text and asset context."""
+
+    def generate_personas(self, symbol: str, report_text: str = "", market_summary: str = "") -> list:
+        user_msg = f"Asset: {symbol}\n"
+        if report_text:
+            # Truncate report to fit context
+            user_msg += f"\n## Research Report (excerpt)\n{report_text[:3000]}\n"
+        if market_summary:
+            user_msg += f"\n## Market Data\n{market_summary[:1000]}\n"
+        user_msg += "\nCreate 4-6 specialized analyst personas for debating the next price action of this asset."
+
+        if not llm_available():
+            return self._mock_personas(symbol)
+
+        result = chat_completion_json(
+            system_prompt=ARCHITECT_PROMPT,
+            user_message=user_msg,
+            temperature=0.5,
+            max_tokens=1500,
+        )
+
+        agents = result.get("agents", [])
+        if not agents or not isinstance(agents, list):
+            return self._mock_personas(symbol)
+        return agents
+
+    def _mock_personas(self, symbol: str) -> list:
+        return [
+            {"role": "technical_analyst", "label": "Technical Analyst", "focus": "Chart patterns, indicators, support/resistance levels, trend analysis", "bias": "neutral"},
+            {"role": "fundamental_analyst", "label": "Fundamental Analyst", "focus": "Valuation metrics, earnings, revenue growth, competitive position", "bias": "neutral"},
+            {"role": "sentiment_analyst", "label": "Sentiment Analyst", "focus": "Market sentiment, fear/greed, social media trends, positioning data", "bias": "neutral"},
+            {"role": "risk_manager", "label": "Risk Manager", "focus": "Volatility assessment, correlation risks, position sizing, tail risk scenarios", "bias": "neutral"},
+        ]
+
+
+# ---------------------------------------------------------------------------
+# Dynamic Debate Agent — a single class that takes a persona config
+# ---------------------------------------------------------------------------
+
+DYNAMIC_AGENT_PROMPT = """You are {label}, a specialized analyst on a trading committee.
+
+Your focus area: {focus}
+
+Analyze the market data (and research report if provided) from your unique perspective.
+{bias_instruction}
+
+Respond with ONLY valid JSON (no markdown fences):
+{{
+  "argument": "Your 3-5 sentence analysis from your specialized perspective",
+  "key_points": ["Point 1", "Point 2", "Point 3"],
+  "sentiment": 0.5,
+  "signals": ["Signal 1", "Signal 2"]
+}}
+
+sentiment: -1.0 = very bearish, 0.0 = neutral, +1.0 = very bullish. Base it on what you see in the data from your perspective."""
+
+
+class DynamicDebateAgent:
+    """A debate agent instantiated from a persona config."""
+
+    def __init__(self, persona: dict):
+        self.role = persona.get("role", "analyst")
+        self.label = persona.get("label", "Analyst")
+        self.focus = persona.get("focus", "General market analysis")
+        self.bias = persona.get("bias", "neutral")
+
+        bias_instruction = ""
+        if self.bias == "bullish":
+            bias_instruction = "You have a naturally bullish leaning — look for reasons the price will go UP. But be honest about risks."
+        elif self.bias == "bearish":
+            bias_instruction = "You have a naturally bearish leaning — look for reasons the price will go DOWN. But acknowledge bullish signals."
+
+        self.system_prompt = DYNAMIC_AGENT_PROMPT.format(
+            label=self.label,
+            focus=self.focus,
+            bias_instruction=bias_instruction,
+        )
+
+    def analyze(self, market_data: str, report_text: str = "") -> dict:
+        user_msg = market_data
+        if report_text:
+            user_msg += f"\n\n## Research Report (excerpt)\n{report_text[:2000]}"
+
+        if not llm_available():
+            return {
+                "argument": f"[Mock] {self.label} analysis requires an OpenAI API key.",
+                "key_points": [f"Focus: {self.focus}"],
+                "sentiment": 0.0,
+                "signals": [],
+            }
+
+        result = chat_completion_json(
+            system_prompt=self.system_prompt,
+            user_message=user_msg,
+            temperature=0.4,
+            max_tokens=1200,
+        )
+
+        result.setdefault("argument", f"{self.label}: No analysis available.")
+        result.setdefault("key_points", [])
+        result.setdefault("sentiment", 0.0)
+        result.setdefault("signals", [])
+        return result
+
+
 class BaseDebateAgent:
     role: str = ""
     label: str = ""

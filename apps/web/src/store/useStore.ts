@@ -151,6 +151,8 @@ interface AppState {
   currentDebate: import('@/types').SimulationDebate | null;
   debateHistory: import('@/types').SimulationDebate[];
   simulationLoading: boolean;
+  simulationReport: string;
+  setSimulationReport: (text: string) => void;
   runDebate: () => Promise<void>;
   setCurrentDebate: (d: import('@/types').SimulationDebate | null) => void;
   resetSimulation: () => void;
@@ -420,6 +422,8 @@ export const useStore = create<AppState>((set) => ({
   currentDebate: null,
   debateHistory: [],
   simulationLoading: false,
+  simulationReport: "",
+  setSimulationReport: (text) => set({ simulationReport: text }),
 
   runDebate: async () => {
     const state = useStore.getState();
@@ -430,22 +434,14 @@ export const useStore = create<AppState>((set) => ({
     const symbol = ds?.metadata?.symbol || "Unknown";
     const debateId = crypto.randomUUID();
 
-    const mkAgent = (role: import("@/types").AgentRole, label: string): import("@/types").AgentResult => ({
-      role, label, status: "pending", argument: "", keyPoints: [], sentiment: 0, signals: [],
-    });
-
+    // Start with an empty shell — agents will be populated from the API response
     const initial: import("@/types").SimulationDebate = {
       id: debateId,
       datasetId: activeId,
       symbol,
       barsAnalyzed: 0,
       startedAt: new Date().toISOString(),
-      agents: {
-        bull: mkAgent("bull", "Bull Analyst"),
-        bear: mkAgent("bear", "Bear Analyst"),
-        risk: mkAgent("risk", "Risk Officer"),
-        pm: mkAgent("pm", "Portfolio Manager"),
-      },
+      agents: {} as Record<string, import("@/types").AgentResult>,
       decision: null,
       status: "running",
     };
@@ -454,10 +450,30 @@ export const useStore = create<AppState>((set) => ({
 
     try {
       const { runSimulationDebate } = await import("@/lib/api");
-      const resp = await runSimulationDebate(activeId);
+      const report = useStore.getState().simulationReport;
+      const resp = await runSimulationDebate(activeId, 100, report);
 
-      // Stagger reveals for DAG animation effect (backend returned all at once)
-      const roles: import("@/types").AgentRole[] = ["bull", "bear", "risk", "pm"];
+      // Get dynamic agent roles from response (excluding 'decision' key)
+      const roles = Object.keys(resp.agents);
+
+      // Initialize all agents as pending on the DAG
+      const pendingAgents: Record<string, import("@/types").AgentResult> = {};
+      for (const role of roles) {
+        pendingAgents[role] = {
+          role,
+          label: resp.agents[role].label,
+          status: "pending",
+          argument: "",
+          keyPoints: [],
+          sentiment: 0,
+          signals: [],
+        };
+      }
+      set((s) => ({
+        currentDebate: s.currentDebate ? { ...s.currentDebate, agents: pendingAgents } : null,
+      }));
+
+      // Stagger reveals for DAG animation effect
       for (const role of roles) {
         // Mark running
         set((s) => ({
