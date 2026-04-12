@@ -90,8 +90,8 @@ trading-platform/
 
 ```bash
 # Clone
-git clone https://github.com/spyderweb47/trading-pattern-ai.git
-cd trading-pattern-ai
+git clone https://github.com/spyderweb47/vibe-trade.git
+cd vibe-trade
 
 # Frontend
 cd apps/web
