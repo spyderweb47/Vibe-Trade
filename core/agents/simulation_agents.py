@@ -24,23 +24,36 @@ from core.agents.llm_client import chat_completion, chat_completion_json, is_ava
 # Stage 1: Asset Classifier
 # ---------------------------------------------------------------------------
 
-ASSET_CLASSIFIER_PROMPT = """You are an asset classification expert. Given market data metadata, determine:
-1. The asset class (crypto, stock, forex, commodity, index, etf)
-2. A brief description of the specific asset
-3. Key factors that drive this asset's price (5-8 factors)
+ASSET_CLASSIFIER_PROMPT = """You are an asset classification expert. You receive a dataset name (which could be a filename, ticker, or description) along with price data. Your job is to:
+
+1. DECODE the real asset from the dataset name. Examples:
+   - "BITCOIN-HOURLY-OHLCV.csv" → Bitcoin (BTC)
+   - "AAPL_daily_2024.csv" → Apple Inc. (AAPL)
+   - "EURUSD-1H.csv" → EUR/USD forex pair
+   - "GOLD-FUTURES-2025.csv" → Gold (XAU)
+   - "NIFTY50-5min.csv" → NIFTY 50 Index
+   - "SOL-USDT-binance.csv" → Solana (SOL)
+   - "TSLA" → Tesla Inc. (TSLA)
+   Use the price range to validate (BTC trades at $20K-$100K, AAPL at $100-$250, etc.)
+
+2. Determine the asset class (crypto, stock, forex, commodity, index, etf)
+
+3. Write a brief description of the specific asset
+
+4. List 5-8 key factors that drive this asset's price
 
 Respond with ONLY valid JSON (no markdown fences):
 {
   "asset_class": "crypto",
   "asset_name": "Bitcoin (BTC)",
-  "description": "Layer 1 proof-of-work blockchain, digital store of value",
-  "price_drivers": ["Federal Reserve interest rates", "Institutional adoption", "Halving cycles", "On-chain metrics", "Regulatory environment", "Dollar strength (DXY)", "Risk appetite in traditional markets"]
+  "description": "Layer 1 proof-of-work blockchain, the original cryptocurrency and digital store of value. Market cap ~$1.3T.",
+  "price_drivers": ["Federal Reserve interest rates", "Institutional adoption (ETFs)", "Bitcoin halving cycles", "On-chain metrics (whale movements, exchange flows)", "Regulatory environment", "Dollar strength (DXY)", "Global risk appetite", "Mining economics (hashrate, energy costs)"]
 }"""
 
 
 class AssetClassifier:
-    def classify(self, symbol: str, price_range: tuple, bar_count: int) -> dict:
-        user_msg = f"Symbol: {symbol}\nPrice range: ${price_range[0]:.2f} - ${price_range[1]:.2f}\nBars: {bar_count}"
+    def classify(self, dataset_name: str, price_range: tuple, bar_count: int) -> dict:
+        user_msg = f"Dataset name: {dataset_name}\nPrice range: ${price_range[0]:.2f} - ${price_range[1]:.2f}\nBars: {bar_count}\n\nDecode the real asset name from this dataset and classify it."
         if not llm_available():
             return self._mock(symbol, price_range)
         result = chat_completion_json(
@@ -55,15 +68,19 @@ class AssetClassifier:
         result.setdefault("price_drivers", [])
         return result
 
-    def _mock(self, symbol: str, price_range: tuple) -> dict:
-        sym = symbol.upper()
-        if any(k in sym for k in ["BTC", "ETH", "SOL", "DOGE", "XRP", "BNB", "ADA"]):
-            return {"asset_class": "crypto", "asset_name": sym, "description": f"{sym} cryptocurrency",
-                    "price_drivers": ["Fed policy", "Institutional flows", "On-chain metrics", "Regulation", "DXY", "Risk appetite"]}
+    def _mock(self, dataset_name: str, price_range: tuple) -> dict:
+        name = dataset_name.upper()
+        if any(k in name for k in ["BITCOIN", "BTC", "ETH", "ETHER", "SOL", "SOLANA", "DOGE", "XRP", "BNB", "ADA", "CRYPTO"]):
+            asset = "Bitcoin (BTC)" if "BTC" in name or "BITCOIN" in name else name.split("-")[0].split("_")[0]
+            return {"asset_class": "crypto", "asset_name": asset, "description": f"{asset} cryptocurrency",
+                    "price_drivers": ["Fed policy", "Institutional flows", "On-chain metrics", "Regulation", "DXY", "Risk appetite", "Halving cycle", "Mining economics"]}
+        if any(k in name for k in ["EUR", "USD", "GBP", "JPY", "FOREX", "FX"]):
+            return {"asset_class": "forex", "asset_name": name.split(".")[0].split("-")[0], "description": "Forex pair",
+                    "price_drivers": ["Interest rate differentials", "Central bank policy", "Trade balance", "Geopolitics", "Risk sentiment"]}
         if price_range[1] > 10000:
-            return {"asset_class": "index", "asset_name": sym, "description": f"{sym} market index",
+            return {"asset_class": "index", "asset_name": name.split(".")[0].split("-")[0], "description": "Market index",
                     "price_drivers": ["Earnings season", "GDP growth", "Interest rates", "Geopolitics", "Sector rotation"]}
-        return {"asset_class": "stock", "asset_name": sym, "description": f"{sym} equity",
+        return {"asset_class": "stock", "asset_name": name.split(".")[0].split("-")[0], "description": "Equity",
                 "price_drivers": ["Earnings", "Revenue growth", "Industry trends", "Macro environment", "Analyst ratings"]}
 
 

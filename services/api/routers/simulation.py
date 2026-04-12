@@ -101,22 +101,17 @@ async def run_debate(request: DebateRequest) -> DebateResponse:
     if not bars:
         raise HTTPException(status_code=422, detail="Dataset has no bars.")
 
-    # Extract symbol from metadata — try symbol field, then filename, then fallback
-    symbol = "Unknown"
+    # Extract symbol from metadata
+    raw_name = "Unknown"
     meta = store.get_metadata(request.dataset_id)
     if meta:
         if isinstance(meta, dict):
-            symbol = meta.get("symbol") or meta.get("filename", "Unknown")
+            raw_name = meta.get("symbol") or meta.get("filename", "Unknown")
         elif hasattr(meta, "symbol") and meta.symbol:
-            symbol = meta.symbol
-    # Clean up filename-based symbol: "BITCOIN-HOURLY-OHLCV.csv" → "BITCOIN"
-    if symbol and symbol != "Unknown":
-        symbol = symbol.split(".")[0]  # remove extension
-        # Extract the asset name (first part before timeframe indicators)
-        for sep in ["-HOURLY", "-DAILY", "-WEEKLY", "-MINUTE", "-1MIN", "-5MIN", "-15MIN", "-1H", "-4H", "-1D", "_HOURLY", "_DAILY", "_OHLC"]:
-            if sep in symbol.upper():
-                symbol = symbol.upper().split(sep)[0]
-                break
+            raw_name = meta.symbol
+
+    # Use the AssetClassifier (LLM) to decode the real asset name from the dataset name
+    symbol = raw_name
 
     orchestrator = DebateOrchestrator()
     results = await orchestrator.run(bars, symbol, report_text=request.context or "")
