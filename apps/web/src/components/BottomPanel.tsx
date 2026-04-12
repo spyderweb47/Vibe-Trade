@@ -159,7 +159,10 @@ function SimulationDebateLog() {
     );
   }
 
-  const all = debate ? [debate, ...history] : history;
+  // Deduplicate: current debate might already be in history
+  const all = debate
+    ? [debate, ...history.filter((h) => h.id !== debate.id)]
+    : history;
 
   return (
     <div className="overflow-auto h-full p-3 space-y-2">
