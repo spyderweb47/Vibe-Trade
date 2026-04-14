@@ -13,8 +13,8 @@ Thanks for your interest in contributing! This guide will help you get set up an
 ### Install
 
 ```bash
-git clone https://github.com/spyderweb47/vibe-trade.git
-cd vibe-trade
+git clone https://github.com/spyderweb47/Vibe-Trade.git
+cd Vibe-Trade
 
 # Frontend dependencies
 cd apps/web && npm install && cd ../..
