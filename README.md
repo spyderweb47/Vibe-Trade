@@ -82,49 +82,122 @@ trading-platform/
 
 ### Prerequisites
 
-- Node.js 20+
-- Python 3.12+
-- An OpenAI API key
+Install these before you start:
 
-### Setup
+| Requirement | Version | Check command | Install link |
+|---|---|---|---|
+| **Node.js** | 20 or newer | `node --version` | [nodejs.org](https://nodejs.org/) |
+| **Python** | 3.12 or newer | `python --version` | [python.org](https://www.python.org/downloads/) |
+| **Git** | any | `git --version` | [git-scm.com](https://git-scm.com/) |
+| **OpenAI API key** | — | — | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) |
+
+> **Windows users**: Use PowerShell or Git Bash. If `python` doesn't work, try `py` instead.
+> **Mac/Linux users**: You may need `python3` instead of `python`.
+
+### Step 1 — Clone the repo
 
 ```bash
-# Clone
 git clone https://github.com/spyderweb47/Vibe-Trade.git
 cd Vibe-Trade
-
-# Frontend
-cd apps/web
-npm install
-
-# Backend
-cd ../../services/api
-pip install -r requirements.txt
-
-# Environment
-cp .env.example .env
-# Add your OPENAI_API_KEY to .env
 ```
 
-### Run
+### Step 2 — Set up environment variables
+
+Copy the example file and add your OpenAI API key:
 
 ```bash
-# Terminal 1 — Frontend (port 3000)
-cd apps/web
-npm run dev
+# Mac/Linux
+cp .env.example .env
 
-# Terminal 2 — Backend (port 8000)
-cd services/api
-python main.py
+# Windows (PowerShell)
+copy .env.example .env
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+Then open `.env` in any text editor and replace `sk-...` with your actual OpenAI key:
+
+```
+OPENAI_API_KEY=sk-proj-your-real-key-here
+```
+
+### Step 3 — Install the backend (Python)
+
+Run these from the **project root** (`Vibe-Trade/`), not from inside `services/api/`:
+
+```bash
+# Create a virtual environment (recommended)
+python -m venv venv
+
+# Activate it
+# Mac/Linux:
+source venv/bin/activate
+# Windows (PowerShell):
+.\venv\Scripts\Activate.ps1
+# Windows (Git Bash):
+source venv/Scripts/activate
+
+# Install dependencies
+pip install -r services/api/requirements.txt
+```
+
+### Step 4 — Install the frontend (Node.js)
+
+In a **separate terminal** (keep the Python venv terminal for step 5):
+
+```bash
+cd apps/web
+npm install
+```
+
+### Step 5 — Run both servers
+
+You need **two terminals running at the same time**.
+
+**Terminal 1 — Backend** (from project root, with venv activated):
+
+```bash
+python -m uvicorn services.api.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+You should see: `Uvicorn running on http://0.0.0.0:8000`
+
+**Terminal 2 — Frontend** (from `apps/web/`):
+
+```bash
+npm run dev
+```
+
+You should see: `Local: http://localhost:3000`
+
+### Step 6 — Open the app
+
+Go to [http://localhost:3000](http://localhost:3000) in your browser. The app should load with the Topstep-themed dark UI.
 
 ### Quick Start
 
-1. Click **+ Upload CSV** in the right sidebar and load an OHLC dataset (columns: time/date, open, high, low, close, volume).
-2. **Building mode** — Use the Pattern or Strategy agent to analyze data.
-3. **Playground mode** — Click the toggle in the header, press Play, and start trading with the demo wallet.
+1. Click **+ Upload CSV** in the right sidebar and load an OHLC dataset (columns: `time`/`date`, `open`, `high`, `low`, `close`, `volume`).
+2. **Building mode** — use the Pattern or Strategy agent to analyze the data with natural language.
+3. **Playground mode** — press the mode toggle in the header, hit Play, and start paper trading with the demo wallet.
+4. **Simulation mode** — run a multi-agent committee debate on your loaded dataset.
+
+## Troubleshooting
+
+**"Failed to fetch" error in the browser**
+The backend isn't running or isn't reachable. Check Terminal 1 — you should see `Uvicorn running on http://0.0.0.0:8000`. If it crashed, scroll up for the error.
+
+**Backend crashes with `ModuleNotFoundError: No module named 'services'`**
+You're running from the wrong directory. Run the uvicorn command from the **project root** (`Vibe-Trade/`), not from inside `services/api/`.
+
+**Backend crashes with `ModuleNotFoundError: No module named 'dotenv'`**
+You're missing a dependency. Re-run `pip install -r services/api/requirements.txt` with your venv activated.
+
+**Frontend install fails with ENOENT or network errors**
+Delete `apps/web/node_modules` and `apps/web/package-lock.json`, then run `npm install` again. If you're behind a corporate proxy, set `npm config set registry https://registry.npmjs.org/`.
+
+**Agent chat returns "API error: OpenAI API key not configured"**
+Your `.env` file is missing or the key wasn't loaded. Confirm `.env` exists at the project root (not inside `services/api/`) and contains `OPENAI_API_KEY=sk-...`. Restart the backend.
+
+**Dataset 'xyz' not found**
+The backend was restarted and its in-memory store is empty. The app auto-resyncs on most actions, but if you see this error, refresh the browser tab and try again.
 
 ## Environment Variables
 

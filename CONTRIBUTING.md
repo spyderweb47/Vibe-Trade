@@ -16,25 +16,36 @@ Thanks for your interest in contributing! This guide will help you get set up an
 git clone https://github.com/spyderweb47/Vibe-Trade.git
 cd Vibe-Trade
 
-# Frontend dependencies
+# Copy env file and add your OpenAI key
+cp .env.example .env
+# Edit .env and set OPENAI_API_KEY=sk-...
+
+# Python backend — set up venv and install from project root
+python -m venv venv
+source venv/bin/activate          # Mac/Linux
+# .\venv\Scripts\Activate.ps1     # Windows PowerShell
+pip install -r services/api/requirements.txt
+
+# Frontend
 cd apps/web && npm install && cd ../..
-
-# Backend dependencies
-cd services/api && pip install -r requirements.txt && cd ../..
-
-# Create .env with your OpenAI key
-echo "OPENAI_API_KEY=sk-..." > .env
 ```
 
 ### Run Locally
 
-```bash
-# Frontend (port 3000)
-cd apps/web && npm run dev
+Open **two terminals**:
 
-# Backend (port 8000)
-cd services/api && python main.py
+```bash
+# Terminal 1 — Backend (port 8000)
+# From project root, with venv activated:
+python -m uvicorn services.api.main:app --reload --port 8000
+
+# Terminal 2 — Frontend (port 3000)
+cd apps/web && npm run dev
 ```
+
+Then open http://localhost:3000 in your browser.
+
+See [README.md](README.md#troubleshooting) for troubleshooting common install issues.
 
 ## Project Architecture
 
