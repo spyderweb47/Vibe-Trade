@@ -82,95 +82,115 @@ trading-platform/
 
 ### Prerequisites
 
-Install these before you start:
+You only need three things installed on your machine before running the setup script:
 
-| Requirement | Version | Check command | Install link |
-|---|---|---|---|
-| **Node.js** | 20 or newer | `node --version` | [nodejs.org](https://nodejs.org/) |
-| **Python** | 3.12 or newer | `python --version` | [python.org](https://www.python.org/downloads/) |
-| **Git** | any | `git --version` | [git-scm.com](https://git-scm.com/) |
-| **OpenAI API key** | — | — | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) |
+| Requirement | Version | Install link |
+|---|---|---|
+| **Python** | 3.12 or newer | [python.org/downloads](https://www.python.org/downloads/) — on Windows, **check "Add Python to PATH"** during install |
+| **Node.js** | 20 or newer | [nodejs.org](https://nodejs.org/) |
+| **Git** | any | [git-scm.com](https://git-scm.com/) |
 
-> **Windows users**: Use PowerShell or Git Bash. If `python` doesn't work, try `py` instead.
-> **Mac/Linux users**: You may need `python3` instead of `python`.
+You also need an **OpenAI API key** — get one from [platform.openai.com/api-keys](https://platform.openai.com/api-keys).
 
-### Step 1 — Clone the repo
+### Quick install (recommended)
+
+The setup script does everything: checks your Python/Node versions, creates a virtual environment, installs all dependencies, and creates your `.env` file.
+
+**Step 1** — Clone the repo:
 
 ```bash
 git clone https://github.com/spyderweb47/Vibe-Trade.git
 cd Vibe-Trade
 ```
 
-### Step 2 — Set up environment variables
+**Step 2** — Run the setup script for your OS:
 
-Copy the example file and add your OpenAI API key:
+<details>
+<summary><b>Mac / Linux</b></summary>
 
 ```bash
-# Mac/Linux
-cp .env.example .env
-
-# Windows (PowerShell)
-copy .env.example .env
+bash setup.sh
 ```
 
-Then open `.env` in any text editor and replace `sk-...` with your actual OpenAI key:
+</details>
+
+<details>
+<summary><b>Windows (PowerShell)</b></summary>
+
+```powershell
+.\setup.ps1
+```
+
+If you get `cannot be loaded because running scripts is disabled`, run this once first:
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+
+</details>
+
+<details>
+<summary><b>Windows (Git Bash)</b></summary>
+
+```bash
+bash setup.sh
+```
+
+</details>
+
+**Step 3** — Open `.env` in any text editor and set your OpenAI key:
 
 ```
 OPENAI_API_KEY=sk-proj-your-real-key-here
 ```
 
-### Step 3 — Install the backend (Python)
-
-Run these from the **project root** (`Vibe-Trade/`), not from inside `services/api/`:
+**Step 4** — Start the backend (from project root):
 
 ```bash
-# Create a virtual environment (recommended)
-python -m venv venv
-
-# Activate it
-# Mac/Linux:
+# Mac/Linux/Git Bash:
 source venv/bin/activate
-# Windows (PowerShell):
+# Windows PowerShell:
 .\venv\Scripts\Activate.ps1
-# Windows (Git Bash):
-source venv/Scripts/activate
 
-# Install dependencies
-pip install -r services/api/requirements.txt
+python -m uvicorn services.api.main:app --reload --port 8000
 ```
 
-### Step 4 — Install the frontend (Node.js)
-
-In a **separate terminal** (keep the Python venv terminal for step 5):
+**Step 5** — In a **new terminal**, start the frontend:
 
 ```bash
+cd apps/web
+npm run dev
+```
+
+**Step 6** — Open [http://localhost:3000](http://localhost:3000).
+
+### Manual install (if the script doesn't work)
+
+<details>
+<summary>Click to expand manual steps</summary>
+
+```bash
+# 1. Clone
+git clone https://github.com/spyderweb47/Vibe-Trade.git
+cd Vibe-Trade
+
+# 2. Copy env file and add your key
+cp .env.example .env   # Windows: copy .env.example .env
+# Edit .env and set OPENAI_API_KEY=sk-...
+
+# 3. Python backend (from project root — NOT inside services/api/)
+python -m venv venv
+source venv/bin/activate        # Mac/Linux/Git Bash
+# .\venv\Scripts\Activate.ps1   # Windows PowerShell
+pip install -r services/api/requirements.txt
+
+# 4. Frontend (in a separate terminal)
 cd apps/web
 npm install
 ```
 
-### Step 5 — Run both servers
+Then run the two servers exactly as in steps 4-6 of the quick install above.
 
-You need **two terminals running at the same time**.
-
-**Terminal 1 — Backend** (from project root, with venv activated):
-
-```bash
-python -m uvicorn services.api.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-You should see: `Uvicorn running on http://0.0.0.0:8000`
-
-**Terminal 2 — Frontend** (from `apps/web/`):
-
-```bash
-npm run dev
-```
-
-You should see: `Local: http://localhost:3000`
-
-### Step 6 — Open the app
-
-Go to [http://localhost:3000](http://localhost:3000) in your browser. The app should load with the Topstep-themed dark UI.
+</details>
 
 ### Quick Start
 
