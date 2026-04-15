@@ -199,6 +199,65 @@ Then run the two servers exactly as in steps 4-6 of the quick install above.
 3. **Playground mode** — press the mode toggle in the header, hit Play, and start paper trading with the demo wallet.
 4. **Simulation mode** — run a multi-agent committee debate on your loaded dataset.
 
+## LLM Provider Configuration
+
+Vibe Trade supports **9 LLM providers** out of the box. OpenAI is the default, but you can swap to any other provider by changing one line in your `.env`.
+
+### Supported providers
+
+| Provider | Default model | API key env var | Best for |
+|---|---|---|---|
+| `openai` *(default)* | `gpt-4o-mini` | `OPENAI_API_KEY` | General purpose, reliable |
+| `anthropic` | `claude-sonnet-4-5` | `ANTHROPIC_API_KEY` | Highest quality reasoning |
+| `openrouter` | `openai/gpt-4o-mini` | `OPENROUTER_API_KEY` | Access 100+ models via one key |
+| `deepseek` | `deepseek-chat` | `DEEPSEEK_API_KEY` | Cheapest, strong reasoning |
+| `groq` | `llama-3.3-70b-versatile` | `GROQ_API_KEY` | Fastest inference (~5× faster) |
+| `gemini` | `gemini-2.0-flash` | `GOOGLE_API_KEY` | Google's models, free tier |
+| `together` | `llama-3.3-70b` | `TOGETHER_API_KEY` | Open-source models |
+| `fireworks` | `llama-v3p3-70b` | `FIREWORKS_API_KEY` | Fast open-source inference |
+| `ollama` | `llama3.2` | *(none)* | 100% local, private, free |
+
+### How to switch providers
+
+Edit your `.env` file and set two variables:
+
+```env
+LLM_PROVIDER=anthropic
+ANTHROPIC_API_KEY=sk-ant-api03-your-key-here
+```
+
+Restart the backend and you're done. All agents (pattern detection, strategy generation, simulation, committee debate) will now use Claude.
+
+### Override the model
+
+Every provider has a sensible default, but you can override it:
+
+```env
+LLM_PROVIDER=openai
+LLM_MODEL=gpt-4o              # use full gpt-4o instead of gpt-4o-mini
+```
+
+```env
+LLM_PROVIDER=openrouter
+LLM_MODEL=anthropic/claude-opus-4-6    # use Claude Opus through OpenRouter
+```
+
+### Local/private mode with Ollama
+
+Run models entirely on your own machine, no API key, no data leaves your computer:
+
+1. Install [Ollama](https://ollama.com/)
+2. Pull a model: `ollama pull llama3.2`
+3. Start Ollama: `ollama serve`
+4. Set in `.env`:
+   ```env
+   LLM_PROVIDER=ollama
+   LLM_MODEL=llama3.2
+   OLLAMA_BASE_URL=http://localhost:11434/v1
+   ```
+
+See `.env.example` for the full list of providers with links to get API keys.
+
 ## Troubleshooting
 
 **"Failed to fetch" error in the browser**

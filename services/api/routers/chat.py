@@ -319,8 +319,12 @@ async def _handle_general(message: str) -> ChatResponse:
 
 @router.get("/chat/status")
 async def chat_status() -> dict:
-    """Check if OpenAI API is configured."""
+    """Check which LLM provider is configured and available."""
+    from core.agents.llm_client import active_provider_info
+    info = active_provider_info()
     return {
         "llm_available": llm_available(),
-        "mode": "openai" if llm_available() else "mock",
+        "mode": info["provider"] if llm_available() else "mock",
+        "provider": info["provider"],
+        "model": info["model"],
     }
