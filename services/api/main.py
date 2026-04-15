@@ -18,8 +18,23 @@ if _PROJECT_ROOT not in sys.path:
 
 # Load .env BEFORE any other imports so OPENAI_API_KEY is available
 # when agent modules check os.environ at import time.
+#
+# Two-layer load, repo .env wins over user config so a dev checkout with
+# its own .env still works:
+#   1. User config (~/.config/vibe-trade/.env on Linux/Mac,
+#      %APPDATA%\vibe-trade\.env on Windows) — written by `vibe-trade setup`
+#   2. Repo .env — found next to this file's project root for source checkouts
 from pathlib import Path
 from dotenv import load_dotenv
+
+# Layer 1: user config (non-override so layer 2 can still shadow)
+try:
+    from vibe_trade.user_config import load_user_env as _load_user_env
+    _load_user_env(override=False)
+except ImportError:
+    pass  # vibe_trade package not installed — dev mode without the CLI
+
+# Layer 2: repo .env
 _env_file = Path(_PROJECT_ROOT) / ".env"
 if not _env_file.exists():
     # Uvicorn --reload on Windows may change CWD; walk up to find .env
@@ -29,7 +44,8 @@ if not _env_file.exists():
         if (_search / ".env").exists():
             _env_file = _search / ".env"
             break
-load_dotenv(str(_env_file), override=True)
+if _env_file.exists():
+    load_dotenv(str(_env_file), override=True)
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

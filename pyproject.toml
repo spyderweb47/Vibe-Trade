@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vibe-trade"
-version = "0.1.0"
+version = "0.2.0"
 description = "AI-powered trading agent platform — skill-based architecture with planner, pattern detection, strategy backtesting, and multi-agent simulation debates."
 readme = "README.md"
 requires-python = ">=3.10"

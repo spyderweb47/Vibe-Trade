@@ -24,6 +24,18 @@ import typer  # noqa: E402
 from rich.console import Console  # noqa: E402
 
 from vibe_trade import __version__  # noqa: E402
+from vibe_trade.user_config import load_user_env  # noqa: E402
+from vibe_trade.updater import maybe_notify_update  # noqa: E402
+
+# Load user-scoped .env (from ~/.config/vibe-trade/.env or %APPDATA%) so
+# every subcommand has API keys available from the moment Typer runs.
+# override=False → repo .env (for dev) still wins when present.
+load_user_env(override=False)
+
+# Fire a background PyPI version check. The atexit hook prints a one-line
+# banner if a newer version is found. Respects VIBE_TRADE_SKIP_UPDATE_CHECK
+# and CI env vars — never nags in automated runs.
+maybe_notify_update()
 
 console = Console()
 
@@ -34,12 +46,14 @@ app = typer.Typer(
         "planner, pattern detection, strategy generation, data fetching, "
         "and multi-agent debate simulations.\n\n"
         "Quick start:\n"
+        "  vibe-trade setup              # interactive: pick provider + API key\n"
         "  vibe-trade serve              # start backend + web UI on http://localhost:8787\n"
         "                                  (auto-builds the frontend on first run)\n"
         "  vibe-trade build-frontend     # explicitly rebuild the web UI bundle\n"
         "  vibe-trade fetch BTC/USDT 1h  # fetch market data to a CSV\n"
         "  vibe-trade simulate           # run a multi-agent debate in the terminal\n"
-        "  vibe-trade skills list        # list registered skills"
+        "  vibe-trade skills list        # list registered skills\n"
+        "  vibe-trade update             # upgrade to the latest release"
     ),
     no_args_is_help=True,
     add_completion=False,
@@ -52,6 +66,39 @@ app = typer.Typer(
 def version() -> None:
     """Print the installed Vibe Trade version."""
     console.print(f"[bold]vibe-trade[/bold] [cyan]{__version__}[/cyan]")
+
+
+# ─── setup ───────────────────────────────────────────────────────────────
+@app.command()
+def setup() -> None:
+    """
+    Interactive first-run wizard: pick an LLM provider, paste your API key,
+    optionally override the default model. Answers are saved to a user
+    config file (~/.config/vibe-trade/.env on Linux/Mac,
+    %APPDATA%\\vibe-trade\\.env on Windows) so every subsequent
+    `vibe-trade ...` command picks them up automatically.
+
+    Re-run any time to switch providers or rotate keys — existing values
+    are shown as defaults.
+    """
+    from vibe_trade.setup_cmd import run_setup
+
+    run_setup()
+
+
+# ─── update ──────────────────────────────────────────────────────────────
+@app.command()
+def update() -> None:
+    """
+    Upgrade vibe-trade to the latest release on PyPI.
+
+    Auto-detects whether you installed via pipx or pip and runs the
+    appropriate upgrade command. If you're running from a source checkout,
+    this command will tell you to `git pull` instead.
+    """
+    from vibe_trade.updater import run_update
+
+    run_update()
 
 
 # ─── serve ───────────────────────────────────────────────────────────────
