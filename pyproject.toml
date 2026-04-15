@@ -66,17 +66,15 @@ Issues = "https://github.com/spyderweb47/Vibe-Trade/issues"
 # The package ships the Python CLI + the full backend source tree (core,
 # services, skills) so one install gives the user the same runtime the web
 # app talks to. The pre-built frontend is bundled as package data when
-# built for release (see MANIFEST.in / build workflow).
-packages = [
-    "vibe_trade",
-    "core",
-    "core.agents",
-    "core.data",
-    "skills",
-    "services",
-    "services.api",
-    "services.api.routers",
-]
+# built for release (see build_frontend.py).
+
+[tool.setuptools.packages.find]
+# Auto-discover every Python package in the repo. Without this, missing a
+# subpackage from a hand-maintained list (e.g. core.utils) silently breaks
+# the installed wheel with ModuleNotFoundError at runtime.
+where = ["."]
+include = ["vibe_trade*", "core*", "skills*", "services*"]
+exclude = ["apps*", "tests*", "node_modules*", ".testenv*", ".venv*"]
 
 [tool.setuptools.package-data]
 "vibe_trade" = ["web_static/**/*"]
