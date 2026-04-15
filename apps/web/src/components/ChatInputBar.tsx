@@ -62,13 +62,43 @@ export function ChatInputBar({
   const activeDataset = useStore((s) => s.activeDataset);
   const datasets = useStore((s) => s.datasets);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [agentMenuOpen, setAgentMenuOpen] = useState(false);
+  // Multi-select agent state — user can select 1 or more agents side by side
+  const [selectedAgents, setSelectedAgents] = useState<Set<Mode>>(() => new Set([activeMode]));
+  const [agentRowOpen, setAgentRowOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
-  const agentMenuRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const activeDs = datasets.find((d) => d.id === activeDataset);
-  const activeAgent = AGENTS.find((a) => a.id === activeMode) || AGENTS[0];
+
+  // Keep the store's activeMode in sync when the set of selected agents changes —
+  // the "primary" agent (first in iteration order) drives backend dispatch.
+  useEffect(() => {
+    if (selectedAgents.size === 0) return;
+    const primary = Array.from(selectedAgents)[0];
+    if (primary !== activeMode) setMode(primary);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedAgents]);
+
+  // If the store's activeMode changes externally, make sure it's in our set
+  useEffect(() => {
+    if (!selectedAgents.has(activeMode)) {
+      setSelectedAgents(new Set([activeMode]));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeMode]);
+
+  const toggleAgent = (id: Mode) => {
+    setSelectedAgents((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        // Can't deselect the last remaining agent
+        if (next.size > 1) next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
 
   // Close + menu on outside click
   useEffect(() => {
@@ -81,18 +111,6 @@ export function ChatInputBar({
     document.addEventListener("mousedown", onClick);
     return () => document.removeEventListener("mousedown", onClick);
   }, [menuOpen]);
-
-  // Close agent menu on outside click
-  useEffect(() => {
-    if (!agentMenuOpen) return;
-    const onClick = (e: MouseEvent) => {
-      if (agentMenuRef.current && !agentMenuRef.current.contains(e.target as Node)) {
-        setAgentMenuOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", onClick);
-    return () => document.removeEventListener("mousedown", onClick);
-  }, [agentMenuOpen]);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -206,93 +224,30 @@ export function ChatInputBar({
             )}
           </div>
 
-          {/* Agent selector pill + popup */}
-          <div className="relative" ref={agentMenuRef}>
-            <button
-              onClick={() => setAgentMenuOpen(!agentMenuOpen)}
-              className="flex items-center gap-1 rounded-lg px-2.5 py-1 text-[10px] font-semibold transition-colors"
-              style={{
-                background: agentMenuOpen ? "var(--accent)" : "rgba(255,107,0,0.15)",
-                color: agentMenuOpen ? "#000" : "var(--accent)",
-                border: `1px solid ${agentMenuOpen ? "var(--accent)" : "rgba(255,107,0,0.3)"}`,
-              }}
-              title="Select agent"
-            >
-              <span className="scale-75 origin-center">{activeAgent.icon}</span>
-              {activeAgent.tagline}
-              <svg className="h-3 w-3 transition-transform" style={{ transform: agentMenuOpen ? "rotate(180deg)" : "none" }} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-              </svg>
-            </button>
-
-            {/* Agent selector popup — appears above the pill */}
-            {agentMenuOpen && (
-              <div
-                className="absolute bottom-full left-0 mb-2 w-72 rounded-xl shadow-2xl py-1.5 z-20"
-                style={{
-                  background: "var(--surface)",
-                  border: "1px solid var(--border)",
-                }}
-              >
-                <div className="px-3 pt-1.5 pb-1 text-[8px] font-bold uppercase tracking-widest" style={{ color: "var(--text-muted)" }}>
-                  Select Agent
-                </div>
-                {AGENTS.map((agent) => {
-                  const isActive = agent.id === activeMode;
-                  return (
-                    <button
-                      key={agent.id}
-                      onClick={() => {
-                        setMode(agent.id);
-                        setAgentMenuOpen(false);
-                      }}
-                      className="flex w-full items-start gap-2.5 px-3 py-2 text-left transition-colors"
-                      style={{
-                        background: isActive ? "rgba(255,107,0,0.1)" : "transparent",
-                      }}
-                      onMouseEnter={(e) => {
-                        if (!isActive) e.currentTarget.style.background = "var(--surface-2)";
-                      }}
-                      onMouseLeave={(e) => {
-                        if (!isActive) e.currentTarget.style.background = "transparent";
-                      }}
-                    >
-                      <span
-                        className="flex h-6 w-6 shrink-0 items-center justify-center rounded mt-0.5"
-                        style={{
-                          background: isActive ? "var(--accent)" : "var(--surface-2)",
-                          color: isActive ? "#000" : "var(--text-tertiary)",
-                        }}
-                      >
-                        {agent.icon}
-                      </span>
-                      <span className="flex-1 min-w-0">
-                        <span className="flex items-center gap-1.5">
-                          <span className="text-[11px] font-bold" style={{ color: "var(--text-primary)" }}>
-                            {agent.label}
-                          </span>
-                          {isActive && (
-                            <span
-                              className="rounded px-1 py-0.5 text-[7px] font-bold uppercase"
-                              style={{ background: "var(--accent)", color: "#000" }}
-                            >
-                              Active
-                            </span>
-                          )}
-                        </span>
-                        <span className="block text-[9px] mt-0.5 leading-relaxed" style={{ color: "var(--text-muted)" }}>
-                          {agent.description}
-                        </span>
-                      </span>
-                    </button>
-                  );
-                })}
-                <div className="px-3 pt-1 pb-1.5 text-[8px]" style={{ color: "var(--text-muted)", borderTop: "1px solid var(--border-subtle)" }}>
-                  More agents coming soon.
-                </div>
-              </div>
+          {/* Agent toggle pill — click to show/hide the chip row below */}
+          <button
+            onClick={() => setAgentRowOpen(!agentRowOpen)}
+            className="flex items-center gap-1 rounded-lg px-2.5 py-1 text-[10px] font-semibold transition-colors"
+            style={{
+              background: agentRowOpen ? "var(--accent)" : "rgba(255,107,0,0.15)",
+              color: agentRowOpen ? "#000" : "var(--accent)",
+              border: `1px solid ${agentRowOpen ? "var(--accent)" : "rgba(255,107,0,0.3)"}`,
+            }}
+            title="Choose agents"
+          >
+            <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+            </svg>
+            Agent
+            {selectedAgents.size > 1 && (
+              <span className="ml-0.5 rounded-full px-1 text-[8px] font-bold" style={{ background: agentRowOpen ? "#000" : "var(--accent)", color: agentRowOpen ? "var(--accent)" : "#000" }}>
+                {selectedAgents.size}
+              </span>
             )}
-          </div>
+            <svg className="h-3 w-3 transition-transform" style={{ transform: agentRowOpen ? "rotate(180deg)" : "none" }} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
 
           {/* Active dataset chip */}
           {activeDs && (
@@ -331,6 +286,39 @@ export function ChatInputBar({
           </button>
         </div>
       </div>
+
+      {/* Agent chip row — appears below the input when the Agent pill is clicked */}
+      {agentRowOpen && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {AGENTS.map((agent) => {
+            const isSelected = selectedAgents.has(agent.id);
+            return (
+              <button
+                key={agent.id}
+                onClick={() => toggleAgent(agent.id)}
+                className="flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-semibold transition-all"
+                style={{
+                  background: isSelected ? "rgba(255,107,0,0.15)" : "var(--surface-2)",
+                  color: isSelected ? "var(--accent)" : "var(--text-tertiary)",
+                  border: `1px solid ${isSelected ? "var(--accent)" : "var(--border)"}`,
+                }}
+                title={agent.description}
+              >
+                <span className="scale-75 origin-center">{agent.icon}</span>
+                {agent.label}
+                {isSelected && (
+                  <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                  </svg>
+                )}
+              </button>
+            );
+          })}
+          <div className="flex items-center text-[9px] ml-1" style={{ color: "var(--text-muted)" }}>
+            {selectedAgents.size > 1 ? `${selectedAgents.size} agents selected` : "Select one or more"}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
