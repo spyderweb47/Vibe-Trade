@@ -82,11 +82,12 @@ async def startup_event() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Health check
+# Status endpoint — moved off `/` so the `vibe-trade serve` StaticFiles mount
+# can own the root path and serve the bundled web UI's index.html.
 # ---------------------------------------------------------------------------
-@app.get("/")
-async def root() -> dict:
-    """Root endpoint."""
+@app.get("/api/status")
+async def api_status() -> dict:
+    """API metadata endpoint."""
     return {"name": "Trading Platform API", "version": "0.1.0", "status": "ok"}
 
 

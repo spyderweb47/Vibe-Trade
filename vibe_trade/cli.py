@@ -34,7 +34,9 @@ app = typer.Typer(
         "planner, pattern detection, strategy generation, data fetching, "
         "and multi-agent debate simulations.\n\n"
         "Quick start:\n"
-        "  vibe-trade serve              # start the web UI on http://localhost:8787\n"
+        "  vibe-trade serve              # start backend + web UI on http://localhost:8787\n"
+        "                                  (auto-builds the frontend on first run)\n"
+        "  vibe-trade build-frontend     # explicitly rebuild the web UI bundle\n"
         "  vibe-trade fetch BTC/USDT 1h  # fetch market data to a CSV\n"
         "  vibe-trade simulate           # run a multi-agent debate in the terminal\n"
         "  vibe-trade skills list        # list registered skills"
@@ -163,6 +165,28 @@ def tools_list() -> None:
     from vibe_trade.tools_cmd import run_tools_list
 
     run_tools_list()
+
+
+# ─── build-frontend ──────────────────────────────────────────────────────
+@app.command("build-frontend")
+def build_frontend_cmd(
+    force: bool = typer.Option(False, "--force", "-f", help="Rebuild even if the bundle is up to date"),
+) -> None:
+    """
+    Build the Next.js web UI into a static export and bundle it into the
+    installed Python package. `vibe-trade serve` auto-runs this on first
+    launch if no bundle is found; call it manually to force a rebuild after
+    editing frontend source files.
+
+    Requires Node.js + npm in PATH. First build takes ~1-2 minutes
+    (npm install + Next.js build); subsequent runs skip if the bundle is
+    already up to date.
+    """
+    from vibe_trade.build_frontend import build_frontend
+
+    result = build_frontend(force=force, quiet=False)
+    if result is None:
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":

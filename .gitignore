@@ -9,3 +9,9 @@ dist/
 build/
 *.egg-info/
 .turbo/
+
+# Generated frontend bundle — built by `vibe-trade build-frontend`.
+# Gitignored because it's an artifact of the Next.js build; ships inside
+# release wheels via `python -m build` which runs the build as a pre-step.
+apps/web/out/
+vibe_trade/web_static/

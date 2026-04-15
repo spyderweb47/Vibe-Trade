@@ -82,10 +82,23 @@ def run_server(
     # Import the FastAPI app AFTER cwd/path setup so its own imports work
     from services.api.main import app as fastapi_app
 
-    # Mount the frontend if we have it and the user didn't pass --backend-only
+    # Mount the frontend if we have it and the user didn't pass --backend-only.
+    # If no bundle is found AND we're in a source checkout with apps/web/
+    # available, AUTO-BUILD the frontend so the user gets the full web UI
+    # without having to run a separate command. This is the "just works"
+    # path for `vibe-trade serve` in dev/source-install mode.
     frontend_dir: Path | None = None
     if not backend_only:
         frontend_dir = _find_frontend_dir()
+        if frontend_dir is None:
+            # Try auto-building from source
+            console.print("[yellow]No frontend bundle found — auto-building from source...[/yellow]")
+            from vibe_trade.build_frontend import build_frontend
+
+            built = build_frontend(force=False, quiet=False)
+            if built is not None:
+                frontend_dir = built
+
         if frontend_dir is not None:
             # Late import so we don't force the dependency when serving only the API
             from fastapi.staticfiles import StaticFiles
