@@ -50,6 +50,189 @@ script that detects occurrences of that pattern in OHLC data.
 7. Keep the script concise — under 50 lines of logic.
 8. Use helper variables for readability: const closes = data.map(d => d.close);
 9. End the script with: return results;
+10. THRESHOLDS MUST BE FORGIVING. Real market data is noisy, so strict thresholds
+    (e.g. correlation > 0.85, or exact fibonacci levels) will find ZERO matches on
+    5000-bar datasets. This is a fatal UX bug — users see nothing and assume the
+    detector is broken.
+    - For correlation-based matching (SHAPE / fingerprint patterns), use a threshold
+      of 0.50 — NOT 0.7+. Below 0.50 is unlikely to be the same pattern.
+    - For tolerance-based matching (price level similarity), use 3-5% — NOT 1%.
+    - Confidence should be the raw quality score (e.g. correlation value), not
+      artificially inflated.
+
+11. MANDATORY TOP-K FALLBACK. Every script MUST include a programmatic safety net
+    so the user always has results to look at. The pattern is:
+
+    a) Maintain an `allCandidates` array OUTSIDE the loop, at top scope.
+    b) Inside the loop, AT THE TOP — before any branching — declare a local
+       `score` variable. Push EVERY evaluated position into `allCandidates`
+       BEFORE deciding whether it passes the threshold:
+
+       ```javascript
+       const allCandidates = [];   // top scope, before the loop
+       for (let i = 0; i < data.length; i++) {
+         const score = computeScore(i);   // ALWAYS declare score here
+         allCandidates.push({
+           start_idx: i,
+           end_idx: i + windowSize - 1,
+           confidence: score,             // EXPLICIT key:value, not shorthand
+           pattern_type: 'my_pattern'
+         });
+         if (score >= 0.50) {
+           results.push({
+             start_idx: i,
+             end_idx: i + windowSize - 1,
+             confidence: score,
+             pattern_type: 'my_pattern'
+           });
+         }
+       }
+       ```
+
+    c) After the loop, fall back to top-K if too few passed:
+
+       ```javascript
+       if (results.length < 5 && allCandidates.length > 0) {
+         allCandidates.sort((a, b) => b.confidence - a.confidence);
+         const seen = new Set(results.map(r => r.start_idx));
+         for (const c of allCandidates) {
+           if (results.length >= 5) break;
+           if (!seen.has(c.start_idx)) results.push(c);
+         }
+       }
+       ```
+
+    Skipping this fallback is forbidden.
+
+12. NEVER USE OBJECT PROPERTY SHORTHAND for `confidence`. ALWAYS write the
+    explicit `confidence: <localVarName>` form. Object shorthand `{ confidence }`
+    only works if a variable named `confidence` is in scope at that exact point —
+    if you declared `const score = ...` and then wrote `{ confidence }` you'll
+    get "ReferenceError: confidence is not defined". The explicit form `confidence: score`
+    is safer in every scope. This rule is non-negotiable.
+
+13. AVOID OVERLAPPING DUPLICATES. If your detector emits many near-identical matches
+    (e.g. consecutive bars all firing the same pattern), keep only the highest-confidence
+    one in any cluster. Greedy non-max suppression: walk results sorted by confidence,
+    keep one if no kept result already covers ≥ 50% of its bar range.
+
+## SHAPE / fingerprint patterns (CRITICAL)
+
+A fingerprint request looks like this:
+
+```
+Find this 275-bar pattern (scale-free):
+SHAPE: [0.06, 0.43, 0.33, ..., 0.89]   (16 values — the COMPRESSED signature)
+Sliding window: 275 bars                (the FULL window size to scan with)
+```
+
+**The SHAPE array length and the window size are usually DIFFERENT.** The
+shape is a compressed/downsampled signature (~16 points); the window is the
+real bar range to scan (~275 bars). Comparing them naively with Pearson
+correlation will silently fail (mismatched lengths → garbage scores → 0
+matches). You MUST resample the window down to the shape's length before
+correlating.
+
+### PRE-INJECTED HELPERS — DO NOT REDEFINE
+
+The following functions are **pre-injected into the runtime** and available
+as globals. **Never define your own versions — call them directly:**
+
+- `pearson(a, b)` — Pearson correlation between two equal-length arrays
+- `resampleTo(arr, targetLen)` — linear-interpolation resample to a new length
+- `normalizeMinMax(arr)` — normalize an array to [0, 1] via min-max scaling
+
+If you write your own `function pearson(...)` you will be silently stripped
+out and the pre-injected version used anyway, so don't waste tokens on it.
+
+### Use the EXACT template below — adapt only the constants:
+
+```javascript
+const results = [];
+const allCandidates = [];
+const closes = data.map(d => d.close);
+
+// READ FROM THE USER MESSAGE:
+const targetShape = [/* paste the SHAPE: array here */];
+const WINDOW = 275;                      // from "Sliding window: N bars"
+const SHAPE_LEN = targetShape.length;    // e.g. 16
+const stride = Math.max(1, Math.floor(WINDOW / 20));   // ~5% step
+const threshold = 0.55;                  // from RULES, OR default 0.50
+
+if (data.length < WINDOW) return results;
+
+// pearson() and resampleTo() are pre-injected — call them, don't redefine.
+
+for (let i = 0; i + WINDOW <= data.length; i += stride) {
+  const win = closes.slice(i, i + WINDOW);
+  const normalized = normalizeMinMax(win);          // pre-injected helper
+
+  // CRITICAL: resample down to the shape's length BEFORE correlating
+  const resampled = resampleTo(normalized, SHAPE_LEN);
+  const score = pearson(resampled, targetShape);
+
+  // ALWAYS push to allCandidates first, BEFORE the threshold check.
+  // Use EXPLICIT confidence: score, NEVER shorthand { confidence }.
+  allCandidates.push({
+    start_idx: i,
+    end_idx: i + WINDOW - 1,
+    confidence: score,
+    pattern_type: 'shape_match'
+  });
+
+  if (score >= threshold) {
+    results.push({
+      start_idx: i,
+      end_idx: i + WINDOW - 1,
+      confidence: score,
+      pattern_type: 'shape_match'
+    });
+  }
+}
+
+// Mandatory fallback — fill to top 8 if threshold was too strict
+const TARGET_COUNT = 8;
+if (results.length < TARGET_COUNT && allCandidates.length > 0) {
+  allCandidates.sort((a, b) => b.confidence - a.confidence);
+  const seen = new Set(results.map(r => r.start_idx));
+  for (const c of allCandidates) {
+    if (results.length >= TARGET_COUNT) break;
+    if (!seen.has(c.start_idx)) results.push(c);
+  }
+}
+
+// Non-max suppression — sliding windows overlap 90%+ at small strides, so
+// "any overlap" would collapse everything to one. Suppress only if a kept
+// match covers ≥ 70% of the candidate AND has a higher score.
+results.sort((a, b) => b.confidence - a.confidence);
+const kept = [];
+for (const r of results) {
+  const rDur = r.end_idx - r.start_idx + 1;
+  const dominated = kept.some(k => {
+    const overlap = Math.max(0, Math.min(k.end_idx, r.end_idx) - Math.max(k.start_idx, r.start_idx) + 1);
+    return (overlap / rDur) >= 0.70 && k.confidence > r.confidence;
+  });
+  if (!dominated) kept.push(r);
+}
+
+// NMS floor: never return fewer than min(5, results.length) — if NMS was too
+// aggressive, fall back to the pre-NMS top-K by confidence.
+const MIN_KEEP = Math.min(5, results.length);
+if (kept.length < MIN_KEEP) {
+  return results.slice(0, MIN_KEEP);
+}
+return kept;
+```
+
+Adapt this template — don't reinvent it. Specifically:
+- Replace `targetShape = [...]` with the numbers from the SHAPE: line
+- Replace `WINDOW = 275` with the value from "Sliding window: N bars"
+- Replace `threshold = 0.55` with the value from the user's RULES (default 0.50)
+- Keep `pearson()`, `resampleTo()`, the loop structure, the fallback, the NMS,
+  and the MIN_KEEP floor EXACTLY as written.
+
+Fingerprints should ALWAYS return at least 5 candidates on any dataset
+larger than the window. If your output has fewer, your template is wrong.
 
 ## Example of the CORRECT shape
 

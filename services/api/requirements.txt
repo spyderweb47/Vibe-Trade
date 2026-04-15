@@ -6,3 +6,6 @@ pandas
 numpy
 openai
 anthropic
+pyyaml
+yfinance
+ccxt

@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "export": "cross-env EXPORT=1 next build"
   },
   "dependencies": {
     "@xyflow/react": "^12.10.2",

@@ -117,12 +117,66 @@ export interface BacktestResult {
   suggestions?: string[];
 }
 
+/**
+ * One step inside an agent-process trace. Used by the planner to surface
+ * its real-time execution state inline in the chat (Claude-style thinking box).
+ */
+export interface TraceStep {
+  skill: string;
+  message: string;
+  rationale?: string;
+  status: 'pending' | 'running' | 'done' | 'failed';
+  result?: string;        // short summary like "63 matches found"
+  error?: string;         // populated when status === 'failed'
+}
+
+/**
+ * The agent-process metadata attached to a `'trace'` message. Lives inline
+ * in the chat but is rendered as a distinct collapsible box, NOT as a regular
+ * agent reply, so the user can scroll past it without it cluttering the
+ * back-and-forth conversation.
+ */
+export interface TraceData {
+  status: 'planning' | 'running' | 'done' | 'failed';
+  steps: TraceStep[];
+  title?: string;          // e.g. "Vibe Trade is planning..."
+}
+
 export interface Message {
   id: string;
-  role: 'user' | 'agent';
+  role: 'user' | 'agent' | 'trace';
   content: string;
   timestamp: string;
   image?: string; // data URL for snapshot images
+  /** Only set when role === 'trace'. Drives the collapsible TraceMessage UI. */
+  trace?: TraceData;
+}
+
+/**
+ * A persisted conversation. Holds a snapshot of all per-conversation state
+ * so the user can switch between threads without losing work. Stored in
+ * localStorage and restored on mount.
+ */
+export interface Conversation {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  // App mode (building / playground / simulation) at last sync
+  appMode: 'building' | 'playground' | 'simulation';
+  // Chat messages, split by skill (matches the live store split)
+  patternMessages: Message[];
+  strategyMessages: Message[];
+  // Code editor + outputs
+  currentScript: string;
+  // Pattern detection results
+  patternMatches: PatternMatch[];
+  // Strategy/backtest results
+  strategyConfig: StrategyConfig | null;
+  backtestResults: BacktestResult | null;
+  // Active selections at last sync
+  activeDataset: string | null;
+  activeSkillIds: string[]; // serialized Set<string>
 }
 
 export interface IndicatorConfig {

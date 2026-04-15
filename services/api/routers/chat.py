@@ -11,9 +11,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from core.agents.llm_client import chat_completion, is_available as llm_available
-from core.agents.pattern_agent import PatternAgent
-from core.agents.strategy_agent import StrategyAgent
 from core.agents.backtest_agent import BacktestAgent
+from core.agents.vibe_trade_agent import vibe_trade
 
 router = APIRouter(tags=["chat"])
 
@@ -21,7 +20,7 @@ router = APIRouter(tags=["chat"])
 class ChatRequest(BaseModel):
     """Chat message from the user."""
     message: str = Field(..., min_length=1)
-    mode: str = Field(default="pattern", description="Active mode: pattern, strategy, backtest, simulation")
+    mode: str = Field(default="pattern", description="Active skill id: pattern, strategy, backtest, simulation")
     context: dict = Field(default_factory=dict, description="Additional context (dataset_id, script, etc.)")
 
 
@@ -31,11 +30,10 @@ class ChatResponse(BaseModel):
     script: str | None = None
     script_type: str | None = None  # "pattern" or "indicator"
     data: dict | None = None
+    tool_calls: list[dict] = Field(default_factory=list)
 
 
-# Agent instances (reused across requests).
-_pattern_agent = PatternAgent()
-_strategy_agent = StrategyAgent()
+# Backtest agent retained as-is (not yet converted to a skill).
 _backtest_agent = BacktestAgent()
 
 
@@ -73,7 +71,20 @@ async def chat(req: ChatRequest) -> ChatResponse:
             return await _handle_backtest(message, context)
         elif mode == "simulation":
             return _handle_simulation(message)
+        # Any other mode: if it matches a registered skill, dispatch through
+        # vibe_trade. This keeps the router from hard-coding every new skill.
+        elif vibe_trade.get_skill(mode) is not None:
+            response = await vibe_trade.dispatch(mode, message, context)
+            return _skill_response_to_chat(response)
         else:
+            # No specific skill active. First try the built-in planner —
+            # if the message looks multi-step, vibe_trade will decompose it
+            # and run the steps in order. If it doesn't look multi-step (or
+            # the planner can't build a plan), we fall through to general
+            # LLM chat.
+            plan_response = await vibe_trade.try_plan_and_execute(message, context)
+            if plan_response is not None:
+                return _skill_response_to_chat(plan_response)
             return await _handle_general(message)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -100,7 +111,7 @@ CONFIRM_KEYWORDS = [
 
 
 async def _handle_pattern(message: str, context: dict) -> ChatResponse:
-    """Handle pattern mode: generate JS pattern or indicator scripts."""
+    """Handle pattern skill: generate JS pattern or indicator scripts."""
     current_script = context.get("pattern_script", "")
 
     # Check if this is a pattern fingerprint (contains SHAPE + sliding-window rules)
@@ -111,20 +122,10 @@ async def _handle_pattern(message: str, context: dict) -> ChatResponse:
     lower_msg = message.lower().strip()
     is_confirm = any(kw in lower_msg for kw in CONFIRM_KEYWORDS)
 
-    # Priority 1: confirmation of pending fingerprint → generate script
+    # Priority 1: confirmation of pending fingerprint → dispatch to pattern skill
     if is_confirm and pending_fingerprint:
-        # User confirmed — now generate the detection script
-        result = _pattern_agent.generate(pending_fingerprint)
-        data: dict = {
-            "parameters": result["parameters"],
-            "indicators_used": result.get("indicators_used", []),
-        }
-        return ChatResponse(
-            reply=result["explanation"],
-            script=result["script"],
-            script_type=result.get("script_type", "pattern"),
-            data=data,
-        )
+        response = await vibe_trade.dispatch("pattern", pending_fingerprint, context)
+        return _skill_response_to_chat(response)
 
     if is_fingerprint:
         # First step: analyze the pattern, don't generate script yet
@@ -152,20 +153,19 @@ async def _handle_pattern(message: str, context: dict) -> ChatResponse:
     if current_script and current_script.strip():
         return await _handle_script_edit(message, current_script)
 
-    # Regular pattern/indicator request
-    result = _pattern_agent.generate(message)
-    data: dict = {
-        "parameters": result["parameters"],
-        "indicators_used": result.get("indicators_used", []),
-    }
-    if result.get("script_type") == "indicator":
-        data["default_params"] = result.get("default_params", {})
-        data["indicator_name"] = result.get("indicator_name", "Custom")
+    # Regular pattern/indicator request — dispatch to the pattern skill
+    response = await vibe_trade.dispatch("pattern", message, context)
+    return _skill_response_to_chat(response)
+
+
+def _skill_response_to_chat(response) -> ChatResponse:
+    """Convert a SkillResponse dataclass into a ChatResponse, propagating tool_calls."""
     return ChatResponse(
-        reply=result["explanation"],
-        script=result["script"],
-        script_type=result.get("script_type", "pattern"),
-        data=data,
+        reply=response.reply,
+        script=response.script,
+        script_type=response.script_type,
+        data=response.data or None,
+        tool_calls=response.tool_calls or [],
     )
 
 
@@ -229,35 +229,33 @@ async def _handle_script_edit(message: str, current_script: str) -> ChatResponse
 
 
 async def _handle_strategy(message: str, context: dict) -> ChatResponse:
-    """Handle strategy mode: generate from structured config or analyze results."""
+    """Handle strategy skill: generate from structured config or analyze results."""
     strategy_config = context.get("strategy_config")
     analyze_request = context.get("analyze_results")
 
-    # If analyzing results — return analysis + suggestions
+    # If analyzing results — dispatch in analyze mode
     if analyze_request and strategy_config:
-        result = _strategy_agent.analyze_results(strategy_config, analyze_request)
-        return ChatResponse(
-            reply=result.get("analysis", ""),
-            script=None,
-            script_type="strategy",
-            data={"suggestions": result.get("suggestions", [])},
+        response = await vibe_trade.dispatch(
+            "strategy",
+            message,
+            {"mode": "analyze", "strategy_config": strategy_config, "analyze_results": analyze_request},
         )
+        return _skill_response_to_chat(response)
 
-    # If config provided — generate strategy script
+    # If config provided — dispatch in generate mode
     if strategy_config:
-        result = _strategy_agent.generate_from_config(strategy_config)
-        return ChatResponse(
-            reply=result.get("explanation", "Strategy generated."),
-            script=result.get("script"),
-            script_type="strategy",
-            data={"config": strategy_config},
+        response = await vibe_trade.dispatch(
+            "strategy",
+            message,
+            {"mode": "generate", "strategy_config": strategy_config},
         )
+        return _skill_response_to_chat(response)
 
-    # Fallback: general strategy chat
+    # Fallback: general strategy chat (no skill routing needed)
     if llm_available():
         reply = chat_completion(
             system_prompt=CHAT_SYSTEM_PROMPT,
-            user_message=f"[Strategy mode] {message}",
+            user_message=f"[Strategy skill] {message}",
         )
     else:
         reply = "Fill in the Strategy Builder form to generate and backtest a strategy."
@@ -328,3 +326,106 @@ async def chat_status() -> dict:
         "provider": info["provider"],
         "model": info["model"],
     }
+
+
+@router.get("/skills")
+async def list_skills() -> list[dict]:
+    """
+    Return the full skill registry as JSON.
+
+    The frontend calls this on mount to render the skill chip row and
+    bottom-panel tabs entirely from server metadata. Dropping a new skill
+    folder under `trading-platform/skills/` and restarting the backend will
+    cause it to appear automatically — no frontend edits required.
+    """
+    return vibe_trade.registry.to_json()
+
+
+@router.get("/tools")
+async def list_tools() -> list[dict]:
+    """
+    Return the full tool catalog as JSON.
+
+    Tools are product features that skills can invoke (drawing tools, chart
+    overlays, bottom panel tabs, script editor control, notifications, etc.).
+    The frontend uses this catalog to validate + render tool_calls. Source
+    of truth: `skills/tools.py::TOOL_CATALOG`.
+    """
+    from skills.tools import catalog_to_json
+    return catalog_to_json()
+
+
+class FetchDataRequest(BaseModel):
+    """Request shape for /fetch-data."""
+    symbol: str = Field(..., min_length=1, description="Ticker or pair, e.g. AAPL, BTC/USDT, ETH-USD")
+    source: str = Field(default="auto", description="'auto' | 'yfinance' | 'ccxt'")
+    interval: str = Field(default="1d", description="1m, 5m, 15m, 30m, 1h, 4h, 1d, 1w, 1mo")
+    limit: int = Field(default=1000, ge=1, le=50000, description="Approximate number of bars (max 50k — e.g. 30 days of 1m crypto data = 43,200)")
+    exchange: str = Field(default="binance", description="ccxt exchange name (binance, coinbase, kraken, okx, ...)")
+
+
+class PlanRequest(BaseModel):
+    """Request shape for /plan."""
+    message: str = Field(..., min_length=1)
+    context: dict = Field(default_factory=dict)
+    # If provided and non-empty, the planner will ONLY build plans that use
+    # skills from this list. Honors the user's explicit skill selection.
+    available_skills: list[str] = Field(default_factory=list)
+
+
+@router.post("/plan")
+async def make_plan(req: PlanRequest) -> dict:
+    """
+    Build a multi-step execution plan WITHOUT running it.
+
+    The frontend uses this to orchestrate plan execution step-by-step in the
+    browser, so each step's generated script can be ACTUALLY EXECUTED via the
+    Web Worker pattern/strategy executors before the next step's LLM call.
+    This unlocks closed-loop workflows like "fetch data → run pattern detector
+    → see N matches → run backtest → see real PnL" in a single chat turn.
+
+    The `available_skills` field restricts the planner to the user's selected
+    subset — e.g. if the user has only Pattern + Strategy chips active, the
+    planner cannot emit a Data Fetcher step even if the message asks for it.
+
+    Returns:
+      {
+        "steps": [{"skill", "message", "rationale", "context"}, ...],
+        "is_multi_step": bool   // false → frontend should fall through to plain chat
+      }
+    """
+    from core.agents.planner import plan as build_plan
+    from core.agents.vibe_trade_agent import looks_multi_step
+
+    if not looks_multi_step(req.message):
+        return {"steps": [], "is_multi_step": False}
+
+    steps = build_plan(req.message, available_skills=req.available_skills or None)
+    return {"steps": steps, "is_multi_step": True}
+
+
+@router.post("/fetch-data")
+async def fetch_market_data(req: FetchDataRequest) -> dict:
+    """
+    Fetch historical OHLCV bars from yfinance (stocks/ETFs) or ccxt (crypto).
+
+    No API key required for either provider's public data. Auto-detects the
+    correct provider from the symbol shape if `source == "auto"`:
+      - "BTC/USDT", "ETH-USD", or bare crypto bases → ccxt
+      - "AAPL", "^GSPC", "EURUSD=X" → yfinance
+
+    Returns the bars + metadata in the platform's normalized OHLC shape so
+    the frontend can register them as a Dataset and render them on the chart.
+    """
+    from core.data.fetcher import fetch
+    try:
+        result = fetch(
+            symbol=req.symbol,
+            source=req.source,
+            interval=req.interval,
+            limit=req.limit,
+            exchange=req.exchange,
+        )
+        return result
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to fetch {req.symbol}: {exc}") from exc

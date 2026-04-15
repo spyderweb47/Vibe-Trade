@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useRef, useCallback, useEffect } from "react";
-import { useStore, type Mode } from "@/store/useStore";
+import { useStore } from "@/store/useStore";
 import { PineScriptPanel } from "./PineScriptPanel";
 import { PortfolioAnalysis } from "./PortfolioAnalysis";
 import { TradeList } from "./TradeList";
@@ -10,13 +10,52 @@ import { OrdersTab } from "./playground/OrdersTab";
 import { TradeHistoryTab } from "./playground/TradeHistoryTab";
 import { WalletTab } from "./playground/WalletTab";
 
-const PANEL_TABS: Record<Mode, string[]> = {
-  pattern: ["Pattern Analysis", "Pine Script"],
-  strategy: ["Portfolio", "Trade List", "Pine Script"],
+/**
+ * Bottom-panel component registry.
+ *
+ * Each skill's SKILL.md declares `output_tabs`, where each tab specifies
+ * a `component` string. That string is looked up here. To add a new tab
+ * component, import it and add an entry to this map, then reference it
+ * from a skill's frontmatter.
+ */
+export const BOTTOM_PANEL_COMPONENTS: Record<string, React.ComponentType> = {
+  PatternContent: () => <PatternContent />,
+  PortfolioAnalysis,
+  TradeList,
+  PineScriptPanel,
 };
 
 const PLAYGROUND_TABS = ["Positions", "Open Orders", "Trade History", "Wallet"];
 const SIMULATION_TABS = ["Debate Log"];
+
+interface TabDef {
+  id: string;
+  label: string;
+  component: string;
+}
+
+/**
+ * Aggregate output_tabs from all active skills, deduping by id. Preserves
+ * the order the skills were activated in, with tabs from the first skill
+ * appearing first.
+ */
+function computeSkillTabs(
+  skills: ReturnType<typeof useStore.getState>["skills"],
+  activeSkillIds: Set<string>
+): TabDef[] {
+  const seen = new Set<string>();
+  const result: TabDef[] = [];
+  for (const id of activeSkillIds) {
+    const skill = skills.find((s) => s.id === id);
+    if (!skill) continue;
+    for (const tab of skill.output_tabs || []) {
+      if (seen.has(tab.id)) continue;
+      seen.add(tab.id);
+      result.push(tab);
+    }
+  }
+  return result;
+}
 
 export function BottomPanel() {
   const [collapsed, setCollapsed] = useState(false);
@@ -25,20 +64,43 @@ export function BottomPanel() {
   const isDragging = useRef(false);
   const dragStartY = useRef(0);
   const dragStartH = useRef(0);
-  const activeMode = useStore((s) => s.activeMode);
   const appMode = useStore((s) => s.appMode);
-  const backtestResults = useStore((s) => s.backtestResults);
-  const patternMatches = useStore((s) => s.patternMatches);
-  const [expandedTrade, setExpandedTrade] = useState<string | null>(null);
+  const skills = useStore((s) => s.skills);
+  const activeSkillIds = useStore((s) => s.activeSkillIds);
 
-  const tabs = appMode === "simulation" ? SIMULATION_TABS
-    : appMode === "playground" ? PLAYGROUND_TABS
-    : PANEL_TABS[activeMode];
+  // Dynamic skill-contributed tabs for building mode
+  const skillTabs = React.useMemo(
+    () => computeSkillTabs(skills, activeSkillIds),
+    [skills, activeSkillIds]
+  );
 
-  // Reset active tab when mode changes to avoid out-of-range index
+  // Labels to render on the tab bar (string[] for playground/simulation,
+  // TabDef[] for building mode)
+  const isBuilding = appMode === "building";
+  const tabLabels =
+    appMode === "simulation"
+      ? SIMULATION_TABS
+      : appMode === "playground"
+        ? PLAYGROUND_TABS
+        : skillTabs.map((t) => t.label);
+
+  // Reset active tab when mode or skill set changes to avoid out-of-range index
   useEffect(() => {
     setActiveTab(0);
-  }, [appMode, activeMode]);
+  }, [appMode, activeSkillIds]);
+
+  // Allow tool executor to activate a tab by id
+  const pendingBottomPanelTab = useStore((s) => (s as unknown as Record<string, unknown>).pendingBottomPanelTab as string | undefined);
+  useEffect(() => {
+    if (!pendingBottomPanelTab || !isBuilding) return;
+    const idx = skillTabs.findIndex((t) => t.id === pendingBottomPanelTab);
+    if (idx >= 0) {
+      setActiveTab(idx);
+      setCollapsed(false);
+      useStore.setState({ pendingBottomPanelTab: undefined } as Record<string, unknown>);
+      requestAnimationFrame(() => window.dispatchEvent(new Event("resize")));
+    }
+  }, [pendingBottomPanelTab, isBuilding, skillTabs]);
 
   const onResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -77,7 +139,12 @@ export function BottomPanel() {
       )}
       {/* Tab bar + collapse toggle */}
       <div className="flex h-8 shrink-0 items-center px-1" style={{ borderBottom: "1px solid var(--border-subtle)", background: "var(--surface-2)" }}>
-        {tabs.map((tab, i) => (
+        {tabLabels.length === 0 && isBuilding && (
+          <span className="px-3 py-1 text-[10px] text-[var(--text-muted)]">
+            No skill selected — add one from the chatbox to see output tabs
+          </span>
+        )}
+        {tabLabels.map((tab, i) => (
           <button
             key={tab}
             onClick={() => {
@@ -130,15 +197,22 @@ export function BottomPanel() {
             activeTab === 1 ? <OrdersTab /> :
             activeTab === 2 ? <TradeHistoryTab /> :
             activeTab === 3 ? <WalletTab /> : null
-          ) : tabs[activeTab] === "Pine Script" ? (
-            <PineScriptPanel />
-          ) : activeMode === "strategy" && activeTab === 0 ? (
-            <PortfolioAnalysis />
-          ) : activeMode === "strategy" && activeTab === 1 ? (
-            <TradeList />
-          ) : activeMode === "pattern" && activeTab === 0 ? (
-            <PatternContent matches={patternMatches} />
-          ) : null}
+          ) : (
+            (() => {
+              const tab = skillTabs[activeTab];
+              if (!tab) return null;
+              const Cmp = BOTTOM_PANEL_COMPONENTS[tab.component];
+              if (!Cmp) {
+                return (
+                  <div className="p-3 text-xs" style={{ color: "var(--text-tertiary)" }}>
+                    Unknown tab component: <code>{tab.component}</code>.
+                    Register it in <code>BOTTOM_PANEL_COMPONENTS</code>.
+                  </div>
+                );
+              }
+              return <Cmp />;
+            })()
+          )}
         </div>
       )}
     </div>
@@ -353,7 +427,8 @@ function BacktestContent({
 
 /* ─── Pattern Analysis ─── */
 
-function PatternContent({ matches }: { matches: ReturnType<typeof useStore.getState>["patternMatches"] }) {
+function PatternContent() {
+  const matches = useStore((s) => s.patternMatches);
   const setChartFocus = useStore((s) => s.setChartFocus);
   const chartData = useStore((s) => s.chartData);
   const lastResult = useStore((s) => s.lastScriptResult);
@@ -399,11 +474,29 @@ function PatternContent({ matches }: { matches: ReturnType<typeof useStore.getSt
   }
 
   const handleRowClick = (m: (typeof matches)[0]) => {
-    const startT = typeof m.startTime === "string" ? Number(m.startTime) : m.startTime as number;
-    const endT = typeof m.endTime === "string" ? Number(m.endTime) : m.endTime as number;
-    const duration = endT - startT;
-    // Add padding: 3x the pattern duration on each side for context
-    const pad = Math.max(duration * 3, 86400 * 5); // at least 5 days
+    const startT = typeof m.startTime === "string" ? Number(m.startTime) : (m.startTime as number);
+    const endT = typeof m.endTime === "string" ? Number(m.endTime) : (m.endTime as number);
+    const duration = Math.max(endT - startT, 1); // guard against zero-length matches
+
+    // Padding strategy: derive from the chart's actual bar interval so the
+    // viewport is sane for ANY timeframe (1m, 1h, 1D). A hardcoded 5-day
+    // floor (the previous behaviour) made intraday matches look like the
+    // chart had jumped somewhere completely different.
+    //
+    //   - At least 25 bars of context on each side  (≈ 50-bar window)
+    //   - Or half the pattern duration on each side, whichever is larger
+    //
+    // Result: short patterns get a roomy ~50-bar view; long patterns are
+    // shown at 2× their own duration, never more.
+    const n = chartData.length;
+    let avgBarInterval = 0;
+    if (n >= 2) {
+      const t0 = Number(chartData[0].time);
+      const tN = Number(chartData[n - 1].time);
+      avgBarInterval = (tN - t0) / (n - 1);
+    }
+    const minBarsPad = avgBarInterval > 0 ? avgBarInterval * 25 : duration * 0.5;
+    const pad = Math.max(duration * 0.5, minBarsPad);
     setChartFocus({ startTime: startT - pad, endTime: endT + pad });
   };
 

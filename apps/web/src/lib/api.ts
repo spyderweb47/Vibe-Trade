@@ -38,12 +38,151 @@ export async function syncDatasetToBackend(
   });
 }
 
-// Chat with trading agents
+// ─── Skill system ──────────────────────────────────────────────────────────
+
+/**
+ * A tool call emitted by a skill handler. The frontend tool registry
+ * (`apps/web/src/lib/toolRegistry.ts`) executes these in order, enforcing
+ * the skill's declared tool allowlist.
+ */
+export interface ToolCall {
+  tool: string;
+  value?: unknown;
+  target?: string;
+  data?: unknown;
+}
+
+export interface SkillMetadata {
+  id: string;
+  name: string;
+  tagline: string;
+  description: string;
+  version: string;
+  author: string;
+  category: string;
+  icon: string;
+  color: string;
+  tools: string[];
+  output_tabs: { id: string; label: string; component: string }[];
+  store_slots: string[];
+  input_hints: { placeholder: string; supports_fingerprint: boolean };
+}
+
+/**
+ * Fetch all skills registered by the backend SkillRegistry.
+ * The frontend uses this to render the skill chip row + bottom-panel tabs
+ * entirely from server metadata — no hard-coded skill lists on either side.
+ */
+export async function listSkills(): Promise<SkillMetadata[]> {
+  return request('/skills');
+}
+
+export interface ToolDef {
+  id: string;
+  name: string;
+  category: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+  arg_style: "value" | "object";
+}
+
+/**
+ * Fetch the full tool catalog. Skills declare tool ids from this catalog in
+ * their SKILL.md; the frontend tool registry uses the catalog as a lookup
+ * for display names and argument shapes.
+ */
+export async function listTools(): Promise<ToolDef[]> {
+  return request('/tools');
+}
+
+// ─── Planner ──────────────────────────────────────────────────────────────
+
+export interface PlanStep {
+  skill: string;
+  message: string;
+  rationale: string;
+  context: Record<string, unknown>;
+}
+
+export interface PlanResult {
+  steps: PlanStep[];
+  is_multi_step: boolean;
+}
+
+/**
+ * Ask the backend to decompose a message into an execution plan WITHOUT
+ * running it. The frontend uses the returned plan to orchestrate execution
+ * step-by-step, capturing real script results between steps.
+ *
+ * @param availableSkills — if provided and non-empty, restricts the planner
+ *   to ONLY these skill ids. Honors the user's explicit chip selection so
+ *   the planner can't emit steps for skills the user deselected.
+ */
+export async function getPlan(
+  message: string,
+  context?: Record<string, unknown>,
+  availableSkills?: string[],
+): Promise<PlanResult> {
+  return request('/plan', {
+    method: 'POST',
+    body: JSON.stringify({
+      message,
+      context: context || {},
+      available_skills: availableSkills || [],
+    }),
+  });
+}
+
+// ─── Market data fetching ─────────────────────────────────────────────────
+
+export interface FetchedDataset {
+  symbol: string;
+  source: string;       // e.g. "yfinance" or "ccxt:binance"
+  interval: string;     // native timeframe ("1h", "1d", ...)
+  bars: OHLCBar[];
+  metadata: {
+    rows: number;
+    startDate: string;
+    endDate: string;
+    symbol: string;
+    nativeTimeframe: string;
+  };
+}
+
+export interface FetchMarketDataParams {
+  symbol: string;
+  source?: 'auto' | 'yfinance' | 'ccxt';
+  interval?: string;     // 1m, 5m, 15m, 30m, 1h, 4h, 1d, 1w, 1mo
+  limit?: number;        // approximate bar count (max 5000)
+  exchange?: string;     // ccxt exchange (binance, coinbase, kraken, okx, ...)
+}
+
+/**
+ * Fetch historical OHLCV bars from yfinance (stocks/ETFs) or ccxt (crypto).
+ * No API key required — both providers serve public data freely. Auto-detects
+ * the right provider from the symbol shape if `source === 'auto'`.
+ */
+export async function fetchMarketData(params: FetchMarketDataParams): Promise<FetchedDataset> {
+  return request('/fetch-data', {
+    method: 'POST',
+    body: JSON.stringify({
+      symbol: params.symbol,
+      source: params.source || 'auto',
+      interval: params.interval || '1d',
+      limit: params.limit ?? 1000,
+      exchange: params.exchange || 'binance',
+    }),
+  });
+}
+
+// ─── Chat ──────────────────────────────────────────────────────────────────
+
 export interface ChatResponse {
   reply: string;
   script?: string | null;
-  script_type?: "pattern" | "indicator" | null;
+  script_type?: "pattern" | "indicator" | "strategy" | null;
   data?: Record<string, unknown> | null;
+  tool_calls?: ToolCall[];
 }
 
 export async function sendChat(

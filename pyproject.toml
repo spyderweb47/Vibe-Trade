@@ -1,0 +1,83 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vibe-trade"
+version = "0.1.0"
+description = "AI-powered trading agent platform — skill-based architecture with planner, pattern detection, strategy backtesting, and multi-agent simulation debates."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Vibe Trade Core" }
+]
+keywords = ["trading", "backtesting", "market-data", "llm-agents", "crypto", "yfinance", "ccxt", "pattern-detection", "strategy"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Financial and Insurance Industry",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
+
+dependencies = [
+    # Web / API
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "python-multipart>=0.0.9",
+    "python-dotenv>=1.0",
+    "pydantic>=2.5",
+    # Data
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "yfinance>=0.2",
+    "ccxt>=4.0",
+    # LLM providers
+    "openai>=1.10",
+    "anthropic>=0.20",
+    # Skill system
+    "pyyaml>=6.0",
+    # CLI
+    "typer>=0.12",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+    "ruff>=0.3",
+]
+
+[project.scripts]
+vibe-trade = "vibe_trade.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/spyderweb47/Vibe-Trade"
+Repository = "https://github.com/spyderweb47/Vibe-Trade"
+Issues = "https://github.com/spyderweb47/Vibe-Trade/issues"
+
+[tool.setuptools]
+# The package ships the Python CLI + the full backend source tree (core,
+# services, skills) so one install gives the user the same runtime the web
+# app talks to. The pre-built frontend is bundled as package data when
+# built for release (see MANIFEST.in / build workflow).
+packages = [
+    "vibe_trade",
+    "core",
+    "core.agents",
+    "core.data",
+    "skills",
+    "services",
+    "services.api",
+    "services.api.routers",
+]
+
+[tool.setuptools.package-data]
+"vibe_trade" = ["web_static/**/*"]
+"skills" = ["**/*.md", "**/*.py"]

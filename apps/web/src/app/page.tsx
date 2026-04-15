@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { TopBar } from "@/components/TopBar";
+import { LeftSidebar } from "@/components/LeftSidebar";
 import { RightSidebar } from "@/components/RightSidebar";
 import { BottomPanel } from "@/components/BottomPanel";
 import { Chart } from "@/components/Chart";
@@ -16,9 +17,24 @@ export default function Home() {
   const chartData = useStore((s) => s.chartData);
   const patternMatches = useStore((s) => s.patternMatches);
   const appMode = useStore((s) => s.appMode);
+  const loadSkills = useStore((s) => s.loadSkills);
+  const hydrateConversations = useStore((s) => s.hydrateConversations);
 
   // Drive the replay loop
   usePlaygroundReplay();
+
+  // Load the skill registry from the backend on mount. Drives the skill
+  // chip row in ChatInputBar and the bottom-panel tabs in BottomPanel.
+  useEffect(() => {
+    loadSkills();
+  }, [loadSkills]);
+
+  // Hydrate conversations from localStorage on mount (creates a fresh one
+  // on first visit). This restores chat history + per-conversation state
+  // like script, pattern matches, backtest results.
+  useEffect(() => {
+    hydrateConversations();
+  }, [hydrateConversations]);
 
   // In playground mode, pass the full dataset to Chart — Chart renders whitespace
   // for future bars so drawings/trend lines can extend past the replay cursor.
@@ -26,9 +42,12 @@ export default function Home() {
   const rootRef = useRef<HTMLDivElement>(null);
   const [sidebarWidth, setSidebarWidth] = useState(320);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [leftSidebarWidth, setLeftSidebarWidth] = useState(240);
+  const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
   const [isNarrow, setIsNarrow] = useState(false);
   const [showDAG, setShowDAG] = useState(false);
   const sidebarDrag = useRef({ active: false, startX: 0, startW: 0 });
+  const leftSidebarDrag = useRef({ active: false, startX: 0, startW: 0 });
 
   // Track viewport width — auto-collapse sidebar on narrow screens
   useEffect(() => {
@@ -64,6 +83,26 @@ export default function Home() {
     document.addEventListener("mouseup", onUp);
   }, [sidebarWidth]);
 
+  const onLeftSidebarResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    leftSidebarDrag.current = { active: true, startX: e.clientX, startW: leftSidebarWidth };
+
+    const onMove = (ev: MouseEvent) => {
+      if (!leftSidebarDrag.current.active) return;
+      const dx = ev.clientX - leftSidebarDrag.current.startX;
+      const newW = Math.max(180, Math.min(420, leftSidebarDrag.current.startW + dx));
+      setLeftSidebarWidth(newW);
+      window.dispatchEvent(new Event("resize"));
+    };
+    const onUp = () => {
+      leftSidebarDrag.current.active = false;
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, [leftSidebarWidth]);
+
   // Prevent browser from scrolling the overflow-hidden container
   useEffect(() => {
     const el = rootRef.current;
@@ -84,6 +123,23 @@ export default function Home() {
 
   return (
     <div ref={rootRef} className="flex h-screen overflow-hidden relative" style={{ background: "var(--bg)" }}>
+      {/* Left Sidebar — chat history + mode toggle */}
+      <div
+        className="flex shrink-0 transition-[width] duration-200 ease-out"
+        style={{ width: leftSidebarCollapsed ? 44 : leftSidebarWidth, borderRight: leftSidebarCollapsed ? "1px solid var(--border)" : "none" }}
+      >
+        <div className="flex-1 min-w-0 overflow-hidden">
+          <LeftSidebar collapsed={leftSidebarCollapsed} onToggle={() => setLeftSidebarCollapsed(!leftSidebarCollapsed)} />
+        </div>
+        {!leftSidebarCollapsed && (
+          <div
+            onMouseDown={onLeftSidebarResizeStart}
+            className="w-1 cursor-ew-resize hover:bg-[var(--accent)] transition-colors shrink-0"
+            style={{ borderRight: "1px solid var(--border)" }}
+          />
+        )}
+      </div>
+
       {/* Center Content */}
       <div className="flex flex-1 flex-col min-w-0">
         {/* Top Bar */}

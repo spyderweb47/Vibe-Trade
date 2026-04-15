@@ -11,21 +11,26 @@ import { TradingPanel } from "./playground/TradingPanel";
 import { SimulationPanel } from "./simulation/SimulationPanel";
 import { ChatInputBar } from "./ChatInputBar";
 import { DatasetsModal } from "./DatasetsModal";
-import { ResourcesModal } from "./ResourcesModal";
+import { TraceMessage } from "./TraceMessage";
+import { registerToolSink, runToolCalls } from "@/lib/toolRegistry";
+import { executePlanInBrowser } from "@/lib/planExecutor";
+import { getPlan } from "@/lib/api";
 import type { StrategyConfig } from "@/types";
 
 export function RightSidebar() {
   const [input, setInput] = useState("");
   const [view, setView] = useState<"chat" | "code">("chat");
-  const [currentScript, setCurrentScript] = useState("");
+  const currentScript = useStore((s) => s.currentScript);
+  const setCurrentScript = useStore((s) => s.setCurrentScript);
   const [loading, setLoading] = useState(false);
   const [runState, setRunState] = useState<"idle" | "running" | "done" | "error">("idle");
   const [datasetsOpen, setDatasetsOpen] = useState(false);
-  const [resourcesOpen, setResourcesOpen] = useState(false);
   const [pendingFingerprint, setPendingFingerprint] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const activeMode = useStore((s) => s.activeMode);
+  const activeSkillIds = useStore((s) => s.activeSkillIds);
+  const skills = useStore((s) => s.skills);
   const appMode = useStore((s) => s.appMode);
   const messages = useStore((s) => s.messages);
   const addMessage = useStore((s) => s.addMessage);
@@ -41,6 +46,23 @@ export function RightSidebar() {
   const patternMatches = useStore((s) => s.patternMatches);
   const chatInputDraft = useStore((s) => s.chatInputDraft);
   const setChatInputDraft = useStore((s) => s.setChatInputDraft);
+
+  // Register tool sink callbacks so skill tool_calls can drive local state.
+  // The sink is re-registered on every render so setCurrentScript/setView
+  // capture the latest closures.
+  useEffect(() => {
+    registerToolSink({
+      setCurrentScript,
+      setView,
+      setBottomPanelTab: (tabId: string) => {
+        useStore.setState({ pendingBottomPanelTab: tabId } as Record<string, unknown>);
+      },
+      runScript: () => {
+        // Defer to handleRun / handleBacktest via DOM trigger; both rely on
+        // currentScript from state which is already set by this point.
+      },
+    });
+  });
 
   // Pick up prefilled chat input from the store (e.g. from "Send to Agent" on chart)
   useEffect(() => {
@@ -67,6 +89,29 @@ export function RightSidebar() {
     setInput("");
     addMessage({ role: "user", content: text });
     setLoading(true);
+
+    // Built-in default-agent planner. Routing depends on how many skills
+    // the user has active:
+    //   0 skills  → planner with ALL skills available (zero-config default)
+    //   1 skill   → direct dispatch (fast path, no planner overhead)
+    //   2+ skills → planner RESTRICTED to only those skills — honors the
+    //               user's explicit selection so it can't reach for skills
+    //               they've deselected
+    const skillCount = activeSkillIds.size;
+    if (skillCount !== 1) {
+      try {
+        const availableSkills = skillCount >= 2 ? Array.from(activeSkillIds) : undefined;
+        const planResult = await getPlan(text, undefined, availableSkills);
+        if (planResult.is_multi_step && planResult.steps.length > 0) {
+          await executePlanInBrowser({ steps: planResult.steps });
+          setLoading(false);
+          return;
+        }
+      } catch (err) {
+        // Plan endpoint failed — fall through to normal chat
+        console.warn("Plan endpoint failed, falling back to general chat:", err);
+      }
+    }
 
     try {
       // Auto-sync dataset to backend if needed
@@ -106,6 +151,13 @@ export function RightSidebar() {
       // Store pending fingerprint if returned (pattern analysis step)
       const newPending = (result.data as Record<string, unknown>)?.pending_fingerprint as string | undefined;
       setPendingFingerprint(newPending || null);
+
+      // Run any tool_calls the skill returned (script load, tab activate, etc).
+      // The active skill's declared tool allowlist is enforced in the registry.
+      if (result.tool_calls && result.tool_calls.length > 0) {
+        const activeSkill = skills.find((s) => s.id === activeMode);
+        runToolCalls(result.tool_calls, activeMode, activeSkill?.tools || []);
+      }
 
       // Handle strategy mode responses
       if (activeMode === "strategy" && result.script) {
@@ -380,12 +432,16 @@ export function RightSidebar() {
                   <div className="text-center space-y-2 px-6">
                     <div className="text-2xl" style={{ color: "var(--accent)" }}>⚡</div>
                     <p className="text-[13px] font-bold" style={{ color: "var(--text-primary)" }}>
-                      {activeMode === "pattern" ? "Pattern Agent" : "Strategy Agent"}
+                      Vibe Trade
                     </p>
                     <p className="text-[10px]" style={{ color: "var(--text-muted)" }}>
-                      {activeMode === "strategy"
-                        ? "Fill the form above and click Generate & Run."
-                        : "Describe a pattern hypothesis in natural language."}
+                      {activeSkillIds.size === 0
+                        ? "No skill selected — free-form chat mode. Add a skill to unlock pattern detection, backtesting, and more."
+                        : activeSkillIds.size > 1
+                          ? `${activeSkillIds.size} skills active — send a message to dispatch.`
+                          : activeMode === "strategy"
+                            ? "Fill the form above and click Generate & Run."
+                            : "Describe a pattern hypothesis in natural language."}
                     </p>
                     <p className="text-[9px] mt-3" style={{ color: "var(--text-muted)" }}>
                       Tap <span className="font-bold" style={{ color: "var(--accent)" }}>+</span> below to upload a dataset or browse resources.
@@ -393,7 +449,12 @@ export function RightSidebar() {
                   </div>
                 </div>
               )}
-              {messages.map((msg) => (
+              {messages.map((msg) => {
+                // Trace messages render as a distinct collapsible agent-process box
+                if (msg.role === "trace") {
+                  return <TraceMessage key={msg.id} msg={msg} />;
+                }
+                return (
                 <div
                   key={msg.id}
                   className={`text-[12px] leading-relaxed rounded-xl px-3 py-2.5 ${
@@ -421,7 +482,8 @@ export function RightSidebar() {
                   )}
                   <span className="whitespace-pre-wrap">{msg.content}</span>
                 </div>
-              ))}
+                );
+              })}
               {loading && (
                 <div className="text-[12px] animate-pulse" style={{ color: "var(--text-tertiary)" }}>
                   Thinking...
@@ -442,14 +504,12 @@ export function RightSidebar() {
           disabled={loading}
           placeholder={placeholder[activeMode]}
           onOpenDatasets={() => setDatasetsOpen(true)}
-          onOpenResources={() => setResourcesOpen(true)}
         />
       </div>
       )}
 
       {/* Modals (available in all modes) */}
       <DatasetsModal open={datasetsOpen} onClose={() => setDatasetsOpen(false)} />
-      <ResourcesModal open={resourcesOpen} onClose={() => setResourcesOpen(false)} />
     </div>
   );
 }

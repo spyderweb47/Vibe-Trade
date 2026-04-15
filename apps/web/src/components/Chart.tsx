@@ -365,6 +365,8 @@ export function Chart({
     const candleData: CandlestickData<Time>[] = [];
     for (let i = 0; i < candleCount; i++) {
       const bar = data[i];
+      // Defensive: skip undefined/malformed bars (sparse arrays, time-less rows)
+      if (!bar || bar.time == null) continue;
       candleData.push({
         time: bar.time as Time,
         open: bar.open,
@@ -388,8 +390,13 @@ export function Chart({
 
     if (isReplayTick) {
       // Append only newly-revealed bars via update() — viewport stays put
-      for (let i = prevCursor + 1; i <= playgroundCursor; i++) {
+      // Bound the loop by data.length AND playgroundCursor (defensive against
+      // a stale cursor that points past the current dataset length, which can
+      // happen when switching to a smaller dataset)
+      const upperBound = Math.min(playgroundCursor, data.length - 1);
+      for (let i = prevCursor + 1; i <= upperBound; i++) {
         const bar = data[i];
+        if (!bar || bar.time == null) continue;
         seriesRef.current.update({
           time: bar.time as Time,
           open: bar.open,
@@ -411,6 +418,7 @@ export function Chart({
         const volumeData: { time: Time; value: number; color: string }[] = [];
         for (let i = 0; i < candleCount; i++) {
           const bar = data[i];
+          if (!bar || bar.time == null) continue;
           volumeData.push({
             time: bar.time as Time,
             value: bar.volume ?? 0,
@@ -426,7 +434,9 @@ export function Chart({
           const spacerData: { time: Time; value: number }[] = [];
           const mid = data[Math.min(playgroundCursor, data.length - 1)]?.close ?? 100;
           for (let i = 0; i < data.length; i++) {
-            spacerData.push({ time: data[i].time as Time, value: mid });
+            const bar = data[i];
+            if (!bar || bar.time == null) continue;
+            spacerData.push({ time: bar.time as Time, value: mid });
           }
           spacerSeriesRef.current.setData(spacerData);
         } else {
@@ -481,7 +491,10 @@ export function Chart({
     const chart = chartRef.current;
     if (chart) {
       // Collect all match times, snap to nearest bar time, compute span
-      const chartTimes = data.map((b) => b.time as number).sort((a, b) => a - b);
+      const chartTimes = data
+        .filter((b) => b && b.time != null)
+        .map((b) => b.time as number)
+        .sort((a, b) => a - b);
       if (chartTimes.length > 0) {
         let minT = Infinity;
         let maxT = -Infinity;
@@ -523,7 +536,19 @@ export function Chart({
 
     // Also set small markers at start points for quick navigation
     if (markersRef.current) {
-      const chartTimes = data.map((b) => b.time as number);
+      // Defensive: filter out malformed bars before reading .time. A sparse
+      // chartData (mid-update or stale switch) would otherwise throw "Cannot
+      // read properties of undefined (reading 'time')" inside the snap loop.
+      const chartTimes = data
+        .filter((b) => b && b.time != null)
+        .map((b) => b.time as number);
+
+      // If there are no valid times to snap against, clear markers and bail
+      if (chartTimes.length === 0) {
+        markersRef.current.setMarkers([]);
+        return;
+      }
+
       const snapToChart = (raw: number): number => {
         let best = chartTimes[0], bestDist = Math.abs(raw - best);
         for (const t of chartTimes) {
@@ -535,8 +560,11 @@ export function Chart({
 
       const byTime = new Map<number, (typeof patternMatches)[0]>();
       for (const m of patternMatches) {
+        if (!m || m.startTime == null) continue;
         const raw = typeof m.startTime === "string" ? Number(m.startTime) : m.startTime as number;
+        if (!isFinite(raw)) continue;
         const snapped = snapToChart(raw);
+        if (snapped == null || !isFinite(snapped)) continue;
         const existing = byTime.get(snapped);
         if (!existing || m.confidence > existing.confidence) byTime.set(snapped, m);
       }
@@ -602,8 +630,9 @@ export function Chart({
           const maxIdx = appModeTop === "playground" ? playgroundCursor : data.length - 1;
           for (let i = 0; i < values.length && i <= maxIdx && i < data.length; i++) {
             const v = values[i];
-            if (v !== null && v !== undefined && data[i]) {
-              lineData.push({ time: data[i].time as Time, value: v });
+            const bar = data[i];
+            if (v !== null && v !== undefined && bar && bar.time != null) {
+              lineData.push({ time: bar.time as Time, value: v });
             }
           }
 

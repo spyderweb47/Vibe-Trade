@@ -8,11 +8,117 @@ import type {
   BacktestResult,
   IndicatorConfig,
   CapturedPatternData,
+  Conversation,
 } from '@/types';
 import type { Drawing, DrawingType } from '@/lib/chart-primitives/drawingTypes';
 import { resampleToTimeframe } from '@/lib/csv/resampleOHLC';
+import type { SkillMetadata } from '@/lib/api';
 
-export type Mode = 'pattern' | 'strategy';
+// ─── Conversations persistence ────────────────────────────────────────────
+// Conversations are saved to localStorage so they survive page reloads.
+// The persistence layer is intentionally explicit (not Zustand persist
+// middleware) so we control exactly when snapshots are taken and what's
+// included — playground/simulation slices stay live-only.
+
+const CONV_STORAGE_KEY = 'vibe-trade.conversations.v1';
+const CONV_ACTIVE_KEY = 'vibe-trade.conversations.activeId.v1';
+
+function loadPersistedConversations(): { conversations: Conversation[]; activeId: string | null } {
+  if (typeof window === 'undefined') return { conversations: [], activeId: null };
+  try {
+    const raw = window.localStorage.getItem(CONV_STORAGE_KEY);
+    const conversations = raw ? (JSON.parse(raw) as Conversation[]) : [];
+    const activeId = window.localStorage.getItem(CONV_ACTIVE_KEY);
+    return { conversations, activeId };
+  } catch {
+    return { conversations: [], activeId: null };
+  }
+}
+
+function savePersistedConversations(conversations: Conversation[], activeId: string | null) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(CONV_STORAGE_KEY, JSON.stringify(conversations));
+    if (activeId) {
+      window.localStorage.setItem(CONV_ACTIVE_KEY, activeId);
+    } else {
+      window.localStorage.removeItem(CONV_ACTIVE_KEY);
+    }
+  } catch {
+    // Quota exceeded or disabled — silently degrade
+  }
+}
+
+function makeNewConversation(): Conversation {
+  const now = Date.now();
+  return {
+    id: typeof crypto !== 'undefined' ? crypto.randomUUID() : `c_${now}_${Math.random().toString(36).slice(2)}`,
+    title: 'New chat',
+    createdAt: now,
+    updatedAt: now,
+    appMode: 'building',
+    patternMessages: [],
+    strategyMessages: [],
+    currentScript: '',
+    patternMatches: [],
+    strategyConfig: null,
+    backtestResults: null,
+    activeDataset: null,
+    activeSkillIds: ['pattern'],
+  };
+}
+
+/**
+ * Snapshot the current live store state into the active conversation entry.
+ * Returns the updated conversations array, or null if there's no active id.
+ * Side effect: persists the result to localStorage.
+ *
+ * Called from setters that change per-conversation state (addMessage,
+ * setCurrentScript, setBacktestResults, setPatternMatches, setStrategyConfig,
+ * setAppMode) so the conversations array always reflects the latest work.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function _snapshotLiveStateInto(state: any, activeId: string | null): Conversation[] | null {
+  if (!activeId) return null;
+  const idx = state.conversations.findIndex((c: Conversation) => c.id === activeId);
+  if (idx === -1) return null;
+  const prev = state.conversations[idx];
+  // Auto-derive a title from the first user message if still "New chat"
+  let title = prev.title;
+  if ((title === 'New chat' || !title) && state.patternMessages.length > 0) {
+    const firstUser = state.patternMessages.find((m: Message) => m.role === 'user');
+    if (firstUser) title = firstUser.content.slice(0, 60);
+  }
+  if ((title === 'New chat' || !title) && state.strategyMessages.length > 0) {
+    const firstUser = state.strategyMessages.find((m: Message) => m.role === 'user');
+    if (firstUser) title = firstUser.content.slice(0, 60);
+  }
+  const updated: Conversation = {
+    ...prev,
+    title,
+    updatedAt: Date.now(),
+    appMode: state.appMode,
+    patternMessages: state.patternMessages,
+    strategyMessages: state.strategyMessages,
+    currentScript: state.currentScript || '',
+    patternMatches: state.patternMatches,
+    strategyConfig: state.strategyConfig,
+    backtestResults: state.backtestResults,
+    activeDataset: state.activeDataset,
+    activeSkillIds: Array.from(state.activeSkillIds || []),
+  };
+  const conversations = [...state.conversations];
+  conversations[idx] = updated;
+  // Re-sort by updatedAt desc so most recent floats to top
+  conversations.sort((a, b) => b.updatedAt - a.updatedAt);
+  savePersistedConversations(conversations, activeId);
+  return conversations;
+}
+
+// Mode is the id of a skill (or one of the legacy non-skill modes). Kept
+// as a loose string so the skill registry can introduce new ids without
+// forcing a type update here.
+export type Mode = string;
 
 interface AnalysisResults {
   summary?: string;
@@ -21,9 +127,29 @@ interface AnalysisResults {
 }
 
 interface AppState {
-  // Mode
+  // ─── Conversations (persisted) ────────────────────────────────────────
+  // Stored conversation threads. The currently-loaded one's per-conversation
+  // state (messages, currentScript, results, etc.) is mirrored into the live
+  // store fields below. Switching/creating a conversation snapshots the
+  // current live state into the previous conversation before swapping.
+  conversations: Conversation[];
+  activeConversationId: string | null;
+  hydrateConversations: () => void;
+  createConversation: () => string;
+  switchConversation: (id: string) => void;
+  deleteConversation: (id: string) => void;
+  renameConversation: (id: string, title: string) => void;
+
+  // Mode (derived from activeSkillIds — kept for backward compat)
   activeMode: Mode;
   setMode: (mode: Mode) => void;
+
+  // Skill system — dynamic registry fetched from the backend at startup
+  skills: SkillMetadata[];
+  activeSkillIds: Set<string>;
+  skillsLoaded: boolean;
+  loadSkills: () => Promise<void>;
+  setActiveSkills: (ids: Set<string>) => void;
 
   // Datasets
   datasets: Dataset[];
@@ -44,11 +170,17 @@ interface AppState {
   patternMessages: Message[];
   strategyMessages: Message[];
   messages: Message[]; // derived from active mode
-  addMessage: (message: Omit<Message, 'id' | 'timestamp'>) => void;
+  addMessage: (message: Omit<Message, 'id' | 'timestamp'>) => string;
+  updateMessage: (id: string, patch: Partial<Omit<Message, 'id'>>) => void;
 
   // Backtest
   backtestResults: BacktestResult | null;
   setBacktestResults: (results: BacktestResult | null) => void;
+
+  // Current script being edited (lifted from RightSidebar so it can be
+  // persisted as part of the conversation snapshot)
+  currentScript: string;
+  setCurrentScript: (script: string) => void;
 
   // Indicators
   indicators: IndicatorConfig[];
@@ -158,13 +290,188 @@ interface AppState {
   resetSimulation: () => void;
 }
 
-export const useStore = create<AppState>((set) => ({
+export const useStore = create<AppState>((set, get) => ({
+  // ─── Conversations (persisted) ──────────────────────────────────────
+  conversations: [],
+  activeConversationId: null,
+
+  hydrateConversations: () => {
+    const { conversations, activeId } = loadPersistedConversations();
+    if (conversations.length === 0) {
+      // First run — create a fresh conversation so the UI has something to show
+      const fresh = makeNewConversation();
+      set({ conversations: [fresh], activeConversationId: fresh.id });
+      savePersistedConversations([fresh], fresh.id);
+      return;
+    }
+    // Find the active (or default to most recent) and load its snapshot
+    const active = conversations.find((c) => c.id === activeId) ?? conversations[0];
+    set({
+      conversations,
+      activeConversationId: active.id,
+      patternMessages: active.patternMessages || [],
+      strategyMessages: active.strategyMessages || [],
+      messages: (active.appMode === 'building'
+        ? (active.activeSkillIds.includes('strategy') && !active.activeSkillIds.includes('pattern')
+            ? active.strategyMessages
+            : active.patternMessages)
+        : active.patternMessages) || [],
+      appMode: active.appMode,
+      strategyConfig: active.strategyConfig,
+      backtestResults: active.backtestResults,
+      patternMatches: active.patternMatches || [],
+      activeDataset: active.activeDataset,
+      activeSkillIds: new Set(active.activeSkillIds || ['pattern']),
+      activeMode: active.activeSkillIds?.[0] || 'pattern',
+    });
+    savePersistedConversations(conversations, active.id);
+  },
+
+  createConversation: () => {
+    const state = get();
+    // Snapshot current live state into the active conversation first
+    const snapped = _snapshotLiveStateInto(state, state.activeConversationId);
+    const fresh = makeNewConversation();
+    const next = snapped ? [fresh, ...snapped] : [fresh, ...state.conversations];
+    set({
+      conversations: next,
+      activeConversationId: fresh.id,
+      // Reset live state to fresh defaults
+      patternMessages: [],
+      strategyMessages: [],
+      messages: [],
+      currentScript: '',
+      patternMatches: [],
+      strategyConfig: null,
+      backtestResults: null,
+      activeSkillIds: new Set(['pattern']),
+      activeMode: 'pattern',
+    });
+    savePersistedConversations(next, fresh.id);
+    return fresh.id;
+  },
+
+  switchConversation: (id) => {
+    const state = get();
+    if (id === state.activeConversationId) return;
+    const target = state.conversations.find((c) => c.id === id);
+    if (!target) return;
+    // Snapshot current live state into the active conversation first
+    const snapped = _snapshotLiveStateInto(state, state.activeConversationId);
+    const conversations = snapped ?? state.conversations;
+    set({
+      conversations,
+      activeConversationId: id,
+      patternMessages: target.patternMessages || [],
+      strategyMessages: target.strategyMessages || [],
+      messages: target.activeSkillIds?.[0] === 'strategy' ? (target.strategyMessages || []) : (target.patternMessages || []),
+      currentScript: target.currentScript || '',
+      patternMatches: target.patternMatches || [],
+      strategyConfig: target.strategyConfig,
+      backtestResults: target.backtestResults,
+      activeDataset: target.activeDataset,
+      activeSkillIds: new Set(target.activeSkillIds || ['pattern']),
+      activeMode: target.activeSkillIds?.[0] || 'pattern',
+      appMode: target.appMode,
+    });
+    savePersistedConversations(conversations, id);
+  },
+
+  deleteConversation: (id) => {
+    const state = get();
+    const remaining = state.conversations.filter((c) => c.id !== id);
+    if (remaining.length === 0) {
+      // Always keep at least one — create a fresh empty conversation
+      const fresh = makeNewConversation();
+      set({
+        conversations: [fresh],
+        activeConversationId: fresh.id,
+        patternMessages: [],
+        strategyMessages: [],
+        messages: [],
+        currentScript: '',
+        patternMatches: [],
+        strategyConfig: null,
+        backtestResults: null,
+        activeSkillIds: new Set(['pattern']),
+        activeMode: 'pattern',
+      });
+      savePersistedConversations([fresh], fresh.id);
+      return;
+    }
+    if (id === state.activeConversationId) {
+      // Switch to the most recent remaining conversation
+      const next = remaining[0];
+      set({
+        conversations: remaining,
+        activeConversationId: next.id,
+        patternMessages: next.patternMessages || [],
+        strategyMessages: next.strategyMessages || [],
+        messages: next.patternMessages || [],
+        currentScript: next.currentScript || '',
+        patternMatches: next.patternMatches || [],
+        strategyConfig: next.strategyConfig,
+        backtestResults: next.backtestResults,
+        activeDataset: next.activeDataset,
+        activeSkillIds: new Set(next.activeSkillIds || ['pattern']),
+        activeMode: next.activeSkillIds?.[0] || 'pattern',
+        appMode: next.appMode,
+      });
+      savePersistedConversations(remaining, next.id);
+    } else {
+      set({ conversations: remaining });
+      savePersistedConversations(remaining, state.activeConversationId);
+    }
+  },
+
+  renameConversation: (id, title) => {
+    const state = get();
+    const conversations = state.conversations.map((c) =>
+      c.id === id ? { ...c, title: title.trim() || c.title, updatedAt: Date.now() } : c
+    );
+    set({ conversations });
+    savePersistedConversations(conversations, state.activeConversationId);
+  },
+
   // Mode
   activeMode: 'pattern',
-  setMode: (mode) => set((state) => ({
-    activeMode: mode,
-    messages: mode === 'strategy' ? state.strategyMessages : state.patternMessages,
-  })),
+  setMode: (mode) => set((state) => {
+    const next = new Set(state.activeSkillIds);
+    next.clear();
+    next.add(mode);
+    return {
+      activeMode: mode,
+      activeSkillIds: next,
+      messages: mode === 'strategy' ? state.strategyMessages : state.patternMessages,
+    };
+  }),
+
+  // Skill system
+  skills: [],
+  activeSkillIds: new Set(['pattern']),
+  skillsLoaded: false,
+  loadSkills: async () => {
+    try {
+      const { listSkills } = await import('@/lib/api');
+      const skills = await listSkills();
+      set({ skills, skillsLoaded: true });
+      // eslint-disable-next-line no-console
+      console.log(`[store] loaded ${skills.length} skills:`, skills.map(s => s.id));
+    } catch (err) {
+      console.warn('[store] failed to load skills:', err);
+      set({ skillsLoaded: true });
+    }
+  },
+  setActiveSkills: (ids) => set((state) => {
+    // Empty set is allowed: the chat falls through to the backend's general
+    // handler (no skill dispatch, no tool_calls, just free-form LLM chat).
+    const primary = Array.from(ids)[0] || 'general';
+    return {
+      activeSkillIds: ids,
+      activeMode: primary,
+      messages: primary === 'strategy' ? state.strategyMessages : state.patternMessages,
+    };
+  }),
 
   // Datasets
   datasets: [],
@@ -202,22 +509,51 @@ export const useStore = create<AppState>((set) => ({
   patternMessages: [],
   strategyMessages: [],
   messages: [],
-  addMessage: (message) =>
+  addMessage: (message) => {
+    const newId = crypto.randomUUID();
     set((state) => {
-      const newMsg = { ...message, id: crypto.randomUUID(), timestamp: new Date().toISOString() };
+      const newMsg = { ...message, id: newId, timestamp: new Date().toISOString() };
       const isStrategy = state.activeMode === 'strategy';
       const patternMessages = isStrategy ? state.patternMessages : [...state.patternMessages, newMsg];
       const strategyMessages = isStrategy ? [...state.strategyMessages, newMsg] : state.strategyMessages;
-      return {
-        patternMessages,
-        strategyMessages,
-        messages: isStrategy ? strategyMessages : patternMessages,
-      };
+      const messages = isStrategy ? strategyMessages : patternMessages;
+      const next = { ...state, patternMessages, strategyMessages, messages };
+      const conversations = _snapshotLiveStateInto(next, state.activeConversationId);
+      return conversations
+        ? { patternMessages, strategyMessages, messages, conversations }
+        : { patternMessages, strategyMessages, messages };
+    });
+    return newId;
+  },
+  updateMessage: (id, patch) =>
+    set((state) => {
+      const apply = (msgs: Message[]) => msgs.map((m) => (m.id === id ? { ...m, ...patch } : m));
+      const patternMessages = apply(state.patternMessages);
+      const strategyMessages = apply(state.strategyMessages);
+      const isStrategy = state.activeMode === 'strategy';
+      const messages = isStrategy ? strategyMessages : patternMessages;
+      const next = { ...state, patternMessages, strategyMessages, messages };
+      const conversations = _snapshotLiveStateInto(next, state.activeConversationId);
+      return conversations
+        ? { patternMessages, strategyMessages, messages, conversations }
+        : { patternMessages, strategyMessages, messages };
     }),
 
   // Backtest
   backtestResults: null,
-  setBacktestResults: (results) => set({ backtestResults: results }),
+  setBacktestResults: (results) => set((state) => {
+    const next = { ...state, backtestResults: results };
+    const conversations = _snapshotLiveStateInto(next, state.activeConversationId);
+    return conversations ? { backtestResults: results, conversations } : { backtestResults: results };
+  }),
+
+  // Current script (lifted from RightSidebar for persistence)
+  currentScript: '',
+  setCurrentScript: (script) => set((state) => {
+    const next = { ...state, currentScript: script };
+    const conversations = _snapshotLiveStateInto(next, state.activeConversationId);
+    return conversations ? { currentScript: script, conversations } : { currentScript: script };
+  }),
 
   // Indicators — params must match backend __init__ signatures exactly
   indicators: [
@@ -285,7 +621,11 @@ export const useStore = create<AppState>((set) => ({
   // Pattern matches
   patternMatches: [],
   lastScriptResult: null,
-  setPatternMatches: (matches) => set({ patternMatches: matches }),
+  setPatternMatches: (matches) => set((state) => {
+    const next = { ...state, patternMatches: matches };
+    const conversations = _snapshotLiveStateInto(next, state.activeConversationId);
+    return conversations ? { patternMatches: matches, conversations } : { patternMatches: matches };
+  }),
   setLastScriptResult: (result) => set({ lastScriptResult: result }),
 
   // Analysis
@@ -321,7 +661,11 @@ export const useStore = create<AppState>((set) => ({
 
   // Strategy config
   strategyConfig: null,
-  setStrategyConfig: (config) => set({ strategyConfig: config }),
+  setStrategyConfig: (config) => set((state) => {
+    const next = { ...state, strategyConfig: config };
+    const conversations = _snapshotLiveStateInto(next, state.activeConversationId);
+    return conversations ? { strategyConfig: config, conversations } : { strategyConfig: config };
+  }),
 
   // Trade plotting
   plottedTrades: [],
@@ -358,6 +702,10 @@ export const useStore = create<AppState>((set) => ({
           next.playgroundReplay = { ...s.playgroundReplay, currentBarIndex: initialCursor, totalBars: len };
         }
       }
+      // Snapshot the appMode change into the active conversation so it sticks
+      const merged = { ...s, ...next };
+      const conversations = _snapshotLiveStateInto(merged, s.activeConversationId);
+      if (conversations) next.conversations = conversations;
       return next as any;
     }),
 
