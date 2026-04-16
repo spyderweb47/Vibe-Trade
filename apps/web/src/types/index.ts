@@ -349,6 +349,33 @@ export interface SimulationSummary {
   priceTargets: { low: number; mid: number; high: number };
   riskFactors: string[];
   recommendation: { action: string; entry?: number; stop?: number; target?: number; position_size_pct?: number };
+  convictionShifts?: string[];
+}
+
+export interface IntelBriefing {
+  executiveSummary?: string;
+  bullCase?: string[];
+  bearCase?: string[];
+  keyEvents?: string[];
+  sentimentReading?: string;
+  dataPoints?: string[];
+  rawFindings?: {
+    recentNews?: string;
+    marketAnalysis?: string;
+    regulatory?: string;
+    technicalIndicators?: string;
+    keyLevels?: string;
+  };
+}
+
+export interface CrossExamResult {
+  entityId: string;
+  entityName: string;
+  entityRole: string;
+  question: string;
+  response: string;
+  convictionChange: 'unchanged' | 'strengthened' | 'weakened' | 'reversed';
+  newSentiment?: number | null;
 }
 
 export interface SimulationDebate {
@@ -364,4 +391,7 @@ export interface SimulationDebate {
   summary: SimulationSummary | null;
   status: 'idle' | 'classifying' | 'generating_entities' | 'discussing' | 'summarizing' | 'complete' | 'error';
   error?: string;
+  // Pipeline-rich data
+  intelBriefing?: IntelBriefing;
+  crossExamResults?: CrossExamResult[];
 }

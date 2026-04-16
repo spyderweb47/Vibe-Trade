@@ -53,10 +53,9 @@ from core.agents.simulation_agents import (
 class DebateOrchestrator:
     """Runs the full MiroFish-inspired 5-stage swarm simulation."""
 
-    # Heavy mode: 30 rounds × 15 speakers = ~450 messages (15-30 min)
-    # These are the defaults — override per-instance for faster runs.
-    MAX_ROUNDS = 12
-    SPEAKERS_PER_ROUND = 8
+    # Max throughput mode: 30 rounds × 15 speakers = ~450 messages
+    MAX_ROUNDS = 30
+    SPEAKERS_PER_ROUND = 15
 
     def __init__(self) -> None:
         self.classifier = AssetClassifier()
@@ -68,6 +67,12 @@ class DebateOrchestrator:
         self.report_agent = ReACTReportAgent()
         self.summary_agent = SummaryAgent()
 
+    def _log(self, stage: str, msg: str) -> None:
+        """Log pipeline progress with timestamp."""
+        import time
+        ts = time.strftime("%H:%M:%S")
+        print(f"[{ts}] [swarm.{stage}] {msg}", flush=True)
+
     async def run(
         self,
         bars: list[dict],
@@ -75,36 +80,34 @@ class DebateOrchestrator:
         report_text: str = "",
     ) -> Dict[str, Any]:
         """Execute the full 5-stage pipeline."""
+        self._log("start", f"Debate starting for {symbol} — {len(bars)} bars")
 
         # ─── Stage 1: Context Analysis ───────────────────────────────────
-        # Extract structured knowledge from the data: asset classification,
-        # key themes, price levels, technical regime, market structure.
+        self._log("stage1", "Classifying asset + analyzing market context...")
         price_range = (
             min(b["low"] for b in bars) if bars else 0,
             max(b["high"] for b in bars) if bars else 0,
         )
-        # Run classification + context analysis in parallel
         asset_info, context = await asyncio.gather(
             asyncio.to_thread(self.classifier.classify, symbol, price_range, len(bars)),
             asyncio.to_thread(self.context_analyzer.analyze, bars, symbol, report_text),
         )
+        self._log("stage1", f"Asset: {asset_info.get('asset_name')} ({asset_info.get('asset_class')})")
 
-        # Prepare multi-timeframe data summaries
         summaries = self.chart_support.prepare_multi_timeframe(bars, symbol)
         main_summary = summaries.get("daily", summaries.get("raw", "No data"))
-
-        # Build rich, specialization-specific data feeds from raw bars
         data_feeds = DataFeedBuilder.build_feeds(bars, symbol)
+        self._log("stage1", f"Built {len(data_feeds)} data feeds: {list(data_feeds.keys())}")
 
         # ─── Stage 1.5: Intelligence Gathering ───────────────────────────
-        # One research agent crawls the web for news, analysis, regulatory
-        # updates, then synthesizes into a structured briefing. This runs
-        # BEFORE persona generation so the briefing informs agent creation.
         asset_name = asset_info.get("asset_name", symbol)
         asset_class = asset_info.get("asset_class", "unknown")
+        self._log("stage1.5", f"Gathering intelligence for {asset_name} (web search + indicators)...")
         intel_briefing = await asyncio.to_thread(
             self.intelligence.gather, asset_name, asset_class, bars
         )
+        raw = intel_briefing.get("raw_findings", {})
+        self._log("stage1.5", f"Intel done. Bull: {len(intel_briefing.get('bull_case', []))}, Bear: {len(intel_briefing.get('bear_case', []))}, News: {'yes' if raw.get('recent_news') else 'no'}")
 
         # Merge context into a rich knowledge base for all agents
         knowledge = {
@@ -120,12 +123,15 @@ class DebateOrchestrator:
         briefing_text = self._format_briefing(intel_briefing)
 
         # ─── Stage 2: Persona Generation ─────────────────────────────────
-        # Generate personas with explicit stances, influence weights, and
-        # specialization areas. Includes 2-3 observer agents.
+        self._log("stage2", f"Generating personas (target: {self.entity_gen.TARGET_ENTITIES})...")
         entities = await asyncio.to_thread(
             self.entity_gen.generate, asset_info, main_summary, report_text
         )
-        # No cap — maximum throughput, all generated personas participate
+        # Count specializations for logging
+        specs: Dict[str, int] = {}
+        for e in entities:
+            specs[e.get("specialization", "general")] = specs.get(e.get("specialization", "general"), 0) + 1
+        self._log("stage2", f"Got {len(entities)} personas. Specs: {specs}")
 
         # ─── Stage 3: Multi-Round Debate with Memory ─────────────────────
         thread: List[Dict[str, Any]] = []
@@ -135,7 +141,9 @@ class DebateOrchestrator:
         # Per-agent memory: tracks each agent's own previous statements
         agent_memory: Dict[str, List[str]] = {e.get("id", f"a{i}"): [] for i, e in enumerate(entities)}
 
+        self._log("stage3", f"Starting debate: up to {self.MAX_ROUNDS} rounds x {self.SPEAKERS_PER_ROUND} speakers = max {self.MAX_ROUNDS * self.SPEAKERS_PER_ROUND} messages")
         for round_num in range(1, self.MAX_ROUNDS + 1):
+            self._log("stage3", f"Round {round_num}/{self.MAX_ROUNDS} — {len(thread)} messages so far")
             # Rotate speakers through all entities
             start_idx = ((round_num - 1) * self.SPEAKERS_PER_ROUND) % n_entities
             speaker_indices = [(start_idx + j) % n_entities for j in range(self.SPEAKERS_PER_ROUND)]
@@ -173,23 +181,25 @@ class DebateOrchestrator:
                 feed_key = feed_map.get(spec, "general")
                 spec_data = data_feeds.get(feed_key, data_feeds.get("general", ""))
 
-                # Execute agent-specific tools before they speak — but only
-                # LOCAL tools (indicators, levels). Web tools already ran in
-                # the intelligence gathering stage; calling them per-agent
-                # per-round causes rate limiting and hangs.
+                # Execute agent-specific tools before they speak. Web tools
+                # go through a global rate limiter + retry/fallback; local
+                # tools (indicators, levels) are fast and pure Python.
                 tool_results = ""
                 agent_tools = entity.get("tools", [])
-                local_tools = [t for t in agent_tools if t in ("run_indicator", "compute_levels")]
-                if local_tools and round_num <= 2:  # Local tools only in first 2 rounds
+                if agent_tools and round_num <= 3:  # Tools only in first 3 rounds
                     from core.agents.swarm_tools import execute_tool
                     tool_outputs = []
-                    for tool_name in local_tools[:2]:
+                    # Prioritize local tools first (fast), web tools only if no local
+                    local_tools = [t for t in agent_tools if t in ("run_indicator", "compute_levels")]
+                    web_tools = [t for t in agent_tools if t.startswith(("web_", "fetch_"))]
+                    # Run all local tools, cap web tools at 1 per agent per round
+                    for tool_name in local_tools[:2] + web_tools[:1]:
                         try:
                             result = execute_tool(tool_name, bars, asset_info.get("asset_name", symbol))
                             if result and len(result) > 20:
-                                tool_outputs.append(f"[{tool_name}]: {result[:1000]}")
-                        except Exception:
-                            pass
+                                tool_outputs.append(f"[{tool_name}]: {result[:1500]}")
+                        except Exception as e:
+                            tool_outputs.append(f"[{tool_name}]: error — {str(e)[:100]}")
                     if tool_outputs:
                         tool_results = "\n\n## Your research findings:\n" + "\n".join(tool_outputs)
 
@@ -275,14 +285,16 @@ class DebateOrchestrator:
             weighted_avg = sum(round_sentiments) / total_influence
             sentiments_by_round.append(weighted_avg)
 
-            if round_num >= 8 and len(sentiments_by_round) >= 4:
-                recent = sentiments_by_round[-4:]
+            if round_num >= 20 and len(sentiments_by_round) >= 5:
+                recent = sentiments_by_round[-5:]
                 spread = max(recent) - min(recent)
-                if spread < 0.10:  # Convergence check
+                if spread < 0.05:  # Tight convergence required
                     break
 
+        self._log("stage3", f"Debate complete after round {round_num}. Total messages: {len(thread)}")
+
         # ─── Stage 4: Cross-Examination ──────────────────────────────────
-        # Pick the most divergent agents and force them to defend their views
+        self._log("stage4", "Running cross-examination on most divergent agents...")
         cross_exam_results = await asyncio.to_thread(
             self.cross_examiner.examine,
             thread,
@@ -297,9 +309,10 @@ class DebateOrchestrator:
         if cross_exam_results:
             thread_text = self._build_thread_text(thread)
 
+        self._log("stage4", f"Cross-exam done. {len(cross_exam_results)} agents responded.")
+
         # ─── Stage 5: ReACT Report Generation ───────────────────────────
-        # Multi-step report with tools: deep analysis, interviews, citations.
-        # Pass ALL data feeds so the report can verify claims against raw data.
+        self._log("stage5", "Generating ReACT report (deep analysis + interviews + verification)...")
         summary = await asyncio.to_thread(
             self.report_agent.generate_report,
             thread_text,
@@ -312,12 +325,17 @@ class DebateOrchestrator:
             message_count=len(thread),
         )
 
+        self._log("stage5", f"Report done. Consensus: {summary.get('consensus_direction')} ({summary.get('confidence')}%)")
+        self._log("complete", f"Pipeline done. {len(entities)} agents, {round_num} rounds, {len(thread)} messages.")
+
         return {
             "asset_info": asset_info,
             "entities": entities,
             "thread": thread,
             "total_rounds": round_num + (1 if cross_exam_results else 0),
             "summary": summary,
+            "intel_briefing": intel_briefing,       # Include for UI display
+            "cross_exam_results": cross_exam_results,  # Include for UI display
         }
 
     def _format_briefing(self, briefing: dict) -> str:

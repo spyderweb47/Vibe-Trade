@@ -270,7 +270,7 @@ Generate exactly 40-50 entities. Maximum diversity and depth. Each must feel lik
 
 
 class EntityGenerator:
-    TARGET_ENTITIES = 20
+    TARGET_ENTITIES = 50
     BATCH_SIZE = 10  # LLMs reliably produce 10-12 entities per call
 
     def generate(self, asset_info: dict, market_summary: str, report_text: str = "") -> list:
@@ -1177,7 +1177,7 @@ class ReACTReportAgent:
                 "Reference actual price levels from the data."
             ),
             temperature=0.3,
-            max_tokens=3000,
+            max_tokens=8000,
         )
         result.setdefault("consensus_direction", "NEUTRAL")
         result.setdefault("confidence", 50)

@@ -295,6 +295,36 @@ const executors: Record<string, ToolExecutor> = {
     const summary = d.summary as Record<string, unknown> | null;
     const assetInfo = d.asset_info as Record<string, unknown> | undefined;
 
+    // Map intelligence briefing (snake_case → camelCase)
+    const intel = d.intel_briefing as Record<string, unknown> | undefined;
+    const intelBriefing = intel ? {
+      executiveSummary: String(intel.executive_summary || ""),
+      bullCase: (intel.bull_case || []) as string[],
+      bearCase: (intel.bear_case || []) as string[],
+      keyEvents: (intel.key_events || []) as string[],
+      sentimentReading: String(intel.sentiment_reading || ""),
+      dataPoints: (intel.data_points || []) as string[],
+      rawFindings: intel.raw_findings ? {
+        recentNews: String((intel.raw_findings as Record<string, unknown>).recent_news || ""),
+        marketAnalysis: String((intel.raw_findings as Record<string, unknown>).market_analysis || ""),
+        regulatory: String((intel.raw_findings as Record<string, unknown>).regulatory || ""),
+        technicalIndicators: String((intel.raw_findings as Record<string, unknown>).technical_indicators || ""),
+        keyLevels: String((intel.raw_findings as Record<string, unknown>).key_levels || ""),
+      } : undefined,
+    } : undefined;
+
+    // Map cross-examination results
+    const crossExam = d.cross_exam_results as Array<Record<string, unknown>> | undefined;
+    const crossExamResults = crossExam?.map((c) => ({
+      entityId: String(c.entity_id || c.entityId || ""),
+      entityName: String(c.entity_name || c.entityName || ""),
+      entityRole: String(c.entity_role || c.entityRole || ""),
+      question: String(c.question || ""),
+      response: String(c.response || ""),
+      convictionChange: String(c.conviction_change || c.convictionChange || "unchanged") as "unchanged" | "strengthened" | "weakened" | "reversed",
+      newSentiment: c.new_sentiment ?? c.newSentiment ?? null,
+    }));
+
     const mapped = {
       id: String(d.debate_id || d.id || `debate_${Date.now()}`),
       datasetId: String(d.dataset_id || d.datasetId || ""),
@@ -314,9 +344,12 @@ const executors: Record<string, ToolExecutor> = {
             priceTargets: (summary.price_targets || summary.priceTargets || { low: 0, mid: 0, high: 0 }) as { low: number; mid: number; high: number },
             riskFactors: (summary.risk_factors || summary.riskFactors || []) as string[],
             recommendation: (summary.recommendation || {}) as Record<string, unknown>,
+            convictionShifts: (summary.conviction_shifts || summary.convictionShifts || []) as string[],
           }
         : null,
       status: "complete" as const,
+      intelBriefing,
+      crossExamResults,
     };
 
     useStore.getState().setCurrentDebate(mapped as never);

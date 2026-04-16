@@ -36,17 +36,54 @@ import type { StrategyConfig, TraceStep, TraceSubStep, TraceData } from "@/types
  */
 const SKILL_SUB_PLANS: Record<string, { label: string; durationMs: number }[]> = {
   swarm_intelligence: [
-    { label: "Classifying asset...", durationMs: 3000 },
-    { label: "Preparing multi-timeframe data...", durationMs: 2000 },
-    { label: "Generating personas (batch 1)...", durationMs: 6000 },
-    { label: "Generating personas (batch 2)...", durationMs: 6000 },
-    { label: "Generating personas (batch 3)...", durationMs: 6000 },
-    { label: "Discussion round 1-5...", durationMs: 20000 },
-    { label: "Discussion round 6-10...", durationMs: 20000 },
-    { label: "Discussion round 11-15...", durationMs: 20000 },
-    { label: "Discussion round 16-20...", durationMs: 20000 },
-    { label: "Checking convergence...", durationMs: 2000 },
-    { label: "Generating final summary...", durationMs: 5000 },
+    // Stage 1: Context
+    { label: "Stage 1: Classifying asset + analyzing market context...", durationMs: 4000 },
+    { label: "Stage 1: Building specialization data feeds (6 feeds)...", durationMs: 2000 },
+    // Stage 1.5: Intelligence Gathering
+    { label: "Stage 1.5: Searching web for recent news (3-8 results)...", durationMs: 8000 },
+    { label: "Stage 1.5: Searching market analysis + regulatory updates...", durationMs: 8000 },
+    { label: "Stage 1.5: Computing indicators (RSI, MACD, Bollinger, ATR, VWAP)...", durationMs: 2000 },
+    { label: "Stage 1.5: Synthesizing intelligence briefing (bull/bear cases)...", durationMs: 5000 },
+    // Stage 2: Personas
+    { label: "Stage 2: Generating personas batch 1 (10-12 agents)...", durationMs: 8000 },
+    { label: "Stage 2: Generating personas batch 2 (10-12 more)...", durationMs: 8000 },
+    { label: "Stage 2: Generating personas batch 3 (10-12 more)...", durationMs: 8000 },
+    { label: "Stage 2: Generating personas batch 4 (10-12 more)...", durationMs: 8000 },
+    { label: "Stage 2: Generating personas batch 5 (final batch, target 50)...", durationMs: 8000 },
+    { label: "Stage 2: Assigning tools per specialization (technical, macro, quant, etc.)...", durationMs: 1000 },
+    // Stage 3: Debate
+    { label: "Stage 3: Rounds 1-3 — RESEARCH PHASE (agents use their tools)...", durationMs: 45000 },
+    { label: "Stage 3: Rounds 4-8 — initial positions forming...", durationMs: 45000 },
+    { label: "Stage 3: Rounds 9-13 — counterarguments and rebuttals...", durationMs: 45000 },
+    { label: "Stage 3: Rounds 14-18 — evidence-based refinement...", durationMs: 45000 },
+    { label: "Stage 3: Rounds 19-23 — consensus emerging...", durationMs: 45000 },
+    { label: "Stage 3: Rounds 24-30 — final positions + convergence check...", durationMs: 45000 },
+    // Stage 4: Cross-Exam
+    { label: "Stage 4: Selecting 6-8 most divergent agents for cross-exam...", durationMs: 2000 },
+    { label: "Stage 4: Cross-examining extreme positions (parallel)...", durationMs: 20000 },
+    // Stage 5: Report
+    { label: "Stage 5: ReACT analysis — DEEP_ANALYSIS tool...", durationMs: 5000 },
+    { label: "Stage 5: ReACT analysis — INTERVIEW tool (sentiment shifts)...", durationMs: 5000 },
+    { label: "Stage 5: ReACT analysis — VERIFY tool (fact check vs data)...", durationMs: 5000 },
+    { label: "Stage 5: Synthesizing final research note...", durationMs: 15000 },
+  ],
+  data_fetcher: [
+    { label: "Parsing request (extracting symbol, interval, limit)...", durationMs: 3000 },
+    { label: "Fetching historical bars from data provider...", durationMs: 5000 },
+    { label: "Resampling to chart timeframe...", durationMs: 1500 },
+    { label: "Syncing dataset to backend store...", durationMs: 1500 },
+  ],
+  pattern: [
+    { label: "Analyzing user's pattern description...", durationMs: 2000 },
+    { label: "Generating pattern detection script...", durationMs: 8000 },
+    { label: "Validating script syntax...", durationMs: 500 },
+    { label: "Running script in Web Worker...", durationMs: 3000 },
+  ],
+  strategy: [
+    { label: "Parsing strategy config (entry/exit/TP/SL)...", durationMs: 1500 },
+    { label: "Generating JavaScript strategy...", durationMs: 10000 },
+    { label: "Running backtest on chart data...", durationMs: 2500 },
+    { label: "Computing metrics (win rate, profit factor, Sharpe)...", durationMs: 1000 },
   ],
 };
 

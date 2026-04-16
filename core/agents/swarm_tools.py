@@ -18,31 +18,98 @@ Tool categories:
 from __future__ import annotations
 
 import re
+import time
 from typing import Any, Dict, List, Optional
 
 
 # ─── Web Search ──────────────────────────────────────────────────────────
 
+import threading
+import time as _time
+from functools import wraps
+
+# Global rate limiter — DuckDuckGo will IP-block if called too fast in parallel.
+# Serialize all web searches through a single lock + min interval.
+_search_lock = threading.Lock()
+_last_search_time = 0.0
+_MIN_SEARCH_INTERVAL = 0.5  # seconds between requests
+
+
+def _with_timeout(timeout_seconds: float):
+    """Run a function with a hard timeout. Returns None on timeout."""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            result: List[Any] = [None]
+            exc: List[Any] = [None]
+            def target():
+                try:
+                    result[0] = func(*args, **kwargs)
+                except Exception as e:
+                    exc[0] = e
+            t = threading.Thread(target=target, daemon=True)
+            t.start()
+            t.join(timeout_seconds)
+            if t.is_alive():
+                return None  # Timed out
+            if exc[0]:
+                raise exc[0]
+            return result[0]
+        return wrapper
+    return decorator
+
+
 def web_search(query: str, max_results: int = 5) -> List[Dict[str, str]]:
     """
-    Search the web using DuckDuckGo. Returns a list of results with
-    title, url, and snippet. No API key required.
+    Search the web with retries, timeout, and backend fallback.
+
+    Tries DuckDuckGo with multiple backends (auto, html, lite) with
+    exponential backoff. Rate-limited globally to avoid IP blocks.
+    Returns empty list on total failure (never hangs the pipeline).
     """
-    try:
-        from duckduckgo_search import DDGS
-        results = []
-        with DDGS() as ddgs:
-            for r in ddgs.text(query, max_results=max_results, backend="lite"):
-                results.append({
-                    "title": r.get("title", ""),
-                    "url": r.get("href", ""),
-                    "snippet": r.get("body", ""),
-                })
-                if len(results) >= max_results:
-                    break
-        return results
-    except Exception as e:
-        return [{"title": "Search failed", "url": "", "snippet": str(e)[:200]}]
+    global _last_search_time
+
+    # Global rate limit
+    with _search_lock:
+        elapsed = _time.time() - _last_search_time
+        if elapsed < _MIN_SEARCH_INTERVAL:
+            _time.sleep(_MIN_SEARCH_INTERVAL - elapsed)
+        _last_search_time = _time.time()
+
+    backends = ["auto", "html", "lite"]
+    for attempt, backend in enumerate(backends):
+        try:
+            @_with_timeout(10.0)  # 10s hard timeout per attempt
+            def _do_search():
+                try:
+                    from ddgs import DDGS  # New package name
+                except ImportError:
+                    from duckduckgo_search import DDGS  # Old name fallback
+                results = []
+                with DDGS() as ddgs:
+                    for r in ddgs.text(query, max_results=max_results, backend=backend):
+                        results.append({
+                            "title": r.get("title", ""),
+                            "url": r.get("href", ""),
+                            "snippet": r.get("body", ""),
+                        })
+                        if len(results) >= max_results:
+                            break
+                return results
+
+            results = _do_search()
+            if results:
+                return results
+        except Exception as e:
+            # Exponential backoff: 1s, 2s, 4s
+            wait = 2 ** attempt
+            _time.sleep(wait)
+            if attempt == len(backends) - 1:
+                # Last attempt failed — log and return empty
+                print(f"[web_search] all backends failed for '{query[:50]}': {str(e)[:100]}")
+                return []
+
+    return []
 
 
 def fetch_news(asset_name: str, max_results: int = 5) -> List[Dict[str, str]]:
@@ -345,13 +412,13 @@ def run_research_suite(
     findings: Dict[str, str] = {}
 
     # 1. Recent news
-    news = fetch_news(asset_name, max_results=3)
+    news = fetch_news(asset_name, max_results=8)
     findings["recent_news"] = "\n".join(
         f"- {r['title']}: {r['snippet']}" for r in news
     ) if news else "No news found."
 
     # 2. Market analysis
-    analysis = web_search(f"{asset_name} {asset_class} technical analysis outlook 2025", max_results=3)
+    analysis = web_search(f"{asset_name} {asset_class} technical analysis outlook 2025", max_results=5)
     findings["market_analysis"] = "\n".join(
         f"- {r['title']}: {r['snippet']}" for r in analysis
     ) if analysis else "No analysis found."
