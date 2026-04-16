@@ -319,6 +319,29 @@ interface AppState {
   dockTab: (tabId: string) => void;
 }
 
+/**
+ * Remove a tile ID from a mosaic layout tree. If the tile is one side of a
+ * split, the other side takes over (collapses the split). Returns the pruned
+ * tree, or null if the entire tree was just the removed tile.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function _pruneTileFromLayout(layout: any, tileId: string): any {
+  if (!layout) return null;
+  // Leaf node — it's a string tile ID
+  if (typeof layout === 'string') {
+    return layout === tileId ? null : layout;
+  }
+  // Branch node — has first + second
+  const first = _pruneTileFromLayout(layout.first, tileId);
+  const second = _pruneTileFromLayout(layout.second, tileId);
+  // If one side was pruned, the other takes over
+  if (first === null && second === null) return null;
+  if (first === null) return second;
+  if (second === null) return first;
+  // Both sides survive — keep the split
+  return { ...layout, first, second };
+}
+
 export const useStore = create<AppState>((set, get) => ({
   // ─── Conversations (persisted) ──────────────────────────────────────
   conversations: [],
@@ -1045,11 +1068,12 @@ export const useStore = create<AppState>((set, get) => ({
   removeTile: (tileId) => {
     set((s) => {
       const { [tileId]: removed, ...rest } = s.tileRegistry;
-      // If it's a popped-out tab, re-dock it
       const nextPopped = new Set(s.poppedOutTabs);
       if (removed?.tabId) nextPopped.delete(removed.tabId);
-      return { tileRegistry: rest, poppedOutTabs: nextPopped };
+      const pruned = _pruneTileFromLayout(s.mosaicLayout, tileId);
+      return { tileRegistry: rest, poppedOutTabs: nextPopped, mosaicLayout: pruned };
     });
+    window.dispatchEvent(new Event('resize'));
   },
 
   popOutTab: (tabId, component, label) => {
@@ -1072,14 +1096,18 @@ export const useStore = create<AppState>((set, get) => ({
     set((s) => {
       const nextPopped = new Set(s.poppedOutTabs);
       nextPopped.delete(tabId);
-      // Find and remove the tile from registry
+      // Find the tile ID to remove
       const entry = Object.entries(s.tileRegistry).find(([, t]) => t.tabId === tabId);
       if (entry) {
-        const { [entry[0]]: _, ...rest } = s.tileRegistry;
-        return { poppedOutTabs: nextPopped, tileRegistry: rest };
+        const tileId = entry[0];
+        const { [tileId]: _, ...rest } = s.tileRegistry;
+        // Prune the dead tile from the mosaic layout tree
+        const pruned = _pruneTileFromLayout(s.mosaicLayout, tileId);
+        return { poppedOutTabs: nextPopped, tileRegistry: rest, mosaicLayout: pruned };
       }
       return { poppedOutTabs: nextPopped };
     });
+    window.dispatchEvent(new Event('resize'));
   },
 }));
 
