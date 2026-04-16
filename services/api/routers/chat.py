@@ -395,13 +395,11 @@ async def make_plan(req: PlanRequest) -> dict:
       }
     """
     from core.agents.planner import plan as build_plan
-    from core.agents.vibe_trade_agent import looks_multi_step
 
-    if not looks_multi_step(req.message):
-        return {"steps": [], "is_multi_step": False}
-
+    # Always plan — even single-skill requests get a plan so the trace UI
+    # shows progress. The sub-planner gives real-time insight into every task.
     steps = build_plan(req.message, available_skills=req.available_skills or None)
-    return {"steps": steps, "is_multi_step": True}
+    return {"steps": steps, "is_multi_step": len(steps) > 0}
 
 
 @router.post("/fetch-data")

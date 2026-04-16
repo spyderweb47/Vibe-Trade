@@ -106,23 +106,19 @@ export function RightSidebar() {
     };
 
     try {
-      // Built-in default-agent planner. Routing depends on how many skills
-      // the user has active:
-      //   0 skills  → planner with ALL skills available (zero-config default)
-      //   1 skill   → direct dispatch (fast path, no planner overhead)
-      //   2+ skills → planner RESTRICTED to only those skills
+      // Always run through the planner so the trace UI shows progress for
+      // every request — even single-skill tasks. The sub-planner trace
+      // gives real-time insight into what each skill is doing.
       const skillCount = activeSkillIds.size;
-      if (skillCount !== 1) {
-        try {
-          const availableSkills = skillCount >= 2 ? Array.from(activeSkillIds) : undefined;
-          const planResult = await getPlan(text, undefined, availableSkills);
-          if (planResult.is_multi_step && planResult.steps.length > 0) {
-            await executePlanInBrowser({ steps: planResult.steps });
-            return;
-          }
-        } catch (err) {
-          console.warn("Plan endpoint failed, falling back to general chat:", err);
+      try {
+        const availableSkills = skillCount >= 1 ? Array.from(activeSkillIds) : undefined;
+        const planResult = await getPlan(text, undefined, availableSkills);
+        if (planResult.steps && planResult.steps.length > 0) {
+          await executePlanInBrowser({ steps: planResult.steps });
+          return;
         }
+      } catch (err) {
+        console.warn("Plan endpoint failed, falling back to general chat:", err);
       }
 
       // Auto-sync dataset to backend if needed
