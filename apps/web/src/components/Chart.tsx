@@ -356,7 +356,15 @@ export function Chart({
 
   // Update data
   useEffect(() => {
-    if (!seriesRef.current || data.length === 0) return;
+    if (!seriesRef.current) return;
+
+    // When data is empty (new conversation), clear the chart
+    if (data.length === 0) {
+      seriesRef.current.setData([]);
+      if (volumeSeriesRef.current) volumeSeriesRef.current.setData([]);
+      if (spacerSeriesRef.current) spacerSeriesRef.current.setData([]);
+      return;
+    }
 
     // Build candle data — in playground, only include bars up to cursor (real data).
     // Future bars are handled by the invisible spacer series (extends the time scale).
