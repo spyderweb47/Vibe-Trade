@@ -1177,7 +1177,7 @@ class ReACTReportAgent:
                 "Reference actual price levels from the data."
             ),
             temperature=0.3,
-            max_tokens=8000,
+            max_tokens=3000,
         )
         result.setdefault("consensus_direction", "NEUTRAL")
         result.setdefault("confidence", 50)

@@ -32,15 +32,17 @@ def web_search(query: str, max_results: int = 5) -> List[Dict[str, str]]:
         from duckduckgo_search import DDGS
         results = []
         with DDGS() as ddgs:
-            for r in ddgs.text(query, max_results=max_results):
+            for r in ddgs.text(query, max_results=max_results, backend="lite"):
                 results.append({
                     "title": r.get("title", ""),
                     "url": r.get("href", ""),
                     "snippet": r.get("body", ""),
                 })
+                if len(results) >= max_results:
+                    break
         return results
     except Exception as e:
-        return [{"title": "Search failed", "url": "", "snippet": str(e)}]
+        return [{"title": "Search failed", "url": "", "snippet": str(e)[:200]}]
 
 
 def fetch_news(asset_name: str, max_results: int = 5) -> List[Dict[str, str]]:
@@ -343,13 +345,13 @@ def run_research_suite(
     findings: Dict[str, str] = {}
 
     # 1. Recent news
-    news = fetch_news(asset_name, max_results=8)
+    news = fetch_news(asset_name, max_results=3)
     findings["recent_news"] = "\n".join(
         f"- {r['title']}: {r['snippet']}" for r in news
     ) if news else "No news found."
 
     # 2. Market analysis
-    analysis = web_search(f"{asset_name} {asset_class} technical analysis outlook 2025", max_results=5)
+    analysis = web_search(f"{asset_name} {asset_class} technical analysis outlook 2025", max_results=3)
     findings["market_analysis"] = "\n".join(
         f"- {r['title']}: {r['snippet']}" for r in analysis
     ) if analysis else "No analysis found."

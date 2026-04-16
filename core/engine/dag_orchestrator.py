@@ -173,17 +173,21 @@ class DebateOrchestrator:
                 feed_key = feed_map.get(spec, "general")
                 spec_data = data_feeds.get(feed_key, data_feeds.get("general", ""))
 
-                # Execute agent-specific tools before they speak
+                # Execute agent-specific tools before they speak — but only
+                # LOCAL tools (indicators, levels). Web tools already ran in
+                # the intelligence gathering stage; calling them per-agent
+                # per-round causes rate limiting and hangs.
                 tool_results = ""
                 agent_tools = entity.get("tools", [])
-                if agent_tools and round_num <= 3:  # Tools only in first 3 rounds (research phase)
+                local_tools = [t for t in agent_tools if t in ("run_indicator", "compute_levels")]
+                if local_tools and round_num <= 2:  # Local tools only in first 2 rounds
                     from core.agents.swarm_tools import execute_tool
                     tool_outputs = []
-                    for tool_name in agent_tools[:2]:  # Max 2 tools per agent per round
+                    for tool_name in local_tools[:2]:
                         try:
                             result = execute_tool(tool_name, bars, asset_info.get("asset_name", symbol))
                             if result and len(result) > 20:
-                                tool_outputs.append(f"[{tool_name}]: {result[:1500]}")
+                                tool_outputs.append(f"[{tool_name}]: {result[:1000]}")
                         except Exception:
                             pass
                     if tool_outputs:
