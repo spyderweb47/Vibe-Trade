@@ -40,13 +40,22 @@ ASSET_CLASSIFIER_PROMPT = """You are an asset classification expert. You receive
 
 4. List 5-8 key factors that drive this asset's price
 
+CRITICAL: Use the PRICE RANGE to identify the asset. A $60-$100 price range is NOT Bitcoin
+(which trades at $50K-$100K). It could be crude oil, a mid-cap stock, or a commodity.
+Match the price range to the asset class:
+  - $50K-$100K → likely Bitcoin
+  - $2K-$5K → likely Ethereum or gold
+  - $100-$300 → likely a large-cap stock (AAPL, MSFT)
+  - $20-$200 → likely a commodity (crude oil, natural gas) or mid-cap stock
+  - $1-$50 → likely a small-cap stock, forex pair, or altcoin
+
 Respond with ONLY valid JSON (no markdown fences):
-{
-  "asset_class": "crypto",
-  "asset_name": "Bitcoin (BTC)",
-  "description": "Layer 1 proof-of-work blockchain, the original cryptocurrency and digital store of value. Market cap ~$1.3T.",
-  "price_drivers": ["Federal Reserve interest rates", "Institutional adoption (ETFs)", "Bitcoin halving cycles", "On-chain metrics (whale movements, exchange flows)", "Regulatory environment", "Dollar strength (DXY)", "Global risk appetite", "Mining economics (hashrate, energy costs)"]
-}"""
+{{
+  "asset_class": "<crypto|stock|commodity|forex|index|etf>",
+  "asset_name": "<Full Name (TICKER)>",
+  "description": "<One sentence describing the asset>",
+  "price_drivers": ["driver 1", "driver 2", "driver 3", "driver 4"]
+}}"""
 
 
 class AssetClassifier:
@@ -365,7 +374,11 @@ YOUR TURN TO RESPOND. You MUST:
 2. Add YOUR unique perspective based on your expertise that others haven't mentioned
 3. Stay FULLY in character as {name} — use your speaking style, your specific knowledge, your natural bias
 4. If your opinion has SHIFTED based on what others said, explain why
-5. If you feel confident, give a SPECIFIC price prediction with your timeframe
+5. If you feel confident, give a SPECIFIC price prediction with your timeframe.
+   CRITICAL: Price predictions MUST be in the CORRECT SCALE for the asset.
+   Look at the current price in the market data above. If the asset trades
+   at ~$90, your prediction should be in the $70-$120 range — NOT $70,000-$120,000.
+   If the asset trades at ~$85,000, then $80,000-$100,000 is appropriate.
 
 Your response should be SUBSTANTIAL — like a real analyst note (6-10 sentences). Cover:
 - Your core thesis with SPECIFIC price levels, indicators, or data points backing it
@@ -486,7 +499,7 @@ Respond with ONLY valid JSON (no markdown fences):
     "Contrarian view 1 — cite the panelist and their specific concern",
     "Contrarian view 2 — note what would need to happen for bears to be right"
   ],
-  "price_targets": {{ "low": 58000, "mid": 65000, "high": 75000 }},
+  "price_targets": {{ "low": "<number matching asset price scale>", "mid": "<number>", "high": "<number>" }},
   "risk_factors": [
     "Risk 1 — specific trigger event, not generic",
     "Risk 2 — quantified probability or impact if possible",
@@ -494,15 +507,17 @@ Respond with ONLY valid JSON (no markdown fences):
   ],
   "recommendation": {{
     "action": "BUY",
-    "entry": 62000,
-    "stop": 58000,
-    "target": 72000,
+    "entry": "<price matching the asset's actual price scale>",
+    "stop": "<price below entry>",
+    "target": "<price above entry>",
     "position_size_pct": 2.0
   }}
 }}
 
 consensus_direction: BULLISH / BEARISH / NEUTRAL
-confidence: an INTEGER from 0 to 100 representing the percentage of panelist alignment. For example, 72 means 72% of panelists agree on the direction. NEVER use a decimal like 0.72 — use the integer 72."""
+confidence: an INTEGER from 0 to 100 representing the percentage of panelist alignment. For example, 72 means 72% of panelists agree on the direction. NEVER use a decimal like 0.72 — use the integer 72.
+
+CRITICAL: All price targets, entry, stop, and target values MUST match the asset's ACTUAL price scale from the market data. If the asset trades at ~$90, targets should be $80-$100 range. If it trades at ~$85,000, targets should be $75,000-$95,000. NEVER use BTC-scale prices for non-BTC assets."""
 
 
 class SummaryAgent:
@@ -978,7 +993,7 @@ Respond with JSON:
     "View 1 — cite the dissenting panelist, their reasoning, and what would prove them right",
     "View 2 — cite dissenter"
   ],
-  "price_targets": {{ "low": 58000, "mid": 65000, "high": 75000 }},
+  "price_targets": {{ "low": "<number matching asset price scale>", "mid": "<number>", "high": "<number>" }},
   "risk_factors": [
     "Risk 1 — specific trigger + estimated probability",
     "Risk 2 — specific trigger",
@@ -986,9 +1001,9 @@ Respond with JSON:
   ],
   "recommendation": {{
     "action": "BUY",
-    "entry": 62000,
-    "stop": 58000,
-    "target": 72000,
+    "entry": "<price matching the asset's actual price scale>",
+    "stop": "<price below entry>",
+    "target": "<price above entry>",
     "position_size_pct": 2.0
   }},
   "conviction_shifts": [
@@ -996,7 +1011,12 @@ Respond with JSON:
   ]
 }}
 
-confidence: INTEGER 0-100 (influence-weighted agreement %). NEVER a decimal."""
+confidence: INTEGER 0-100 (influence-weighted agreement %). NEVER a decimal.
+
+CRITICAL: All price targets, entry, stop, and target values MUST match the asset's ACTUAL
+price scale. Look at the market data above — if the current price is ~$90, your targets should
+be in the $70-$120 range. If the current price is ~$85,000, use $75,000-$95,000. NEVER mix
+up scales (e.g., putting $85,000 targets for a $90 commodity)."""
 
 
 class ReACTReportAgent:
