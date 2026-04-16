@@ -257,11 +257,11 @@ Include AT LEAST 2-3 OBSERVER entities whose job is NOT to have a bull/bear opin
 - Point out when someone's conclusion doesn't follow from their data
 - Track which arguments are supported by evidence vs. opinion
 
-Generate exactly 20-25 entities. Each must feel like a real person."""
+Generate exactly 40-50 entities. Maximum diversity and depth. Each must feel like a real person."""
 
 
 class EntityGenerator:
-    TARGET_ENTITIES = 22
+    TARGET_ENTITIES = 50
     BATCH_SIZE = 10  # LLMs reliably produce 10-12 entities per call
 
     def generate(self, asset_info: dict, market_summary: str, report_text: str = "") -> list:
@@ -405,7 +405,7 @@ class DiscussionAgent:
 
         thread_context = ""
         if thread_so_far:
-            recent_thread = thread_so_far[-5000:] if len(thread_so_far) > 5000 else thread_so_far
+            recent_thread = thread_so_far[-8000:] if len(thread_so_far) > 8000 else thread_so_far
             thread_context = f"## Recent Discussion\n{recent_thread}"
 
         # Entity dicts from the LLM may use varying key names — be defensive
@@ -440,7 +440,7 @@ class DiscussionAgent:
             system_prompt=prompt,
             user_message="Your turn. Speak now. Give a detailed, substantive response with specific data points and price levels.",
             temperature=0.6,
-            max_tokens=800,
+            max_tokens=1200,
         )
         result.setdefault("content", f"{self.entity['name']}: No comment.")
         result.setdefault("sentiment", 0.0)
@@ -694,14 +694,13 @@ class CrossExaminer:
             scored.append((extremity, eid, entity, avg))
 
         scored.sort(key=lambda x: -x[0])
-        # Pick top 3 most extreme (highest conviction * influence)
-        targets = scored[:3]
-        # Also pick 1 from the opposite side if available
-        if len(scored) > 3:
+        # Pick top 6 most extreme (highest conviction * influence)
+        targets = scored[:6]
+        # Also pick 2 from the opposite side if available
+        if len(scored) > 6:
             top_direction = scored[0][3]  # sentiment of most extreme
-            opposite = [s for s in scored[3:] if s[3] * top_direction < 0]
-            if opposite:
-                targets.append(opposite[0])
+            opposite = [s for s in scored[6:] if s[3] * top_direction < 0]
+            targets.extend(opposite[:2])
 
         results = []
         for _, eid, entity, avg_sent in targets:
@@ -735,9 +734,9 @@ class CrossExaminer:
 
             result = chat_completion_json(
                 system_prompt=prompt,
-                user_message="Respond to the cross-examination now.",
+                user_message="Respond to the cross-examination now. Be thorough — defend or revise with specific evidence.",
                 temperature=0.4,
-                max_tokens=600,
+                max_tokens=1000,
             )
 
             results.append({
@@ -900,7 +899,7 @@ class ReACTReportAgent:
                 "Reference actual price levels from the data."
             ),
             temperature=0.3,
-            max_tokens=4000,
+            max_tokens=8000,
         )
         result.setdefault("consensus_direction", "NEUTRAL")
         result.setdefault("confidence", 50)

@@ -51,8 +51,8 @@ from core.agents.simulation_agents import (
 class DebateOrchestrator:
     """Runs the full MiroFish-inspired 5-stage swarm simulation."""
 
-    MAX_ROUNDS = 15
-    SPEAKERS_PER_ROUND = 8
+    MAX_ROUNDS = 30
+    SPEAKERS_PER_ROUND = 15
 
     def __init__(self) -> None:
         self.classifier = AssetClassifier()
@@ -102,7 +102,7 @@ class DebateOrchestrator:
         entities = await asyncio.to_thread(
             self.entity_gen.generate, asset_info, main_summary, report_text
         )
-        entities = entities[:25]  # Cap at 25 for cost control
+        # No cap — maximum throughput, all generated personas participate
 
         # ─── Stage 3: Multi-Round Debate with Memory ─────────────────────
         thread: List[Dict[str, Any]] = []
@@ -125,7 +125,7 @@ class DebateOrchestrator:
                 role = entity.get("role", "").lower()
                 # Selective routing: show messages from related roles + mentions
                 name = entity.get("name", "")
-                relevant_thread = self._filter_thread_for_agent(thread, name, role, max_chars=4000)
+                relevant_thread = self._filter_thread_for_agent(thread, name, role, max_chars=6000)
                 # Personal memory of own previous positions
                 own_memory = agent_memory.get(eid, [])
                 memory_text = ""
@@ -210,10 +210,10 @@ class DebateOrchestrator:
             weighted_avg = sum(round_sentiments) / total_influence
             sentiments_by_round.append(weighted_avg)
 
-            if round_num >= 8 and len(sentiments_by_round) >= 4:
-                recent = sentiments_by_round[-4:]
+            if round_num >= 20 and len(sentiments_by_round) >= 5:
+                recent = sentiments_by_round[-5:]
                 spread = max(recent) - min(recent)
-                if spread < 0.10:
+                if spread < 0.05:  # Very tight convergence required
                     break
 
         # ─── Stage 4: Cross-Examination ──────────────────────────────────
