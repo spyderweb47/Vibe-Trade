@@ -251,8 +251,9 @@ export function RightSidebar() {
   };
 
   const handleStrategySubmit = async (config: StrategyConfig) => {
+    const convId = activeConversationId;
     setStrategyConfig(config);
-    setLoading(true);
+    if (convId) setConversationLoading(convId, true);
     addMessage({ role: "user", content: `Strategy: Entry=${config.entryCondition}, Exit=${config.exitCondition || "TP/SL only"}, TP=${config.takeProfit.value}${config.takeProfit.type === "percentage" ? "%" : "$"}, SL=${config.stopLoss.value}${config.stopLoss.type === "percentage" ? "%" : ""}, Max DD=${config.maxDrawdown}%, Seed=$${config.seedAmount}${config.specialInstructions ? ", Special: " + config.specialInstructions : ""}` });
 
     try {
@@ -269,7 +270,7 @@ export function RightSidebar() {
     } catch (err) {
       addMessage({ role: "agent", content: `Error: ${err instanceof Error ? err.message : "Failed"}` });
     } finally {
-      setLoading(false);
+      if (convId) setConversationLoading(convId, false);
     }
   };
 
