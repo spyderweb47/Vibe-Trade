@@ -4,7 +4,11 @@ import type {
   BacktestResult,
 } from '@/types';
 
-const BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001';
+// In dev mode (npm run dev), NEXT_PUBLIC_API_URL points to the separate
+// FastAPI backend process (e.g. http://localhost:8001). In production /
+// static-export mode (vibe-trade serve), the frontend and API are served
+// from the SAME origin, so we use '' (relative URLs like /skills, /chat).
+const BASE_URL = process.env.NEXT_PUBLIC_API_URL || '';
 
 async function request<T>(
   endpoint: string,
