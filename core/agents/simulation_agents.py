@@ -1,13 +1,11 @@
 """
-Social Simulation Engine for Vibe Trade.
+Swarm Intelligence Engine — MiroFish-inspired 5-stage pipeline.
 
-6-stage pipeline:
-  1. AssetClassifier — determines asset type + key price drivers
-  2. ChartSupportAgent — resamples OHLC data, pre-computes indicators
-  3. EntityGenerator — creates 20-30 diverse personas from report + asset context
-  4. DiscussionAgent — each entity participates in a shared-thread debate
-  5. ChartSupportAgent (mid-debate) — injects data when entities request it
-  6. SummaryAgent — produces final report from full discussion thread
+  Stage 1: ContextAnalyzer + AssetClassifier — extract knowledge from data
+  Stage 2: EntityGenerator — create personas with stances + influence weights
+  Stage 3: DiscussionAgent — debate with memory + selective routing
+  Stage 4: CrossExaminer — targeted follow-up to divergent agents
+  Stage 5: ReACTReportAgent — multi-step report with interview tool
 """
 
 from __future__ import annotations
@@ -245,12 +243,25 @@ Respond with ONLY valid JSON (no markdown fences). The JSON format is:
 IMPORTANT: Do NOT reuse example names. Invent completely original characters every time.
 
 bias options: strongly_bullish, bullish, cautious_bullish, neutral, cautious_bearish, bearish, strongly_bearish, contrarian
+stance options: bull, bear, neutral, observer (observers fact-check and flag inconsistencies — they don't argue a direction)
+influence: a number from 0.5 to 3.0. Institutional PMs and senior analysts get 2.0-3.0. Retail traders and media get 0.5-1.0. Quants and researchers get 1.5-2.0. Observers get 1.0.
 
-Generate exactly 30-35 entities. Cover EVERY relevant category for this specific asset — you need depth and diversity. Each one must feel like a real person you could have a conversation with — deep backstory, specific speaking style, earned bias."""
+ALSO include these ADDITIONAL fields for each entity:
+  "stance": "bull" | "bear" | "neutral" | "observer"
+  "influence": 1.5
+  "specialization": "technical" | "fundamental" | "macro" | "sentiment" | "quant" | "industry" | "geopolitical" | "general"
+
+Include AT LEAST 2-3 OBSERVER entities whose job is NOT to have a bull/bear opinion but to:
+- Fact-check other agents' claims
+- Flag logical inconsistencies
+- Point out when someone's conclusion doesn't follow from their data
+- Track which arguments are supported by evidence vs. opinion
+
+Generate exactly 20-25 entities. Each must feel like a real person."""
 
 
 class EntityGenerator:
-    TARGET_ENTITIES = 30
+    TARGET_ENTITIES = 22
     BATCH_SIZE = 10  # LLMs reliably produce 10-12 entities per call
 
     def generate(self, asset_info: dict, market_summary: str, report_text: str = "") -> list:
@@ -545,6 +556,375 @@ class SummaryAgent:
 # ---------------------------------------------------------------------------
 # Utility: format OHLC for prompt (reused from existing code, simplified)
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Stage 1 (new): Context Analyzer — extracts structured knowledge from data
+# ---------------------------------------------------------------------------
+
+CONTEXT_ANALYSIS_PROMPT = """You are a senior market analyst. Analyze this OHLC market data and extract structured knowledge.
+
+## Data
+{data_summary}
+
+## User Context
+{report_text}
+
+Extract the following as JSON:
+{{
+  "market_regime": "trending_up | trending_down | ranging | breakout | breakdown | volatile",
+  "key_price_levels": {{
+    "strong_resistance": [list of 2-3 significant resistance levels],
+    "strong_support": [list of 2-3 significant support levels],
+    "recent_pivot": "the most recent swing high or low price"
+  }},
+  "technical_signals": [
+    "Signal 1 — specific observation (e.g. 'price above 200 SMA, bullish trend')",
+    "Signal 2 — specific observation",
+    "Signal 3 — specific observation"
+  ],
+  "volume_analysis": "brief volume trend observation",
+  "key_themes": ["theme 1 from user context or data", "theme 2", "theme 3"],
+  "risk_events": ["potential risk 1", "potential risk 2"]
+}}"""
+
+
+class ContextAnalyzer:
+    """Stage 1: Extract structured knowledge from OHLC data + context."""
+
+    def analyze(self, bars: list, symbol: str, report_text: str = "") -> dict:
+        data_summary = format_ohlc_summary(bars, symbol, "Analysis")
+
+        if not llm_available():
+            return {
+                "market_regime": "unknown",
+                "key_price_levels": {"strong_resistance": [], "strong_support": [], "recent_pivot": 0},
+                "technical_signals": [],
+                "volume_analysis": "N/A",
+                "key_themes": [],
+                "risk_events": [],
+            }
+
+        result = chat_completion_json(
+            system_prompt=CONTEXT_ANALYSIS_PROMPT.format(
+                data_summary=data_summary,
+                report_text=report_text[:2000] if report_text else "None provided",
+            ),
+            user_message="Analyze the data and extract structured knowledge now.",
+            temperature=0.2,
+            max_tokens=1000,
+        )
+        result.setdefault("market_regime", "unknown")
+        result.setdefault("key_price_levels", {})
+        result.setdefault("technical_signals", [])
+        result.setdefault("key_themes", [])
+        return result
+
+
+# ---------------------------------------------------------------------------
+# Stage 4 (new): Cross-Examiner — targeted follow-up to divergent agents
+# ---------------------------------------------------------------------------
+
+CROSS_EXAM_PROMPT = """You are {name}, a {role}.
+Background: {background}
+
+You just finished a multi-round debate about {asset_name}. Now you are being
+CROSS-EXAMINED by the moderator. You must defend your thesis.
+
+## The question directed at you:
+{question}
+
+## Your previous positions in the debate:
+{positions}
+
+## Key counterarguments from other panelists:
+{counterarguments}
+
+RULES:
+1. Address the specific question directly — don't dodge
+2. Acknowledge valid counterarguments before rebutting them
+3. If your view has shifted, explain exactly what changed your mind and by how much
+4. Give a FINAL price prediction with confidence level and timeframe
+5. Stay in character
+
+Respond with JSON:
+{{
+  "content": "Your detailed response to the cross-examination",
+  "final_sentiment": 0.5,
+  "final_price_prediction": null,
+  "conviction_change": "unchanged | strengthened | weakened | reversed"
+}}"""
+
+
+class CrossExaminer:
+    """Stage 4: Cross-examine the most divergent agents after the main debate."""
+
+    def examine(
+        self,
+        thread: list,
+        entities: list,
+        asset_info: dict,
+        market_summary: str,
+    ) -> list:
+        """Pick 3-5 key agents and ask pointed questions."""
+        if not llm_available() or len(thread) < 5:
+            return []
+
+        # Find the most divergent agents by sentiment spread
+        agent_sentiments: Dict[str, list] = {}
+        agent_messages: Dict[str, list] = {}
+        for msg in thread:
+            eid = msg.get("entity_id", "")
+            if eid == "chart_support":
+                continue
+            agent_sentiments.setdefault(eid, []).append(msg.get("sentiment", 0))
+            agent_messages.setdefault(eid, []).append(msg.get("content", "")[:150])
+
+        if not agent_sentiments:
+            return []
+
+        # Score agents by how extreme + influential they are
+        scored = []
+        for eid, sents in agent_sentiments.items():
+            avg = sum(sents) / len(sents) if sents else 0
+            entity = next((e for e in entities if e.get("id") == eid), None)
+            if not entity:
+                continue
+            influence = float(entity.get("influence", 1.0))
+            extremity = abs(avg) * influence
+            scored.append((extremity, eid, entity, avg))
+
+        scored.sort(key=lambda x: -x[0])
+        # Pick top 3 most extreme (highest conviction * influence)
+        targets = scored[:3]
+        # Also pick 1 from the opposite side if available
+        if len(scored) > 3:
+            top_direction = scored[0][3]  # sentiment of most extreme
+            opposite = [s for s in scored[3:] if s[3] * top_direction < 0]
+            if opposite:
+                targets.append(opposite[0])
+
+        results = []
+        for _, eid, entity, avg_sent in targets:
+            positions = "\n".join(f"- {m}" for m in agent_messages.get(eid, []))
+            # Find counterarguments from agents with opposite sentiment
+            opposite_msgs = [
+                f"{msg['entity_name']}: {msg['content'][:200]}"
+                for msg in thread
+                if msg.get("entity_id") != eid
+                and msg.get("sentiment", 0) * avg_sent < 0  # opposite sign
+                and not msg.get("is_chart_support")
+            ][:3]
+            counterargs = "\n".join(opposite_msgs) if opposite_msgs else "None — you're in the minority."
+
+            direction = "bullish" if avg_sent > 0 else "bearish" if avg_sent < 0 else "neutral"
+            question = (
+                f"You've been consistently {direction} throughout this debate. "
+                f"Several panelists disagree with you. Can you defend your thesis "
+                f"against their specific objections? What would change your mind?"
+            )
+
+            prompt = CROSS_EXAM_PROMPT.format(
+                name=entity.get("name", "Analyst"),
+                role=entity.get("role", "Analyst"),
+                background=entity.get("background", ""),
+                asset_name=asset_info.get("asset_name", "the asset"),
+                question=question,
+                positions=positions,
+                counterarguments=counterargs,
+            )
+
+            result = chat_completion_json(
+                system_prompt=prompt,
+                user_message="Respond to the cross-examination now.",
+                temperature=0.4,
+                max_tokens=600,
+            )
+
+            results.append({
+                "id": str(uuid.uuid4()),
+                "entity_id": eid,
+                "entity_name": entity.get("name", "Unknown"),
+                "entity_role": entity.get("role", "Analyst"),
+                "content": f"[Cross-examination] {result.get('content', 'No response.')}",
+                "sentiment": float(result.get("final_sentiment", avg_sent)),
+                "price_prediction": result.get("final_price_prediction"),
+                "agreed_with": [],
+                "disagreed_with": [],
+                "is_chart_support": False,
+                "data_request": None,
+                "influence": float(entity.get("influence", 1.0)),
+                "stance": entity.get("stance", "neutral"),
+                "conviction_change": result.get("conviction_change", "unchanged"),
+            })
+
+        return results
+
+
+# ---------------------------------------------------------------------------
+# Stage 5 (new): ReACT Report Agent — multi-step with tools
+# ---------------------------------------------------------------------------
+
+REACT_REPORT_PROMPT = """You are a chief investment strategist writing a professional research note about {asset_name} ({asset_class}).
+
+You observed {entity_count} panelists debate across {round_count} rounds ({message_count} messages), followed by a cross-examination round.
+
+You have access to these analytical tools — USE ALL OF THEM before writing your report:
+
+TOOL 1 — DEEP_ANALYSIS: Analyze the full debate thread to find consensus clusters,
+  divergence points, and sentiment evolution across rounds.
+TOOL 2 — INTERVIEW: Ask a specific agent a follow-up question about their analysis.
+TOOL 3 — VERIFY: Cross-reference a claim from the debate against the actual market data.
+
+## Market Context
+{market_context}
+
+## Knowledge Base
+Market regime: {regime}
+Key support: {support}
+Key resistance: {resistance}
+Technical signals: {signals}
+
+## Debate Summary (early rounds)
+{early_thread}
+
+## Debate Summary (late rounds + cross-examination)
+{late_thread}
+
+## Instructions
+1. First, call DEEP_ANALYSIS mentally — identify the 3 strongest bull arguments, 3 strongest bear arguments, and which side had higher-influence panelists
+2. Then INTERVIEW mentally — pick 2 agents whose views changed during the debate and analyze WHY
+3. Then VERIFY mentally — check if the key price levels mentioned by panelists match the actual data
+4. Finally, write a DETAILED research note
+
+Your report MUST:
+- Cite specific panelists by name ("As Marcus noted in round 3...")
+- Reference actual price levels from the data (not vague "support/resistance")
+- Quantify confidence based on influence-weighted sentiment
+- Provide a concrete trade setup (entry, stop, target, position size)
+- List specific triggers that would invalidate the thesis
+
+Respond with JSON:
+{{
+  "consensus_direction": "BULLISH",
+  "confidence": 72,
+  "key_arguments": [
+    "Argument 1 — cite panelist + specific data (min 2 sentences each)",
+    "Argument 2 — cite panelist + specific data",
+    "Argument 3 — cite panelist + specific data",
+    "Argument 4 — cite panelist + specific data",
+    "Argument 5 — cite panelist + specific data"
+  ],
+  "dissenting_views": [
+    "View 1 — cite the dissenting panelist, their reasoning, and what would prove them right",
+    "View 2 — cite dissenter"
+  ],
+  "price_targets": {{ "low": 58000, "mid": 65000, "high": 75000 }},
+  "risk_factors": [
+    "Risk 1 — specific trigger + estimated probability",
+    "Risk 2 — specific trigger",
+    "Risk 3 — specific trigger"
+  ],
+  "recommendation": {{
+    "action": "BUY",
+    "entry": 62000,
+    "stop": 58000,
+    "target": 72000,
+    "position_size_pct": 2.0
+  }},
+  "conviction_shifts": [
+    "Agent X shifted from bearish to neutral in round Y because Z"
+  ]
+}}
+
+confidence: INTEGER 0-100 (influence-weighted agreement %). NEVER a decimal."""
+
+
+class ReACTReportAgent:
+    """Stage 5: Multi-step ReACT report with deep analysis, interviews, and verification."""
+
+    def generate_report(
+        self,
+        thread_text: str,
+        thread: list,
+        entities: list,
+        asset_info: dict,
+        knowledge: dict,
+        entity_count: int = 0,
+        round_count: int = 0,
+        message_count: int = 0,
+    ) -> dict:
+        context = knowledge.get("context", {})
+        regime = context.get("market_regime", "unknown")
+        levels = context.get("key_price_levels", {})
+        signals = context.get("technical_signals", [])
+
+        # Split thread into early + late for the prompt
+        lines = thread_text.split("\n")
+        mid = max(1, len(lines) // 2)
+        early = "\n".join(lines[:mid])[-4000:]
+        late = "\n".join(lines[mid:])[-4000:]
+
+        prompt = REACT_REPORT_PROMPT.format(
+            asset_name=asset_info.get("asset_name", "Unknown"),
+            asset_class=asset_info.get("asset_class", "unknown"),
+            entity_count=entity_count,
+            round_count=round_count,
+            message_count=message_count,
+            market_context=knowledge.get("market_summary", "")[:2000],
+            regime=regime,
+            support=json.dumps(levels.get("strong_support", [])),
+            resistance=json.dumps(levels.get("strong_resistance", [])),
+            signals="\n".join(f"- {s}" for s in signals[:5]),
+            early_thread=early,
+            late_thread=late,
+        )
+
+        if not llm_available():
+            return {
+                "consensus_direction": "NEUTRAL",
+                "confidence": 50,
+                "key_arguments": ["LLM unavailable"],
+                "dissenting_views": [],
+                "price_targets": {"low": 0, "mid": 0, "high": 0},
+                "risk_factors": [],
+                "recommendation": {"action": "HOLD"},
+                "conviction_shifts": [],
+            }
+
+        result = chat_completion_json(
+            system_prompt=prompt,
+            user_message=(
+                "Generate a detailed investment research note. "
+                "Use the DEEP_ANALYSIS, INTERVIEW, and VERIFY tools mentally before writing. "
+                "Cite specific panelists by name with round numbers. "
+                "Reference actual price levels from the data."
+            ),
+            temperature=0.3,
+            max_tokens=4000,
+        )
+        result.setdefault("consensus_direction", "NEUTRAL")
+        result.setdefault("confidence", 50)
+        result.setdefault("key_arguments", [])
+        result.setdefault("dissenting_views", [])
+        result.setdefault("price_targets", {"low": 0, "mid": 0, "high": 0})
+        result.setdefault("risk_factors", [])
+        result.setdefault("recommendation", {"action": "HOLD"})
+        result.setdefault("conviction_shifts", [])
+
+        # Normalize confidence
+        conf = result["confidence"]
+        if isinstance(conf, (int, float)) and conf <= 1.0:
+            result["confidence"] = round(conf * 100)
+
+        return result
+
+
+# ---------------------------------------------------------------------------
+# Utility
+# ---------------------------------------------------------------------------
+
+import uuid  # noqa: E402 — needed by CrossExaminer
+
 
 def format_ohlc_summary(bars: list, symbol: str, timeframe_label: str = "Raw") -> str:
     if not bars:
