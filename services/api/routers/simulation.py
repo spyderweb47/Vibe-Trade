@@ -55,6 +55,9 @@ class DiscussionMessageResponse(BaseModel):
     agreed_with: List[str] = []
     disagreed_with: List[str] = []
     is_chart_support: bool = False
+    # Tool usage tracking — which tools this agent called and what they returned
+    tools_used: List[str] = []
+    tool_results: Dict[str, str] = {}
 
 
 class SummaryResponse(BaseModel):
@@ -181,6 +184,78 @@ async def run_debate(request: DebateRequest) -> DebateResponse:
         ),
         bars_analyzed=len(bars),
         symbol=symbol,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Interview endpoint — on-demand Q&A with a specific agent
+# ---------------------------------------------------------------------------
+
+class InterviewHistoryTurn(BaseModel):
+    role: str  # "user" or "agent"
+    content: str
+
+
+class InterviewRequest(BaseModel):
+    agent_id: str
+    agent_name: str
+    agent_role: str
+    agent_background: str = ""
+    agent_bias: str = "neutral"
+    agent_personality: str = ""
+    asset_name: str = "the asset"
+    asset_class: str = "unknown"
+    previous_positions: List[str] = []
+    question: str
+    interview_history: List[InterviewHistoryTurn] = []
+
+
+class InterviewResponse(BaseModel):
+    agent_id: str
+    response: str
+    sentiment: float
+
+
+@router.post("/interview", response_model=InterviewResponse)
+async def interview_agent(request: InterviewRequest) -> InterviewResponse:
+    """
+    Ask a specific debate agent a follow-up question. The agent stays
+    in character based on their original persona (name, role, bias,
+    personality, background) and can reference their previous debate
+    positions.
+    """
+    from core.agents.simulation_agents import InterviewAgent
+    import asyncio
+
+    agent = InterviewAgent()
+    entity = {
+        "id": request.agent_id,
+        "name": request.agent_name,
+        "role": request.agent_role,
+        "background": request.agent_background,
+        "bias": request.agent_bias,
+        "personality": request.agent_personality,
+    }
+    asset_info = {
+        "asset_name": request.asset_name,
+        "asset_class": request.asset_class,
+    }
+
+    history = [{"role": t.role, "content": t.content} for t in request.interview_history]
+
+    result = await asyncio.to_thread(
+        agent.ask,
+        entity,
+        asset_info,
+        request.previous_positions,
+        request.question,
+        history,
+    )
+
+    return InterviewResponse(
+        agent_id=request.agent_id,
+        response=result.get("response", ""),
+        sentiment=float(result.get("sentiment", 0)),
     )
 
 

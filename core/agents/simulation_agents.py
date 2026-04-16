@@ -1110,6 +1110,94 @@ be in the $70-$120 range. If the current price is ~$85,000, use $75,000-$95,000.
 up scales (e.g., putting $85,000 targets for a $90 commodity)."""
 
 
+# ---------------------------------------------------------------------------
+# Interview Agent — on-demand follow-up Q&A after the debate completes
+# ---------------------------------------------------------------------------
+
+INTERVIEW_PROMPT = """You are {name}, a {role}.
+Background: {background}
+Natural bias: {bias}
+Personality: {personality}
+
+You just finished a multi-round debate about {asset_name} ({asset_class}).
+A user is now asking YOU a follow-up question directly. Stay FULLY in
+character — use your speaking style, your specific knowledge, your natural
+bias. Reference your previous positions when relevant.
+
+## Your previous positions in the debate:
+{previous_positions}
+
+## Previous interview exchange (if any):
+{interview_history}
+
+## User's question:
+{question}
+
+Answer in 4-8 sentences. Be direct, substantive, and in character. Cite
+specific price levels or data points when possible. If the user's question
+is outside your expertise, acknowledge it and give your best take anyway.
+
+Respond with ONLY valid JSON (no markdown fences):
+{{
+  "response": "Your answer in character",
+  "sentiment": 0.5
+}}
+
+sentiment: -1.0 (very bearish) to +1.0 (very bullish) based on your current stance.
+"""
+
+
+class InterviewAgent:
+    """On-demand interview with a specific persona after the debate is done."""
+
+    def ask(
+        self,
+        entity: dict,
+        asset_info: dict,
+        previous_positions: List[str],
+        question: str,
+        interview_history: Optional[List[Dict[str, str]]] = None,
+    ) -> dict:
+        """Ask this entity a follow-up question. Returns dict with response + sentiment."""
+        if not llm_available():
+            return {
+                "response": f"[Mock] {entity.get('name', 'Agent')}: Interview requires an LLM API key.",
+                "sentiment": 0.0,
+            }
+
+        positions_text = "\n".join(f"- {p}" for p in (previous_positions or [])[-5:]) or "No previous positions recorded."
+
+        history_text = ""
+        if interview_history:
+            for turn in interview_history[-6:]:
+                role_label = "User" if turn.get("role") == "user" else entity.get("name", "Agent")
+                history_text += f"{role_label}: {turn.get('content', '')}\n"
+        history_text = history_text or "(This is the first question.)"
+
+        prompt = INTERVIEW_PROMPT.format(
+            name=entity.get("name", "Analyst"),
+            role=entity.get("role", "Analyst"),
+            background=entity.get("background", ""),
+            bias=entity.get("bias", "neutral"),
+            personality=entity.get("personality", ""),
+            asset_name=asset_info.get("asset_name", "the asset"),
+            asset_class=asset_info.get("asset_class", "unknown"),
+            previous_positions=positions_text,
+            interview_history=history_text,
+            question=question,
+        )
+
+        result = chat_completion_json(
+            system_prompt=prompt,
+            user_message="Answer the user's question now, in character.",
+            temperature=0.5,
+            max_tokens=800,
+        )
+        result.setdefault("response", f"{entity.get('name', 'Agent')}: I have no comment on that.")
+        result.setdefault("sentiment", 0.0)
+        return result
+
+
 class ReACTReportAgent:
     """Stage 5: Multi-step ReACT report with deep analysis, interviews, and verification."""
 

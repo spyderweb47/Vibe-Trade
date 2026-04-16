@@ -339,6 +339,9 @@ export interface DiscussionMessage {
   agreedWith?: string[];
   disagreedWith?: string[];
   isChartSupport?: boolean;
+  // Tool usage tracking — which tools this agent called in this message
+  toolsUsed?: string[];
+  toolResults?: Record<string, string>;
 }
 
 export interface SimulationSummary {

@@ -256,6 +256,36 @@ export async function runSimulationDebate(
   });
 }
 
+// ─── Agent Interview ───────────────────────────────────────────────────
+
+export interface InterviewRequest {
+  agent_id: string;
+  agent_name: string;
+  agent_role: string;
+  agent_background?: string;
+  agent_bias?: string;
+  agent_personality?: string;
+  asset_name?: string;
+  asset_class?: string;
+  previous_positions?: string[];
+  question: string;
+  interview_history?: Array<{ role: string; content: string }>;
+}
+
+export interface InterviewResponse {
+  agent_id: string;
+  response: string;
+  sentiment: number;
+}
+
+/** Ask a debate agent a follow-up question after the debate completes. */
+export async function interviewAgent(params: InterviewRequest): Promise<InterviewResponse> {
+  return request('/interview', {
+    method: 'POST',
+    body: JSON.stringify(params),
+  });
+}
+
 // Check if LLM is available
 export async function getChatStatus(): Promise<{ llm_available: boolean; mode: string }> {
   return request('/chat/status');

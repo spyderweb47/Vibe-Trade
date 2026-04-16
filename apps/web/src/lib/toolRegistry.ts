@@ -290,6 +290,8 @@ const executors: Record<string, ToolExecutor> = {
       agreedWith: (m.agreed_with || m.agreedWith || []) as string[],
       disagreedWith: (m.disagreed_with || m.disagreedWith || []) as string[],
       isChartSupport: Boolean(m.is_chart_support || m.isChartSupport),
+      toolsUsed: (m.tools_used || m.toolsUsed || []) as string[],
+      toolResults: (m.tool_results || m.toolResults || {}) as Record<string, string>,
     }));
 
     const summary = d.summary as Record<string, unknown> | null;

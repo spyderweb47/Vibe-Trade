@@ -307,6 +307,19 @@ interface AppState {
   runDebate: () => Promise<void>;
   setCurrentDebate: (d: import('@/types').SimulationDebate | null) => void;
   resetSimulation: () => void;
+
+  // ===== Agent Detail Panel — expand + interview =====
+  expandedAgentId: string | null;
+  setExpandedAgentId: (id: string | null) => void;
+
+  // Per-agent interview history: agentId → array of { role, content, timestamp }
+  agentInterviews: Record<string, Array<{ role: 'user' | 'agent'; content: string; timestamp: number }>>;
+  addAgentInterviewMessage: (agentId: string, msg: { role: 'user' | 'agent'; content: string }) => void;
+  clearAgentInterview: (agentId: string) => void;
+
+  // Loading state for interview requests
+  agentInterviewLoading: Set<string>;
+  setAgentInterviewLoading: (agentId: string, loading: boolean) => void;
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -1013,5 +1026,28 @@ export const useStore = create<AppState>((set, get) => ({
     if (snapped) set({ conversations: snapped });
   },
   resetSimulation: () => set({ currentDebate: null, simulationLoading: false }),
+
+  // ===== Agent Detail Panel =====
+  expandedAgentId: null,
+  setExpandedAgentId: (id) => set({ expandedAgentId: id }),
+
+  agentInterviews: {},
+  addAgentInterviewMessage: (agentId, msg) => set((s) => ({
+    agentInterviews: {
+      ...s.agentInterviews,
+      [agentId]: [...(s.agentInterviews[agentId] || []), { ...msg, timestamp: Date.now() }],
+    },
+  })),
+  clearAgentInterview: (agentId) => set((s) => {
+    const { [agentId]: _removed, ...rest } = s.agentInterviews;
+    return { agentInterviews: rest };
+  }),
+
+  agentInterviewLoading: new Set(),
+  setAgentInterviewLoading: (agentId, loading) => set((s) => {
+    const next = new Set(s.agentInterviewLoading);
+    if (loading) next.add(agentId); else next.delete(agentId);
+    return { agentInterviewLoading: next };
+  }),
 }));
 

@@ -184,34 +184,35 @@ class DebateOrchestrator:
                 # Execute agent-specific tools before they speak. Web tools
                 # go through a global rate limiter + retry/fallback; local
                 # tools (indicators, levels) are fast and pure Python.
-                tool_results = ""
+                tool_results_text = ""
+                tool_calls_log: Dict[str, str] = {}  # tool_name -> short result
                 agent_tools = entity.get("tools", [])
                 if agent_tools and round_num <= 3:  # Tools only in first 3 rounds
                     from core.agents.swarm_tools import execute_tool
                     tool_outputs = []
-                    # Prioritize local tools first (fast), web tools only if no local
                     local_tools = [t for t in agent_tools if t in ("run_indicator", "compute_levels")]
                     web_tools = [t for t in agent_tools if t.startswith(("web_", "fetch_"))]
-                    # Run all local tools, cap web tools at 1 per agent per round
                     for tool_name in local_tools[:2] + web_tools[:1]:
                         try:
                             result = execute_tool(tool_name, bars, asset_info.get("asset_name", symbol))
                             if result and len(result) > 20:
                                 tool_outputs.append(f"[{tool_name}]: {result[:1500]}")
+                                tool_calls_log[tool_name] = result[:500]  # Short summary for UI
                         except Exception as e:
                             tool_outputs.append(f"[{tool_name}]: error — {str(e)[:100]}")
+                            tool_calls_log[tool_name] = f"Error: {str(e)[:200]}"
                     if tool_outputs:
-                        tool_results = "\n\n## Your research findings:\n" + "\n".join(tool_outputs)
+                        tool_results_text = "\n\n## Your research findings:\n" + "\n".join(tool_outputs)
 
                 # Combine: general summary + specialization data + briefing + tools + memory
                 full_market = main_summary + "\n\n" + spec_data
                 full_market += f"\n\n## Intelligence Briefing:\n{briefing_text[:2000]}"
-                full_market += tool_results + memory_text
+                full_market += tool_results_text + memory_text
 
-                agents_with_context.append((entity, relevant_thread, full_market))
+                agents_with_context.append((entity, relevant_thread, full_market, tool_calls_log))
 
             # All speakers run in parallel
-            agents = [DiscussionAgent(e, asset_info) for e, _, _ in agents_with_context]
+            agents = [DiscussionAgent(e, asset_info) for e, _, _, _ in agents_with_context]
             results = await asyncio.gather(
                 *[asyncio.to_thread(
                     a.speak,
@@ -224,7 +225,7 @@ class DebateOrchestrator:
 
             # Append to thread + update agent memory
             round_sentiments = []
-            for (entity, _, _), result in zip(agents_with_context, results):
+            for (entity, _, _, tool_log), result in zip(agents_with_context, results):
                 eid = entity.get("id", "unknown")
                 content = result.get("content", "")
                 msg = {
@@ -242,6 +243,8 @@ class DebateOrchestrator:
                     "data_request": result.get("data_request"),
                     "influence": float(entity.get("influence", 1.0)),
                     "stance": entity.get("stance", "neutral"),
+                    "tools_used": list(tool_log.keys()),
+                    "tool_results": tool_log,
                 }
                 thread.append(msg)
                 round_sentiments.append(msg["sentiment"] * msg["influence"])
