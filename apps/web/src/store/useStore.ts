@@ -399,7 +399,7 @@ export const useStore = create<AppState>((set, get) => ({
     set({
       conversations: next,
       activeConversationId: fresh.id,
-      // Reset live state to fresh defaults — clean session
+      // Reset live state to fresh defaults — completely clean session
       patternMessages: [],
       strategyMessages: [],
       messages: [],
@@ -411,8 +411,11 @@ export const useStore = create<AppState>((set, get) => ({
       activeMode: 'general',
       // Session isolation — fresh chart, datasets, debate, drawings
       chartData: [],
+      activeDataset: null,
       datasets: [] as never,
       datasetChartData: {} as never,
+      datasetRawData: {} as never,
+      syncedDatasets: new Set() as never,
       selectedTimeframe: null,
       currentDebate: null as never,
       drawings: [] as never,
