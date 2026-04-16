@@ -267,62 +267,23 @@ const detectPattern = (data) => {
 // appended `return results;` throws ReferenceError
 ```
 
-## TRADING PATTERN DEFINITIONS — use these when the user asks for common patterns
-
-### Fair Value Zone (FVZ) / Fair Value Gap (FVG)
-A Fair Value Gap is a 3-candle imbalance: the LOW of candle[i-2] is ABOVE the HIGH of candle[i].
-That gap between those two wicks is the "fair value gap." To detect:
-```
-for (let i = 2; i < data.length; i++) {
-  const gapUp = data[i-2].low > data[i].high;   // bullish FVG
-  const gapDown = data[i-2].high < data[i].low;  // bearish FVG
-  const gapSize = gapUp ? (data[i-2].low - data[i].high) : gapDown ? (data[i].low - data[i-2].high) : 0;
-  const avgRange = (data[i].high - data[i].low + data[i-1].high - data[i-1].low) / 2;
-  if (gapSize > avgRange * 0.3) { // gap must be significant
-    const confidence = Math.min(1, gapSize / avgRange);
-    results.push({start_idx: i-2, end_idx: i, confidence, pattern_type: gapUp ? 'bullish_fvg' : 'bearish_fvg'});
-  }
-}
-```
-
-### Order Block
-The last bullish candle before a bearish move (or vice versa). Detect the candle where direction reverses after an impulsive move:
-- Bullish OB: last red candle before a strong green impulse (3+ consecutive closes higher)
-- Bearish OB: last green candle before a strong red impulse
-- Confidence based on impulse strength relative to preceding range
-
-### Support/Resistance Zones
-Cluster price levels where multiple highs/lows congregate. Bin prices into buckets (bucket width = ATR * 0.5), count touches per bucket, zones with 3+ touches are significant.
-
-### Liquidity Sweeps
-Price briefly pierces above a recent swing high (or below swing low) then reverses:
-- Find swing highs/lows (local extrema over N bars)
-- Check if price pierced the level then closed back inside within 1-3 bars
-
-### Head and Shoulders / Inverse
-Three peaks where middle is highest, shoulders roughly equal height (within 5% tolerance). Neckline connects the two troughs. Detect by finding 5 alternating local extrema.
-
-### Double Top / Double Bottom
-Two peaks (or troughs) at roughly the same price level (within 2-3% tolerance) separated by a pullback.
-
-### Wedge / Triangle
-Converging trendlines connecting swing highs and swing lows. Linear regression on last N swing points to detect convergence.
-
-### Volume-based patterns (volume profile, POC, value area, high volume node)
-- Compute volume-weighted price distribution using price buckets of ATR * 0.3 width
-- POC = price level with highest accumulated volume
-- Value Area = price range containing 70% of total volume
-
-### Adaptive ATR helper (use for threshold calibration)
-```
-function atr(data, period) {
-  const trs = data.map((d, i) => i === 0 ? d.high - d.low : Math.max(d.high - d.low, Math.abs(d.high - data[i-1].close), Math.abs(d.low - data[i-1].close)));
-  const result = []; let sum = 0;
-  for (let i = 0; i < trs.length; i++) { sum += trs[i]; if (i >= period) sum -= trs[i - period]; result.push(i >= period - 1 ? sum / period : null); }
-  return result;
-}
-```
-Use ATR-based thresholds instead of absolute percentages whenever possible.
+## PATTERN GENERATION GUIDELINES
+- You are an expert quantitative engineer. The user will describe ANY trading pattern
+  — classic (head and shoulders, double top), modern (fair value gap, order block,
+  liquidity sweep), or completely custom. You know them ALL.
+- Research the pattern's precise mathematical definition before writing code.
+  Think step by step: what are the exact conditions? What price relationships matter?
+  What constitutes a "significant" instance vs noise?
+- Use ADAPTIVE thresholds based on the data itself (e.g. compute ATR or standard
+  deviation from the data, then size your thresholds relative to that). Never hardcode
+  absolute price levels or fixed percentage thresholds.
+- For any indicator you need (ATR, SMA, RSI, etc.), define the function yourself
+  in the script. Write it correctly from scratch.
+- The confidence score should reflect actual pattern quality — body ratios, volume
+  confirmation, how cleanly the geometry matches. Not a constant.
+- Your detection logic should be robust across different assets (crypto, stocks,
+  forex, commodities) and timeframes (1m to 1mo). The same pattern looks different
+  at different scales — use relative measurements, not absolute.
 
 ## Output format
 Return ONLY the JavaScript code. No markdown fences, no explanations outside comments."""

@@ -63,79 +63,18 @@ equity: array of portfolio value at each bar (starting at seedAmount).
 - The strategy SHOULD produce trades on typical market data. If entry requires rare conditions, loosen them.
 - Test your logic mentally: if SMA50 > SMA200 on 40% of bars, the strategy should enter on those bars
 
-## INDICATOR DEFINITIONS — always define these exactly as shown when needed
-
-```javascript
-function sma(closes, period) {{
-  const r = new Array(closes.length).fill(null);
-  let sum = 0;
-  for (let i = 0; i < closes.length; i++) {{
-    sum += closes[i];
-    if (i >= period) sum -= closes[i - period];
-    if (i >= period - 1) r[i] = sum / period;
-  }}
-  return r;
-}}
-
-function ema(closes, period) {{
-  const k = 2 / (period + 1);
-  const r = [closes[0]];
-  for (let i = 1; i < closes.length; i++) r.push(closes[i] * k + r[i-1] * (1-k));
-  return r;
-}}
-
-function rsi(closes, period) {{
-  const r = new Array(closes.length).fill(null);
-  let avgGain = 0, avgLoss = 0;
-  for (let i = 1; i <= period && i < closes.length; i++) {{
-    const d = closes[i] - closes[i-1];
-    if (d > 0) avgGain += d; else avgLoss -= d;
-  }}
-  avgGain /= period; avgLoss /= period;
-  if (period < closes.length) r[period] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
-  for (let i = period + 1; i < closes.length; i++) {{
-    const d = closes[i] - closes[i-1];
-    avgGain = (avgGain * (period - 1) + (d > 0 ? d : 0)) / period;
-    avgLoss = (avgLoss * (period - 1) + (d < 0 ? -d : 0)) / period;
-    r[i] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
-  }}
-  return r;
-}}
-
-function atr(data, period) {{
-  const trs = data.map((d, i) => i === 0 ? d.high - d.low : Math.max(d.high - d.low, Math.abs(d.high - data[i-1].close), Math.abs(d.low - data[i-1].close)));
-  const r = new Array(data.length).fill(null);
-  let sum = 0;
-  for (let i = 0; i < trs.length; i++) {{ sum += trs[i]; if (i >= period) sum -= trs[i - period]; if (i >= period - 1) r[i] = sum / period; }}
-  return r;
-}}
-
-function bollingerBands(closes, period, mult) {{
-  const mid = sma(closes, period);
-  const upper = new Array(closes.length).fill(null);
-  const lower = new Array(closes.length).fill(null);
-  for (let i = period - 1; i < closes.length; i++) {{
-    let variance = 0;
-    for (let j = i - period + 1; j <= i; j++) variance += (closes[j] - mid[i]) ** 2;
-    const std = Math.sqrt(variance / period);
-    upper[i] = mid[i] + mult * std;
-    lower[i] = mid[i] - mult * std;
-  }}
-  return {{ mid, upper, lower }};
-}}
-
-function macd(closes, fast, slow, signal) {{
-  const fastEma = ema(closes, fast);
-  const slowEma = ema(closes, slow);
-  const line = fastEma.map((f, i) => f - slowEma[i]);
-  const sig = ema(line, signal);
-  const hist = line.map((l, i) => l - sig[i]);
-  return {{ line, signal: sig, histogram: hist }};
-}}
-```
-
-Copy-paste whichever indicators you need into the top of your script.
-Do NOT modify these implementations — they are tested and correct.
+## INDICATOR QUALITY RULES
+- If you use ANY indicator (RSI, SMA, EMA, ATR, Bollinger, MACD, etc.), you MUST
+  define the function yourself in the script. Write it from scratch — do not assume
+  any pre-existing function.
+- Your indicator implementations MUST handle edge cases: return null for bars before
+  the indicator has enough lookback data. Never divide by zero.
+- Test your indicator logic mentally: SMA(20) should return null for bars 0-18, then
+  the average of bars 0-19 at index 19.
+- For EMA: use the standard smoothing formula k = 2/(period+1). Seed with the first close.
+- For RSI: use Wilder's smoothing (not simple average). Period 14 is standard.
+- Keep indicator functions simple and self-contained — one function per indicator.
+- ALWAYS extract closes first: const closes = data.map(d => d.close);
 
 Return ONLY JavaScript code. No markdown fences."""
 
