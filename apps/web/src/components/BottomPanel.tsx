@@ -74,6 +74,8 @@ export function BottomPanel() {
   const appMode = useStore((s) => s.appMode);
   const skills = useStore((s) => s.skills);
   const activeSkillIds = useStore((s) => s.activeSkillIds);
+  const poppedOutTabs = useStore((s) => s.poppedOutTabs);
+  const popOutTab = useStore((s) => s.popOutTab);
 
   // Dynamic skill-contributed tabs for building mode
   const skillTabs = React.useMemo(
@@ -149,25 +151,47 @@ export function BottomPanel() {
             No skill selected — add one from the chatbox to see output tabs
           </span>
         )}
-        {tabLabels.map((tab, i) => (
-          <button
-            key={tab}
-            onClick={() => {
-              setActiveTab(i);
-              if (collapsed) {
-                setCollapsed(false);
-                requestAnimationFrame(() => window.dispatchEvent(new Event("resize")));
-              }
-            }}
-            className={`px-3 py-1 text-[10px] font-semibold uppercase tracking-wider transition-colors ${
-              activeTab === i && !collapsed
-                ? "text-[var(--text-primary)]"
-                : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
-            }`}
-          >
-            {tab}
-          </button>
-        ))}
+        {tabLabels.map((tab, i) => {
+          const skillTab = isBuilding ? skillTabs[i] : undefined;
+          const isPopped = skillTab ? poppedOutTabs.has(skillTab.id) : false;
+          if (isPopped) return null; // Hide tabs that are popped out as mosaic tiles
+          return (
+            <div key={tab} className="flex items-center">
+              <button
+                onClick={() => {
+                  setActiveTab(i);
+                  if (collapsed) {
+                    setCollapsed(false);
+                    requestAnimationFrame(() => window.dispatchEvent(new Event("resize")));
+                  }
+                }}
+                className={`px-3 py-1 text-[10px] font-semibold uppercase tracking-wider transition-colors ${
+                  activeTab === i && !collapsed
+                    ? "text-[var(--text-primary)]"
+                    : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+                }`}
+              >
+                {tab}
+              </button>
+              {/* Pop-out button — available for skill tabs in building mode */}
+              {skillTab && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    popOutTab(skillTab.id, skillTab.component, skillTab.label);
+                  }}
+                  className="flex h-4 w-4 items-center justify-center rounded opacity-0 group-hover:opacity-100 hover:!opacity-100 transition-opacity"
+                  style={{ color: "var(--text-muted)" }}
+                  title={`Pop out ${skillTab.label}`}
+                >
+                  <svg className="h-2.5 w-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M7 17L17 7M17 7H7M17 7V17" />
+                  </svg>
+                </button>
+              )}
+            </div>
+          );
+        })}
 
         <div className="flex-1" />
 

@@ -127,3 +127,48 @@ body {
 .dag-controls .react-flow__controls-button:hover svg {
   fill: #ff6b00 !important;
 }
+
+/* ─── React Mosaic — themed to match dark UI ─── */
+.mosaic.mosaic-blueprint-theme {
+  background: var(--bg) !important;
+}
+.mosaic-window,
+.mosaic-preview {
+  border-radius: 6px;
+}
+.mosaic-window-toolbar {
+  display: none !important; /* We render our own TileWrapper header */
+}
+.mosaic-window-body {
+  background: var(--surface) !important;
+  border-radius: 6px;
+  overflow: hidden;
+}
+/* Resize sash between tiles */
+.mosaic-split {
+  z-index: 5;
+}
+.mosaic-split .mosaic-split-line {
+  background: var(--border) !important;
+  transition: background 0.15s;
+}
+.mosaic-split:hover .mosaic-split-line,
+.mosaic-split.mosaic-split-dragging .mosaic-split-line {
+  background: var(--accent) !important;
+}
+/* Drag preview ghost */
+.mosaic-preview {
+  border: 2px solid var(--accent) !important;
+  background: rgba(255, 107, 0, 0.08) !important;
+}
+.mosaic-window-body-overlay {
+  background: transparent !important;
+}
+/* Zero out default padding/margin so tiles fill their containers */
+.mosaic-root {
+  margin: 0 !important;
+  inset: 0 !important;
+}
+.mosaic-tile {
+  margin: 2px !important;
+}

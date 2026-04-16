@@ -4,10 +4,8 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { TopBar } from "@/components/TopBar";
 import { LeftSidebar } from "@/components/LeftSidebar";
 import { RightSidebar } from "@/components/RightSidebar";
-import { BottomPanel } from "@/components/BottomPanel";
-import { Chart } from "@/components/Chart";
-import { DrawingToolbar } from "@/components/DrawingToolbar";
 import { TimeframeSelector } from "@/components/TimeframeSelector";
+import { MosaicContainer } from "@/components/MosaicContainer";
 import { PlaygroundControls } from "@/components/playground/PlaygroundControls";
 // DAGCanvas is now rendered by the Swarm Intelligence skill's DAGGraphTab
 // bottom-panel component instead of directly in page.tsx.
@@ -15,8 +13,6 @@ import { useStore } from "@/store/useStore";
 import { usePlaygroundReplay } from "@/hooks/usePlaygroundReplay";
 
 export default function Home() {
-  const chartData = useStore((s) => s.chartData);
-  const patternMatches = useStore((s) => s.patternMatches);
   const appMode = useStore((s) => s.appMode);
   const loadSkills = useStore((s) => s.loadSkills);
   const hydrateConversations = useStore((s) => s.hydrateConversations);
@@ -38,8 +34,6 @@ export default function Home() {
   }, [hydrateConversations]);
 
   // In playground mode, pass the full dataset to Chart — Chart renders whitespace
-  // for future bars so drawings/trend lines can extend past the replay cursor.
-  const displayedData = chartData;
   const rootRef = useRef<HTMLDivElement>(null);
   const [sidebarWidth, setSidebarWidth] = useState(320);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -152,16 +146,8 @@ export default function Home() {
         {/* Playground replay controls (playground mode only) */}
         {appMode === "playground" && <PlaygroundControls />}
 
-        {/* Main content area: Chart + Drawing Toolbar */}
-        <div className="flex flex-1 min-h-0">
-          <DrawingToolbar />
-          <div className="flex-1 min-h-0">
-            <Chart data={displayedData} patternMatches={appMode === "playground" ? [] : patternMatches} />
-          </div>
-        </div>
-
-        {/* Bottom Panel - collapsible, contextual by mode */}
-        <BottomPanel />
+        {/* Mosaic layout — chart tiles + bottom panel + popped-out tabs */}
+        <MosaicContainer />
       </div>
 
       {/* Backdrop for sidebar overlay on narrow screens */}

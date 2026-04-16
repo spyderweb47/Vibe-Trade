@@ -198,6 +198,21 @@ export interface Conversation {
   drawings?: unknown[];
 }
 
+// ─── Mosaic layout types ───────────────────────────────────────────────
+
+export type TileKind = 'chart' | 'bottom_panel' | 'tab' | 'dag_graph';
+
+export interface TileType {
+  kind: TileKind;
+  datasetId?: string;      // for chart tiles
+  timeframe?: string;      // for chart tiles
+  tabId?: string;          // for popped-out tab tiles
+  component?: string;      // React component name (for tab tiles)
+  label?: string;          // display label for the tile header
+}
+
+// ─── Indicator config ──────────────────────────────────────────────────
+
 export interface IndicatorConfig {
   name: string;
   backendName: string;

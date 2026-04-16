@@ -307,6 +307,16 @@ interface AppState {
   runDebate: () => Promise<void>;
   setCurrentDebate: (d: import('@/types').SimulationDebate | null) => void;
   resetSimulation: () => void;
+
+  // ===== Mosaic Layout =====
+  mosaicLayout: unknown;  // MosaicNode<string> — typed as unknown to avoid importing react-mosaic in store
+  tileRegistry: Record<string, import('@/types').TileType>;
+  poppedOutTabs: Set<string>;
+  setMosaicLayout: (layout: unknown) => void;
+  addTile: (type: import('@/types').TileType) => string;
+  removeTile: (tileId: string) => void;
+  popOutTab: (tabId: string, component: string, label: string) => void;
+  dockTab: (tabId: string) => void;
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -1010,5 +1020,72 @@ export const useStore = create<AppState>((set, get) => ({
     if (snapped) set({ conversations: snapped });
   },
   resetSimulation: () => set({ currentDebate: null, simulationLoading: false }),
+
+  // ===== Mosaic Layout =====
+  mosaicLayout: {
+    direction: 'column',
+    first: 'chart-main',
+    second: 'bottom-panel',
+    splitPercentage: 70,
+  },
+  tileRegistry: {
+    'chart-main': { kind: 'chart' as const },
+    'bottom-panel': { kind: 'bottom_panel' as const },
+  },
+  poppedOutTabs: new Set(),
+
+  setMosaicLayout: (layout) => {
+    set({ mosaicLayout: layout });
+    // Notify charts to recalculate dimensions
+    window.dispatchEvent(new Event('resize'));
+  },
+
+  addTile: (type) => {
+    const id = `tile_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    set((s) => ({
+      tileRegistry: { ...s.tileRegistry, [id]: type },
+    }));
+    return id;
+  },
+
+  removeTile: (tileId) => {
+    set((s) => {
+      const { [tileId]: removed, ...rest } = s.tileRegistry;
+      // If it's a popped-out tab, re-dock it
+      const nextPopped = new Set(s.poppedOutTabs);
+      if (removed?.tabId) nextPopped.delete(removed.tabId);
+      return { tileRegistry: rest, poppedOutTabs: nextPopped };
+    });
+  },
+
+  popOutTab: (tabId, component, label) => {
+    const state = get();
+    const tileId = state.addTile({ kind: 'tab', tabId, component, label });
+    set((s) => ({
+      poppedOutTabs: new Set([...s.poppedOutTabs, tabId]),
+      // Insert the new tile into the mosaic tree — add it to the right of the current layout
+      mosaicLayout: s.mosaicLayout ? {
+        direction: 'row',
+        first: s.mosaicLayout,
+        second: tileId,
+        splitPercentage: 70,
+      } : tileId,
+    }));
+    window.dispatchEvent(new Event('resize'));
+  },
+
+  dockTab: (tabId) => {
+    set((s) => {
+      const nextPopped = new Set(s.poppedOutTabs);
+      nextPopped.delete(tabId);
+      // Find and remove the tile from registry
+      const entry = Object.entries(s.tileRegistry).find(([, t]) => t.tabId === tabId);
+      if (entry) {
+        const { [entry[0]]: _, ...rest } = s.tileRegistry;
+        return { poppedOutTabs: nextPopped, tileRegistry: rest };
+      }
+      return { poppedOutTabs: nextPopped };
+    });
+  },
 }));
 
