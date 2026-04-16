@@ -38,6 +38,11 @@ dependencies = [
     "numpy>=1.24",
     "yfinance>=0.2",
     "ccxt>=4.0",
+    # Web research (swarm agent tools)
+    "duckduckgo-search>=7.0",
+    "beautifulsoup4>=4.12",
+    "pypdf2>=3.0",
+    "requests>=2.31",
     # LLM providers
     "openai>=1.10",
     "anthropic>=0.20",

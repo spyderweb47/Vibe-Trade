@@ -41,6 +41,7 @@ from core.agents.simulation_agents import (
     ChartSupportAgent,
     ContextAnalyzer,
     DataFeedBuilder,
+    IntelligenceGatherer,
     EntityGenerator,
     DiscussionAgent,
     CrossExaminer,
@@ -59,6 +60,7 @@ class DebateOrchestrator:
         self.classifier = AssetClassifier()
         self.chart_support = ChartSupportAgent()
         self.context_analyzer = ContextAnalyzer()
+        self.intelligence = IntelligenceGatherer()
         self.entity_gen = EntityGenerator()
         self.cross_examiner = CrossExaminer()
         self.report_agent = ReACTReportAgent()
@@ -92,14 +94,28 @@ class DebateOrchestrator:
         # Build rich, specialization-specific data feeds from raw bars
         data_feeds = DataFeedBuilder.build_feeds(bars, symbol)
 
+        # ─── Stage 1.5: Intelligence Gathering ───────────────────────────
+        # One research agent crawls the web for news, analysis, regulatory
+        # updates, then synthesizes into a structured briefing. This runs
+        # BEFORE persona generation so the briefing informs agent creation.
+        asset_name = asset_info.get("asset_name", symbol)
+        asset_class = asset_info.get("asset_class", "unknown")
+        intel_briefing = await asyncio.to_thread(
+            self.intelligence.gather, asset_name, asset_class, bars
+        )
+
         # Merge context into a rich knowledge base for all agents
         knowledge = {
             "asset_info": asset_info,
             "context": context,
             "market_summary": main_summary,
             "data_feeds": data_feeds,
+            "intel_briefing": intel_briefing,
             "report_text": report_text,
         }
+
+        # Format the briefing as text for injection into agent prompts
+        briefing_text = self._format_briefing(intel_briefing)
 
         # ─── Stage 2: Persona Generation ─────────────────────────────────
         # Generate personas with explicit stances, influence weights, and
@@ -155,8 +171,26 @@ class DebateOrchestrator:
                 feed_key = feed_map.get(spec, "general")
                 spec_data = data_feeds.get(feed_key, data_feeds.get("general", ""))
 
-                # Combine: general summary + specialization data + memory
-                full_market = main_summary + "\n\n" + spec_data + memory_text
+                # Execute agent-specific tools before they speak
+                tool_results = ""
+                agent_tools = entity.get("tools", [])
+                if agent_tools and round_num <= 3:  # Tools only in first 3 rounds (research phase)
+                    from core.agents.swarm_tools import execute_tool
+                    tool_outputs = []
+                    for tool_name in agent_tools[:2]:  # Max 2 tools per agent per round
+                        try:
+                            result = execute_tool(tool_name, bars, asset_info.get("asset_name", symbol))
+                            if result and len(result) > 20:
+                                tool_outputs.append(f"[{tool_name}]: {result[:1500]}")
+                        except Exception:
+                            pass
+                    if tool_outputs:
+                        tool_results = "\n\n## Your research findings:\n" + "\n".join(tool_outputs)
+
+                # Combine: general summary + specialization data + briefing + tools + memory
+                full_market = main_summary + "\n\n" + spec_data
+                full_market += f"\n\n## Intelligence Briefing:\n{briefing_text[:2000]}"
+                full_market += tool_results + memory_text
 
                 agents_with_context.append((entity, relevant_thread, full_market))
 
@@ -279,6 +313,29 @@ class DebateOrchestrator:
             "total_rounds": round_num + (1 if cross_exam_results else 0),
             "summary": summary,
         }
+
+    def _format_briefing(self, briefing: dict) -> str:
+        """Format the intelligence briefing as readable text for agent prompts."""
+        parts = []
+        summary = briefing.get("executive_summary", "")
+        if summary:
+            parts.append(f"Summary: {summary}")
+        bull = briefing.get("bull_case", [])
+        if bull:
+            parts.append("Bull case: " + "; ".join(bull[:3]))
+        bear = briefing.get("bear_case", [])
+        if bear:
+            parts.append("Bear case: " + "; ".join(bear[:3]))
+        events = briefing.get("key_events", [])
+        if events:
+            parts.append("Upcoming events: " + "; ".join(events[:3]))
+        sentiment = briefing.get("sentiment_reading", "")
+        if sentiment:
+            parts.append(f"Market sentiment: {sentiment}")
+        data_points = briefing.get("data_points", [])
+        if data_points:
+            parts.append("Key data: " + "; ".join(data_points[:5]))
+        return "\n".join(parts) if parts else "No briefing available."
 
     def _filter_thread_for_agent(
         self, thread: List[Dict], agent_name: str, agent_role: str, max_chars: int = 4000

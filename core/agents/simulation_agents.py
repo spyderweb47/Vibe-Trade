@@ -333,6 +333,13 @@ class EntityGenerator:
 
         if len(all_entities) < 5:
             return self._mock(asset_info)
+
+        # Assign tools to each entity based on their specialization
+        from core.agents.swarm_tools import ROLE_TOOL_MAP
+        for entity in all_entities:
+            spec = entity.get("specialization", "general")
+            entity["tools"] = ROLE_TOOL_MAP.get(spec, ROLE_TOOL_MAP["general"])
+
         return all_entities[:self.TARGET_ENTITIES]
 
     def _mock(self, asset_info: dict) -> list:
@@ -722,6 +729,90 @@ class DataFeedBuilder:
         feeds["structure"] = "\n".join(struct_lines)
 
         return feeds
+
+
+# ---------------------------------------------------------------------------
+# Stage 1.5 (new): Intelligence Gatherer — pre-debate internet research
+# ---------------------------------------------------------------------------
+
+INTELLIGENCE_PROMPT = """You are a research analyst preparing a comprehensive intelligence briefing about {asset_name} ({asset_class}).
+
+You have gathered the following raw research from multiple sources. Your job is to synthesize it into a STRUCTURED BRIEFING that debate panelists can use.
+
+## Recent News
+{news}
+
+## Market Analysis
+{analysis}
+
+## Regulatory Updates
+{regulatory}
+
+## Technical Indicator Readings
+{indicators}
+
+## Key Price Levels
+{levels}
+
+Produce a structured intelligence briefing as JSON:
+{{
+  "executive_summary": "2-3 sentence overview of the current situation",
+  "bull_case": ["3-5 specific bullish factors with data"],
+  "bear_case": ["3-5 specific bearish factors with data"],
+  "key_events": ["upcoming events that could move the price"],
+  "sentiment_reading": "overall market sentiment from news (bullish/bearish/mixed)",
+  "data_points": ["specific numbers, dates, or facts from the research that panelists should cite"]
+}}"""
+
+
+class IntelligenceGatherer:
+    """
+    Pre-debate research agent. Runs a comprehensive research suite
+    (web search, news, indicators, levels) and synthesizes findings
+    into a structured briefing for all debate personas.
+    """
+
+    def gather(self, asset_name: str, asset_class: str, bars: list) -> dict:
+        from core.agents.swarm_tools import run_research_suite
+
+        # Run the full research suite (web + indicators + levels)
+        raw_findings = run_research_suite(asset_name, asset_class, bars)
+
+        if not llm_available():
+            return {
+                "executive_summary": "Research unavailable (no LLM)",
+                "bull_case": [],
+                "bear_case": [],
+                "key_events": [],
+                "sentiment_reading": "unknown",
+                "data_points": [],
+                "raw_findings": raw_findings,
+            }
+
+        prompt = INTELLIGENCE_PROMPT.format(
+            asset_name=asset_name,
+            asset_class=asset_class,
+            news=raw_findings.get("recent_news", "None")[:3000],
+            analysis=raw_findings.get("market_analysis", "None")[:2000],
+            regulatory=raw_findings.get("regulatory", "None")[:1500],
+            indicators=raw_findings.get("technical_indicators", "None")[:1000],
+            levels=raw_findings.get("key_levels", "None")[:500],
+        )
+
+        result = chat_completion_json(
+            system_prompt=prompt,
+            user_message="Synthesize the research into a structured briefing now.",
+            temperature=0.2,
+            max_tokens=2000,
+        )
+        result.setdefault("executive_summary", "")
+        result.setdefault("bull_case", [])
+        result.setdefault("bear_case", [])
+        result.setdefault("key_events", [])
+        result.setdefault("sentiment_reading", "unknown")
+        result.setdefault("data_points", [])
+        result["raw_findings"] = raw_findings
+        return result
 
 
 # ---------------------------------------------------------------------------
