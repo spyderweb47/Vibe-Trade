@@ -997,12 +997,14 @@ class CrossExaminer:
                 max_tokens=1000,
             )
 
+            response_content = result.get("content", "No response.")
             results.append({
                 "id": str(uuid.uuid4()),
                 "entity_id": eid,
                 "entity_name": entity.get("name", "Unknown"),
                 "entity_role": entity.get("role", "Analyst"),
-                "content": f"[Cross-examination] {result.get('content', 'No response.')}",
+                # For thread display
+                "content": f"[Cross-examination] {response_content}",
                 "sentiment": float(result.get("final_sentiment", avg_sent)),
                 "price_prediction": result.get("final_price_prediction"),
                 "agreed_with": [],
@@ -1012,6 +1014,10 @@ class CrossExaminer:
                 "influence": float(entity.get("influence", 1.0)),
                 "stance": entity.get("stance", "neutral"),
                 "conviction_change": result.get("conviction_change", "unchanged"),
+                # For structured UI display (CrossExamResult)
+                "question": question,
+                "response": response_content,
+                "new_sentiment": float(result.get("final_sentiment", avg_sent)),
             })
 
         return results

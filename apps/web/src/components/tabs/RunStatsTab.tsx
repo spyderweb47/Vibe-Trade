@@ -31,6 +31,27 @@ export function RunStatsTab() {
 
   return (
     <div className="h-full overflow-y-auto p-3 space-y-3">
+      {/* ── Pipeline Status Overview ── */}
+      <div className="rounded-lg p-3" style={{ background: "var(--surface-2)", border: "1px solid var(--border)" }}>
+        <div className="text-[9px] font-bold uppercase tracking-wider mb-2" style={{ color: "var(--text-muted)" }}>
+          Pipeline Data Available
+        </div>
+        <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[10px] sm:grid-cols-3 lg:grid-cols-4">
+          <DataStatus label="Intelligence Briefing" has={!!brief?.executiveSummary} />
+          <DataStatus label="Bull Case" has={(brief?.bullCase?.length ?? 0) > 0} count={brief?.bullCase?.length} />
+          <DataStatus label="Bear Case" has={(brief?.bearCase?.length ?? 0) > 0} count={brief?.bearCase?.length} />
+          <DataStatus label="Key Events" has={(brief?.keyEvents?.length ?? 0) > 0} count={brief?.keyEvents?.length} />
+          <DataStatus label="Data Points" has={(brief?.dataPoints?.length ?? 0) > 0} count={brief?.dataPoints?.length} />
+          <DataStatus label="Cross-Exams" has={crossExam.length > 0} count={crossExam.length} />
+          <DataStatus label="Conviction Shifts" has={convictionShifts.length > 0} count={convictionShifts.length} />
+          <DataStatus label="Trade Recommendation" has={!!rec.action} />
+          <DataStatus label="Raw News" has={!!brief?.rawFindings?.recentNews} />
+          <DataStatus label="Tech Indicators" has={!!brief?.rawFindings?.technicalIndicators} />
+          <DataStatus label="Regulatory" has={!!brief?.rawFindings?.regulatory} />
+          <DataStatus label="Market Analysis" has={!!brief?.rawFindings?.marketAnalysis} />
+        </div>
+      </div>
+
       {/* ── Top row: consensus + price targets ── */}
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         <Card title="Consensus">
@@ -74,49 +95,57 @@ export function RunStatsTab() {
       </div>
 
       {/* ── Intelligence Briefing (from Stage 1.5) ── */}
-      {brief?.executiveSummary && (
-        <Card title="Intelligence Briefing" accent>
-          <p className="text-[11px] leading-relaxed" style={{ color: "var(--text-secondary)" }}>
-            {brief.executiveSummary}
+      <Card title="Intelligence Briefing (Stage 1.5)" accent>
+        {brief?.executiveSummary ? (
+          <>
+            <p className="text-[11px] leading-relaxed" style={{ color: "var(--text-secondary)" }}>
+              {brief.executiveSummary}
+            </p>
+            {brief.sentimentReading && (
+              <div className="mt-2 text-[10px]">
+                <span style={{ color: "var(--text-muted)" }}>Market sentiment from research: </span>
+                <span className="font-bold" style={{ color: dirColor }}>{brief.sentimentReading}</span>
+              </div>
+            )}
+          </>
+        ) : (
+          <p className="text-[10px] italic" style={{ color: "var(--text-muted)" }}>
+            No intelligence briefing available. Check backend logs for Stage 1.5 errors (web search or LLM synthesis may have failed).
           </p>
-          {brief.sentimentReading && (
-            <div className="mt-2 text-[10px]">
-              <span style={{ color: "var(--text-muted)" }}>Market sentiment from research: </span>
-              <span className="font-bold" style={{ color: dirColor }}>{brief.sentimentReading}</span>
-            </div>
-          )}
-        </Card>
-      )}
+        )}
+      </Card>
 
       {/* ── Bull vs Bear case (from intel briefing) ── */}
-      {((brief?.bullCase?.length ?? 0) > 0 || (brief?.bearCase?.length ?? 0) > 0) && (
-        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-          {brief?.bullCase && brief.bullCase.length > 0 && (
-            <Card title="Bull Case (Research)">
-              <ul className="space-y-1.5">
-                {brief.bullCase.map((b, i) => (
-                  <li key={i} className="flex gap-2 text-[10px] leading-snug" style={{ color: "var(--text-secondary)" }}>
-                    <span style={{ color: "#22c55e" }}>▲</span>
-                    <span>{b}</span>
-                  </li>
-                ))}
-              </ul>
-            </Card>
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+        <Card title="Bull Case (Research)">
+          {brief?.bullCase && brief.bullCase.length > 0 ? (
+            <ul className="space-y-1.5">
+              {brief.bullCase.map((b, i) => (
+                <li key={i} className="flex gap-2 text-[10px] leading-snug" style={{ color: "var(--text-secondary)" }}>
+                  <span style={{ color: "#22c55e" }}>▲</span>
+                  <span>{b}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-[10px] italic" style={{ color: "var(--text-muted)" }}>No bull case identified in research.</p>
           )}
-          {brief?.bearCase && brief.bearCase.length > 0 && (
-            <Card title="Bear Case (Research)">
-              <ul className="space-y-1.5">
-                {brief.bearCase.map((b, i) => (
-                  <li key={i} className="flex gap-2 text-[10px] leading-snug" style={{ color: "var(--text-secondary)" }}>
-                    <span style={{ color: "#ef4444" }}>▼</span>
-                    <span>{b}</span>
-                  </li>
-                ))}
-              </ul>
-            </Card>
+        </Card>
+        <Card title="Bear Case (Research)">
+          {brief?.bearCase && brief.bearCase.length > 0 ? (
+            <ul className="space-y-1.5">
+              {brief.bearCase.map((b, i) => (
+                <li key={i} className="flex gap-2 text-[10px] leading-snug" style={{ color: "var(--text-secondary)" }}>
+                  <span style={{ color: "#ef4444" }}>▼</span>
+                  <span>{b}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-[10px] italic" style={{ color: "var(--text-muted)" }}>No bear case identified in research.</p>
           )}
-        </div>
-      )}
+        </Card>
+      </div>
 
       {/* ── Key events from research ── */}
       {brief?.keyEvents && brief.keyEvents.length > 0 && (
@@ -161,9 +190,9 @@ export function RunStatsTab() {
         )}
       </div>
 
-      {/* ── Cross-Examination Results ── */}
-      {crossExam.length > 0 && (
-        <Card title={`Cross-Examination (${crossExam.length} agents)`} accent>
+      {/* ── Cross-Examination Results (Stage 4) ── */}
+      <Card title={`Cross-Examination (Stage 4) — ${crossExam.length} agents`} accent>
+        {crossExam.length > 0 ? (
           <div className="space-y-2">
             {crossExam.map((c, i) => {
               const changeColor =
@@ -180,18 +209,24 @@ export function RunStatsTab() {
                       {c.convictionChange}
                     </span>
                   </div>
-                  <div className="mt-1 text-[9px] italic" style={{ color: "var(--text-muted)" }}>
-                    Q: {c.question.slice(0, 150)}
-                  </div>
-                  <div className="mt-1 text-[10px] leading-relaxed line-clamp-4" style={{ color: "var(--text-secondary)" }}>
-                    {c.response}
+                  {c.question && (
+                    <div className="mt-1 text-[9px] italic" style={{ color: "var(--text-muted)" }}>
+                      Q: {c.question.slice(0, 200)}
+                    </div>
+                  )}
+                  <div className="mt-1 text-[10px] leading-relaxed" style={{ color: "var(--text-secondary)" }}>
+                    {c.response || "(no response)"}
                   </div>
                 </div>
               );
             })}
           </div>
-        </Card>
-      )}
+        ) : (
+          <p className="text-[10px] italic" style={{ color: "var(--text-muted)" }}>
+            No cross-examination performed. This runs automatically when agents have divergent views — check if debate completed fully.
+          </p>
+        )}
+      </Card>
 
       {/* ── Conviction Shifts ── */}
       {convictionShifts.length > 0 && (
@@ -326,6 +361,24 @@ function Card({ title, accent, children }: { title: string; accent?: boolean; ch
         {title}
       </div>
       {children}
+    </div>
+  );
+}
+
+function DataStatus({ label, has, count }: { label: string; has: boolean; count?: number }) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <span style={{ color: has ? "#22c55e" : "var(--text-muted)" }}>
+        {has ? "✓" : "○"}
+      </span>
+      <span style={{ color: has ? "var(--text-secondary)" : "var(--text-muted)", opacity: has ? 1 : 0.6 }}>
+        {label}
+      </span>
+      {has && count !== undefined && count > 0 && (
+        <span className="ml-auto font-mono text-[9px]" style={{ color: "var(--accent)" }}>
+          {count}
+        </span>
+      )}
     </div>
   );
 }
