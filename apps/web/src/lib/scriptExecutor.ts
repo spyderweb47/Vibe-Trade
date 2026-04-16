@@ -19,6 +19,9 @@ interface RawMatch {
  * Add new helpers here when you find new classes of LLM-typo bugs.
  */
 const PATTERN_HELPERS = `
+// ─── Safety: ensure data has no undefined/null bars ────
+data = data.filter(function(b) { return b && b.time != null; });
+
 // ─── Pre-injected pattern helpers (do not redefine in your script) ────
 function pearson(a, b) {
   const n = a.length;
@@ -116,8 +119,15 @@ export async function executePatternScript(
   // available as globals inside the worker's `new Function(data, Math, ...)`.
   body = PATTERN_HELPERS + "\n" + body;
 
+  // Filter out any undefined/null bars before passing to the worker.
+  // Conversation restore or sparse arrays can introduce gaps.
+  const cleanData = data.filter((b) => b && b.time != null);
+  if (cleanData.length === 0) {
+    throw new Error("No valid chart data to run the script against. Load a dataset first.");
+  }
+
   // Execute in a blob-based web worker to bypass CSP
-  const rawResults = await runInWorker(body, data);
+  const rawResults = await runInWorker(body, cleanData);
 
   if (!Array.isArray(rawResults)) {
     throw new Error("Script must return an array of results");
@@ -125,8 +135,10 @@ export async function executePatternScript(
 
   // Convert raw matches to PatternMatch type
   return rawResults.map((m: RawMatch) => {
-    const si = Math.max(0, Math.min(m.start_idx, data.length - 1));
-    const ei = Math.max(0, Math.min(m.end_idx, data.length - 1));
+    const si = Math.max(0, Math.min(m.start_idx ?? 0, cleanData.length - 1));
+    const ei = Math.max(0, Math.min(m.end_idx ?? 0, cleanData.length - 1));
+    const startBar = cleanData[si];
+    const endBar = cleanData[ei];
 
     const ptype = m.pattern_type || "unknown";
     const lower = ptype.toLowerCase();
@@ -142,8 +154,8 @@ export async function executePatternScript(
       name: ptype.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
       startIndex: si,
       endIndex: ei,
-      startTime: String(data[si].time),
-      endTime: String(data[ei].time),
+      startTime: String(startBar?.time ?? 0),
+      endTime: String(endBar?.time ?? 0),
       direction,
       confidence: m.confidence,
     };
