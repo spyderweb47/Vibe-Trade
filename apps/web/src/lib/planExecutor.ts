@@ -159,9 +159,21 @@ export async function executePlanInBrowser({ steps }: ExecutePlanArgs): Promise<
       const allowedTools = skill?.tools || result.tool_calls?.map((tc) => tc.tool) || [];
       runToolCalls(result.tool_calls, step.skill, allowedTools);
 
-      // Wait a tick for tool calls to settle (e.g. data.dataset.add registers
-      // the dataset async-ishly via store update)
-      await new Promise((r) => setTimeout(r, 250));
+      // Wait for tool calls to settle. data.dataset.add triggers an async
+      // syncDatasetToBackend — the next step (e.g. swarm_intelligence) needs
+      // the data in the backend store before it can run. Wait up to 5 seconds
+      // for the sync to complete by checking if the dataset appears.
+      if (step.skill === "data_fetcher") {
+        const dsId = useStore.getState().activeDataset;
+        if (dsId) {
+          for (let wait = 0; wait < 20; wait++) {
+            await new Promise((r) => setTimeout(r, 250));
+            if (useStore.getState().syncedDatasets.has(dsId)) break;
+          }
+        }
+      } else {
+        await new Promise((r) => setTimeout(r, 250));
+      }
 
       let resultSummary = "";
 
@@ -263,6 +275,14 @@ export async function executePlanInBrowser({ steps }: ExecutePlanArgs): Promise<
         for (const [k, v] of Object.entries(result.data)) {
           accumulatedContext[k] = v;
         }
+      }
+
+      // Always carry the active dataset ID forward so downstream skills
+      // (like swarm_intelligence) can find the data in the backend store
+      const currentDataset = useStore.getState().activeDataset;
+      if (currentDataset) {
+        accumulatedContext.dataset_id = currentDataset;
+        accumulatedContext.activeDataset = currentDataset;
       }
     } catch (err) {
       if (subStepTimer) clearTimeout(subStepTimer);
