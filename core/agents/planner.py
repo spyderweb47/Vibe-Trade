@@ -58,9 +58,11 @@ The shape MUST be:
 
 1. Use ONLY skill ids from the list above — never invent new ones.
 2. Each step's `message` is the ONLY thing the downstream skill sees — make
-   it SELF-CONTAINED. Don't reference "the user" or "the request"; instead
-   say what to do directly. Example: "Fetch BTC/USDT 1m bars for the last
-   30 days" — not "fetch the data the user asked for".
+   it SELF-CONTAINED with the FULL asset name/ticker included. The skill
+   cannot see the original user message, so if the user said "fetch oil and
+   run debate", the data_fetcher step MUST say "Fetch crude oil (CL=F) 1d
+   data" — NOT "fetch data for the asset" or "load the chart". ALWAYS
+   include the specific ticker/asset name in every step's message.
 3. Steps run in order. Earlier steps' outputs are accumulated into the
    downstream context (e.g. a fetched dataset becomes the active dataset
    for the pattern step).
