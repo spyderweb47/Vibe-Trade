@@ -121,6 +121,11 @@ export interface BacktestResult {
  * One step inside an agent-process trace. Used by the planner to surface
  * its real-time execution state inline in the chat (Claude-style thinking box).
  */
+export interface TraceSubStep {
+  label: string;
+  status: 'pending' | 'running' | 'done';
+}
+
 export interface TraceStep {
   skill: string;
   message: string;
@@ -128,6 +133,7 @@ export interface TraceStep {
   status: 'pending' | 'running' | 'done' | 'failed';
   result?: string;        // short summary like "63 matches found"
   error?: string;         // populated when status === 'failed'
+  subSteps?: TraceSubStep[];  // internal progress for long-running skills
 }
 
 /**
@@ -162,7 +168,7 @@ export interface Conversation {
   title: string;
   createdAt: number;
   updatedAt: number;
-  // App mode (building / playground / simulation) at last sync
+  // App mode (building / playground) at last sync
   appMode: 'building' | 'playground' | 'simulation';
   // Chat messages, split by skill (matches the live store split)
   patternMessages: Message[];
@@ -177,6 +183,19 @@ export interface Conversation {
   // Active selections at last sync
   activeDataset: string | null;
   activeSkillIds: string[]; // serialized Set<string>
+  // ─── Full session isolation ──────────────────────────────────────
+  // Chart data — OHLCV bars displayed when this conversation was last active
+  chartData?: OHLCBar[];
+  // All datasets loaded in this session
+  datasets?: Array<{ id: string; name: string; metadata: Record<string, unknown> }>;
+  // Per-dataset chart data cache (avoids re-fetch on dataset switch)
+  datasetChartData?: Record<string, OHLCBar[]>;
+  // Selected timeframe (null = auto)
+  selectedTimeframe?: string | null;
+  // Swarm Intelligence debate result
+  currentDebate?: SimulationDebate | null;
+  // Chart drawings (trend lines, fibs, rectangles, etc.)
+  drawings?: unknown[];
 }
 
 export interface IndicatorConfig {

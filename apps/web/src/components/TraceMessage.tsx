@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { Message, TraceStep } from "@/types";
+import type { Message, TraceStep, TraceSubStep } from "@/types";
 
 /**
  * Claude-style "agent process" trace rendered inline in the chat.
@@ -223,6 +223,27 @@ function TraceStepRow({ step, index, isCurrentRunning }: { step: TraceStep; inde
             style={{ color: "var(--danger)" }}
           >
             ✕ {step.error}
+          </div>
+        )}
+        {/* Sub-steps — internal progress for long-running skills */}
+        {step.subSteps && step.subSteps.length > 0 && (
+          <div className="mt-1.5 ml-1 space-y-0.5" style={{ borderLeft: "1px solid var(--border-subtle)", paddingLeft: 8 }}>
+            {step.subSteps.map((sub, j) => (
+              <div key={j} className="flex items-center gap-1.5 text-[9px]">
+                {sub.status === "done" ? (
+                  <svg className="h-2.5 w-2.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="var(--success, #26a69a)" strokeWidth={3}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                  </svg>
+                ) : sub.status === "running" ? (
+                  <span className="inline-block h-2 w-2 shrink-0 rounded-full animate-pulse" style={{ background: "var(--accent)" }} />
+                ) : (
+                  <span className="inline-block h-2 w-2 shrink-0 rounded-full" style={{ border: "1px solid var(--text-muted)" }} />
+                )}
+                <span style={{ color: sub.status === "pending" ? "var(--text-muted)" : sub.status === "running" ? "var(--accent)" : "var(--text-secondary)" }}>
+                  {sub.label}
+                </span>
+              </div>
+            ))}
           </div>
         )}
       </div>

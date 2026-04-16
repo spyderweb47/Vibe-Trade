@@ -103,3 +103,27 @@ body {
   margin: 0;
   overflow: hidden;
 }
+
+/* ─── ReactFlow DAG Controls — themed to match dark UI ─── */
+.dag-controls .react-flow__controls-button {
+  background: #1b1b21 !important;
+  border: 1px solid #2a2a35 !important;
+  border-radius: 6px !important;
+  width: 28px !important;
+  height: 28px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  transition: background 0.15s, border-color 0.15s;
+}
+.dag-controls .react-flow__controls-button:hover {
+  background: #26262e !important;
+  border-color: #ff6b00 !important;
+}
+.dag-controls .react-flow__controls-button svg {
+  fill: #71717a !important;
+  transition: fill 0.15s;
+}
+.dag-controls .react-flow__controls-button:hover svg {
+  fill: #ff6b00 !important;
+}

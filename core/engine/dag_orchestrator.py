@@ -4,12 +4,12 @@ Social simulation orchestrator — forum-style multi-round debate.
 Pipeline:
   1. Read asset name from dataset metadata (skip classifier if available)
   2. ChartSupportAgent — prepare multi-timeframe data
-  3. EntityGenerator — create 10-12 deep personas
-  4. Forum discussion — 15-20 rounds, 4-5 speakers per round respond to each other
+  3. EntityGenerator — create 30-35 deep personas
+  4. Forum discussion — 20+ rounds, 8-10 speakers per round respond to each other
   5. ChartSupportAgent — inject data when entities request it mid-debate
   6. SummaryAgent — produce final report when consensus reached or max rounds hit
 
-Each entity speaks ~15-20 times across the simulation. They MUST reference
+Each entity speaks 5+ times across the simulation. They MUST reference
 and respond to other entities' messages — not just post independently.
 """
 
@@ -31,8 +31,8 @@ from core.agents.simulation_agents import (
 class DebateOrchestrator:
     """Runs the full forum-style social simulation."""
 
-    MAX_ROUNDS = 8
-    SPEAKERS_PER_ROUND = 5  # 5 entities respond each round
+    MAX_ROUNDS = 20
+    SPEAKERS_PER_ROUND = 10  # 10 entities respond each round
 
     def __init__(self) -> None:
         self.classifier = AssetClassifier()
@@ -140,11 +140,12 @@ class DebateOrchestrator:
             avg_sentiment = sum(round_sentiments) / len(round_sentiments) if round_sentiments else 0
             sentiments_by_round.append(avg_sentiment)
 
-            # Check convergence: if last 3 rounds have similar sentiment, stop early
-            if round_num >= 5 and len(sentiments_by_round) >= 3:
-                recent = sentiments_by_round[-3:]
+            # Check convergence: if last 4 rounds have similar sentiment, stop early.
+            # With 30+ personas we need more rounds before declaring consensus.
+            if round_num >= 10 and len(sentiments_by_round) >= 4:
+                recent = sentiments_by_round[-4:]
                 spread = max(recent) - min(recent)
-                if spread < 0.15:  # sentiments converged within 15%
+                if spread < 0.10:  # sentiments converged within 10%
                     break
 
         # --- Stage 6: Summary ---

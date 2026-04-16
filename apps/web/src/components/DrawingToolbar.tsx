@@ -3,7 +3,7 @@
 import { useStore } from "@/store/useStore";
 import type { DrawingType } from "@/lib/chart-primitives/drawingTypes";
 
-const tools: { key: DrawingType | "pointer" | "delete"; label: string; icon: React.ReactNode; separator?: boolean }[] = [
+const tools: { key: DrawingType | "pointer" | "delete"; label: string; icon: React.ReactNode; separator?: boolean; hero?: boolean }[] = [
   {
     key: "pointer",
     label: "Select",
@@ -13,6 +13,19 @@ const tools: { key: DrawingType | "pointer" | "delete"; label: string; icon: Rea
         <path d="M13 13l6 6" strokeLinecap="round" />
       </svg>
     ),
+  },
+  {
+    key: "pattern_select",
+    label: "Pattern Select — drag on chart to detect patterns",
+    icon: (
+      <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}>
+        <rect x="2" y="2" width="20" height="20" rx="3" strokeDasharray="4 2" />
+        <path d="M7 16l3.5-5 2.5 2.5 4-5.5" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} />
+        <circle cx="19" cy="5" r="3" fill="#ff6b00" stroke="#ff6b00" />
+      </svg>
+    ),
+    separator: true,
+    hero: true,
   },
   {
     key: "trendline",
@@ -94,17 +107,6 @@ const tools: { key: DrawingType | "pointer" | "delete"; label: string; icon: Rea
     separator: true,
   },
   {
-    key: "pattern_select",
-    label: "Pattern Select",
-    icon: (
-      <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-        <rect x="3" y="3" width="18" height="18" rx="2" strokeDasharray="4 2" />
-        <path d="M8 16l3-4 2 2 3-4" strokeLinecap="round" strokeLinejoin="round" />
-        <circle cx="18" cy="6" r="2.5" fill="#3b82f6" stroke="#3b82f6" />
-      </svg>
-    ),
-  },
-  {
     key: "delete",
     label: "Delete Selected",
     icon: (
@@ -144,6 +146,43 @@ export function DrawingToolbar() {
           tool.key === "pointer"
             ? activeDrawingTool === null
             : activeDrawingTool === tool.key;
+
+        // Hero tool — Pattern Selector gets special treatment
+        if (tool.hero) {
+          return (
+            <div key={tool.key}>
+              <button
+                onClick={() => setActiveDrawingTool(tool.key as DrawingType)}
+                className="relative flex h-10 w-10 items-center justify-center rounded-lg transition-all"
+                style={{
+                  background: isActive
+                    ? "var(--accent)"
+                    : "rgba(255, 107, 0, 0.08)",
+                  color: isActive ? "#fff" : "#ff6b00",
+                  boxShadow: isActive
+                    ? "0 0 12px rgba(255, 107, 0, 0.5)"
+                    : "inset 0 0 0 1.5px rgba(255, 107, 0, 0.25)",
+                }}
+                title={tool.label}
+              >
+                {tool.icon}
+                {isActive && (
+                  <span
+                    className="absolute inset-0 rounded-lg animate-ping"
+                    style={{
+                      border: "2px solid var(--accent)",
+                      opacity: 0.3,
+                      animationDuration: "1.5s",
+                    }}
+                  />
+                )}
+              </button>
+              {tool.separator && (
+                <div className="mx-1.5 my-1 h-px" style={{ background: "var(--border-subtle)" }} />
+              )}
+            </div>
+          );
+        }
 
         return (
           <div key={tool.key}>

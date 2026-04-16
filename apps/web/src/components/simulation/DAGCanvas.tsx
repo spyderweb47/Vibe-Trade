@@ -245,8 +245,6 @@ function buildGraph(debate: SimulationDebate | null): { nodes: Node[]; edges: Ed
 
 export function DAGCanvas() {
   const debate = useStore((s) => s.currentDebate);
-  const threadEndRef = useRef<HTMLDivElement>(null);
-
   const { nodes: graphNodes, edges: graphEdges } = useMemo(() => buildGraph(debate), [debate]);
   const [nodes, setNodes, onNodesChange] = useNodesState(graphNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(graphEdges);
@@ -256,10 +254,6 @@ export function DAGCanvas() {
     setEdges(graphEdges);
   }, [graphNodes, graphEdges, setNodes, setEdges]);
 
-  // Auto-scroll thread
-  useEffect(() => {
-    threadEndRef.current?.scrollIntoView({ behavior: "auto" });
-  }, [debate?.thread.length]);
 
   if (!debate || debate.status === "idle") {
     return (
@@ -279,8 +273,8 @@ export function DAGCanvas() {
 
   return (
     <div className="flex flex-col h-full" style={{ background: "#050507" }}>
-      {/* DAG Canvas — top 55% */}
-      <div className="flex-1 min-h-0" style={{ minHeight: "45%" }}>
+      {/* DAG Canvas — full height (thread moved to dedicated Debate Thread tab) */}
+      <div className="flex-1 min-h-0">
         {hasEntities ? (
           <ReactFlow
             nodes={nodes}
@@ -296,7 +290,11 @@ export function DAGCanvas() {
             proOptions={{ hideAttribution: true }}
           >
             <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="#1b1b21" />
-            <Controls showInteractive={false} style={{ background: "#17171c", border: "1px solid #26262e", borderRadius: 8 }} />
+            <Controls
+              showInteractive={false}
+              style={{ background: "#17171c", border: "1px solid #26262e", borderRadius: 8 }}
+              className="dag-controls"
+            />
             <MiniMap
               style={{ background: "#0d0d10", border: "1px solid #26262e" }}
               nodeColor={() => "#ff6b00"}
@@ -312,45 +310,7 @@ export function DAGCanvas() {
         )}
       </div>
 
-      {/* Discussion Thread — bottom 45% */}
-      <div
-        className="shrink-0 overflow-y-auto px-3 py-2 space-y-1"
-        style={{ maxHeight: "45%", borderTop: "1px solid var(--border)" }}
-      >
-        <div className="text-[8px] font-bold uppercase tracking-widest mb-1" style={{ color: "var(--text-muted)" }}>
-          Discussion Thread — {debate.thread.length} messages
-        </div>
-        {debate.thread.map((msg) => {
-          const sentColor = msg.sentiment > 0.1 ? "#00d68f" : msg.sentiment < -0.1 ? "#ff4d4d" : "#71717a";
-          return (
-            <div
-              key={msg.id}
-              className="rounded px-2 py-1.5"
-              style={{
-                background: msg.isChartSupport ? "rgba(255,176,32,0.08)" : "var(--surface-2)",
-                borderLeft: `2px solid ${msg.isChartSupport ? "#ffb020" : sentColor}`,
-              }}
-            >
-              <div className="flex items-center gap-1.5">
-                <span className="text-[9px] font-bold" style={{ color: sentColor }}>
-                  {msg.entityName}
-                </span>
-                <span className="text-[7px]" style={{ color: "#52525b" }}>{msg.entityRole}</span>
-                <span className="text-[7px] ml-auto" style={{ color: "#52525b" }}>R{msg.round}</span>
-              </div>
-              <p className="text-[10px] leading-relaxed mt-0.5" style={{ color: "#a1a1aa" }}>
-                {msg.content}
-              </p>
-              {msg.pricePrediction != null && (
-                <span className="text-[8px] font-mono font-bold" style={{ color: "#ff6b00" }}>
-                  Target: ${msg.pricePrediction.toLocaleString()}
-                </span>
-              )}
-            </div>
-          );
-        })}
-        <div ref={threadEndRef} />
-      </div>
+      {/* Discussion thread removed — now in the dedicated Debate Thread tab */}
     </div>
   );
 }

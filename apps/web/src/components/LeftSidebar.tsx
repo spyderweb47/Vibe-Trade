@@ -1,7 +1,83 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useStore } from "@/store/useStore";
+
+/* ── Themed confirmation dialog ─────────────────────────────────────── */
+function ConfirmDialog({
+  title,
+  message,
+  confirmLabel = "Delete",
+  onConfirm,
+  onCancel,
+}: {
+  title: string;
+  message: string;
+  confirmLabel?: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const cancelRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    cancelRef.current?.focus();
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCancel();
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [onCancel]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)" }}
+      onClick={onCancel}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-xs rounded-xl shadow-2xl"
+        style={{ background: "var(--surface)", border: "1px solid var(--border)" }}
+      >
+        <div className="px-4 pt-4 pb-2">
+          <h3 className="text-[13px] font-bold" style={{ color: "var(--text-primary)" }}>
+            {title}
+          </h3>
+          <p className="mt-1.5 text-[11px] leading-relaxed" style={{ color: "var(--text-secondary)" }}>
+            {message}
+          </p>
+        </div>
+        <div className="flex items-center justify-end gap-2 px-4 py-3">
+          <button
+            ref={cancelRef}
+            onClick={onCancel}
+            className="rounded-lg px-3 py-1.5 text-[11px] font-semibold transition-colors"
+            style={{
+              background: "var(--surface-2)",
+              color: "var(--text-secondary)",
+              border: "1px solid var(--border)",
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            className="rounded-lg px-3 py-1.5 text-[11px] font-semibold transition-colors"
+            style={{
+              background: "rgba(239, 68, 68, 0.15)",
+              color: "#ef4444",
+              border: "1px solid rgba(239, 68, 68, 0.3)",
+            }}
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Main sidebar ───────────────────────────────────────────────────── */
 
 interface Props {
   collapsed: boolean;
@@ -30,9 +106,12 @@ export function LeftSidebar({ collapsed, onToggle }: Props) {
   const renameConversation = useStore((s) => s.renameConversation);
   const appMode = useStore((s) => s.appMode);
   const setAppMode = useStore((s) => s.setAppMode);
+  const loadingConversationIds = useStore((s) => s.loadingConversationIds);
 
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const deletingConvo = deletingId ? conversations.find((c) => c.id === deletingId) : null;
 
   if (collapsed) {
     return (
@@ -96,9 +175,9 @@ export function LeftSidebar({ collapsed, onToggle }: Props) {
       </div>
 
       {/* New chat */}
-      <div className="px-3 pt-3 pb-2 shrink-0">
+      <div className="px-3 pt-3 pb-1.5 shrink-0">
         <button
-          onClick={() => createConversation()}
+          onClick={() => { setAppMode("building" as never); createConversation(); }}
           className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-[12px] font-semibold transition-colors hover:bg-[var(--surface)]"
           style={{
             background: "var(--surface-2)",
@@ -114,31 +193,26 @@ export function LeftSidebar({ collapsed, onToggle }: Props) {
         </button>
       </div>
 
-      {/* Mode toggle (moved here from TopBar) */}
+      {/* Playground — separate section/page */}
       <div className="px-3 pb-3 shrink-0">
-        <div
-          className="flex items-center rounded-md p-[3px]"
-          style={{ background: "var(--surface-2)", border: "1px solid var(--border)" }}
+        <button
+          onClick={() => setAppMode(appMode === "playground" ? "building" as never : "playground" as never)}
+          className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-[12px] font-semibold transition-colors"
+          style={{
+            background: appMode === "playground" ? "rgba(139, 92, 246, 0.12)" : "var(--surface-2)",
+            color: appMode === "playground" ? "#8b5cf6" : "var(--text-secondary)",
+            border: `1px solid ${appMode === "playground" ? "rgba(139, 92, 246, 0.3)" : "var(--border)"}`,
+          }}
         >
-          {(["building", "playground", "simulation"] as const).map((m) => {
-            const active = appMode === m;
-            return (
-              <button
-                key={m}
-                onClick={() => setAppMode(m)}
-                className="flex-1 rounded px-1 py-1 text-[9px] font-bold uppercase tracking-wider transition-all"
-                style={{
-                  background: active ? "var(--accent)" : "transparent",
-                  color: active ? "#000" : "var(--text-tertiary)",
-                  letterSpacing: "0.06em",
-                }}
-                title={m}
-              >
-                {m}
-              </button>
-            );
-          })}
-        </div>
+          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+            <path strokeLinecap="round" strokeLinejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <span className="flex-1 text-left">Playground</span>
+          {appMode === "playground" && (
+            <span className="text-[8px] font-bold uppercase tracking-wider" style={{ color: "#8b5cf6" }}>Active</span>
+          )}
+        </button>
       </div>
 
       {/* Chat history */}
@@ -202,6 +276,13 @@ export function LeftSidebar({ collapsed, onToggle }: Props) {
                     <span className="flex-1 truncate text-[11px]" title={c.title}>
                       {c.title || "New chat"}
                     </span>
+                    {loadingConversationIds.has(c.id) && (
+                      <span
+                        className="shrink-0 h-2 w-2 rounded-full animate-pulse"
+                        style={{ background: "var(--accent)" }}
+                        title="Processing..."
+                      />
+                    )}
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -219,9 +300,7 @@ export function LeftSidebar({ collapsed, onToggle }: Props) {
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (confirm(`Delete "${c.title || 'this conversation'}"?`)) {
-                          deleteConversation(c.id);
-                        }
+                        setDeletingId(c.id);
                       }}
                       className="opacity-0 group-hover:opacity-100 transition-opacity"
                       title="Delete"
@@ -238,6 +317,20 @@ export function LeftSidebar({ collapsed, onToggle }: Props) {
           })}
         </ul>
       </div>
+
+      {/* Themed delete confirmation dialog */}
+      {deletingConvo && (
+        <ConfirmDialog
+          title="Delete conversation"
+          message={`Are you sure you want to delete "${deletingConvo.title || "this conversation"}"? This cannot be undone.`}
+          confirmLabel="Delete"
+          onConfirm={() => {
+            deleteConversation(deletingConvo.id);
+            setDeletingId(null);
+          }}
+          onCancel={() => setDeletingId(null)}
+        />
+      )}
     </div>
   );
 }

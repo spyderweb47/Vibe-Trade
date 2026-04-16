@@ -23,7 +23,7 @@ def _ensure_repo_on_path() -> None:
 
 def run_tools_list() -> None:
     _ensure_repo_on_path()
-    from skills.tools import TOOL_CATALOG
+    from core.tool_catalog import TOOL_CATALOG
 
     # Group by category
     by_cat: dict[str, list] = defaultdict(list)

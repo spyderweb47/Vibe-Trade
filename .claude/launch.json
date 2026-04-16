@@ -4,14 +4,14 @@
     {
       "name": "Next.js Frontend",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
+      "runtimeArgs": ["--prefix", "apps/web", "run", "dev"],
       "port": 3000
     },
     {
       "name": "FastAPI Backend",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["-m", "uvicorn", "services.api.main:app", "--reload", "--port", "8000"],
-      "port": 8000
+      "runtimeArgs": ["-m", "uvicorn", "services.api.main:app", "--reload", "--host", "127.0.0.1", "--port", "8001"],
+      "port": 8001
     }
   ]
 }

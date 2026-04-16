@@ -22,7 +22,11 @@ export function RightSidebar() {
   const [view, setView] = useState<"chat" | "code">("chat");
   const currentScript = useStore((s) => s.currentScript);
   const setCurrentScript = useStore((s) => s.setCurrentScript);
-  const [loading, setLoading] = useState(false);
+  const activeConversationId = useStore((s) => s.activeConversationId);
+  const loadingConversationIds = useStore((s) => s.loadingConversationIds);
+  const setConversationLoading = useStore((s) => s.setConversationLoading);
+  const addMessageToConversation = useStore((s) => s.addMessageToConversation);
+  const loading = activeConversationId ? loadingConversationIds.has(activeConversationId) : false;
   const [runState, setRunState] = useState<"idle" | "running" | "done" | "error">("idle");
   const [datasetsOpen, setDatasetsOpen] = useState(false);
   const [pendingFingerprint, setPendingFingerprint] = useState<string | null>(null);
@@ -86,34 +90,41 @@ export function RightSidebar() {
   const handleSend = async () => {
     if (!input.trim() || loading) return;
     const text = input.trim();
+    const conversationId = activeConversationId;
+    if (!conversationId) return;
     setInput("");
     addMessage({ role: "user", content: text });
-    setLoading(true);
+    setConversationLoading(conversationId, true);
 
-    // Built-in default-agent planner. Routing depends on how many skills
-    // the user has active:
-    //   0 skills  → planner with ALL skills available (zero-config default)
-    //   1 skill   → direct dispatch (fast path, no planner overhead)
-    //   2+ skills → planner RESTRICTED to only those skills — honors the
-    //               user's explicit selection so it can't reach for skills
-    //               they've deselected
-    const skillCount = activeSkillIds.size;
-    if (skillCount !== 1) {
-      try {
-        const availableSkills = skillCount >= 2 ? Array.from(activeSkillIds) : undefined;
-        const planResult = await getPlan(text, undefined, availableSkills);
-        if (planResult.is_multi_step && planResult.steps.length > 0) {
-          await executePlanInBrowser({ steps: planResult.steps });
-          setLoading(false);
-          return;
-        }
-      } catch (err) {
-        // Plan endpoint failed — fall through to normal chat
-        console.warn("Plan endpoint failed, falling back to general chat:", err);
+    // Helper: add a message to THIS conversation even if the user switched away
+    const addMsg = (msg: { role: 'user' | 'agent' | 'trace'; content: string; trace?: import('@/types').TraceData }) => {
+      const currentActive = useStore.getState().activeConversationId;
+      if (currentActive === conversationId) {
+        return addMessage(msg);
       }
-    }
+      return addMessageToConversation(conversationId, msg);
+    };
 
     try {
+      // Built-in default-agent planner. Routing depends on how many skills
+      // the user has active:
+      //   0 skills  → planner with ALL skills available (zero-config default)
+      //   1 skill   → direct dispatch (fast path, no planner overhead)
+      //   2+ skills → planner RESTRICTED to only those skills
+      const skillCount = activeSkillIds.size;
+      if (skillCount !== 1) {
+        try {
+          const availableSkills = skillCount >= 2 ? Array.from(activeSkillIds) : undefined;
+          const planResult = await getPlan(text, undefined, availableSkills);
+          if (planResult.is_multi_step && planResult.steps.length > 0) {
+            await executePlanInBrowser({ steps: planResult.steps });
+            return;
+          }
+        } catch (err) {
+          console.warn("Plan endpoint failed, falling back to general chat:", err);
+        }
+      }
+
       // Auto-sync dataset to backend if needed
       if (activeDataset && !useStore.getState().syncedDatasets.has(activeDataset)) {
         try {
@@ -141,28 +152,27 @@ export function RightSidebar() {
         pending_fingerprint: isNewFingerprint ? undefined : (pendingFingerprint || undefined),
       });
 
-      // Clear pending fingerprint when new pattern data arrives
-      if (isNewFingerprint) {
-        setPendingFingerprint(null);
-      }
+      if (isNewFingerprint) setPendingFingerprint(null);
 
-      addMessage({ role: "agent", content: result.reply });
+      addMsg({ role: "agent", content: result.reply });
 
-      // Store pending fingerprint if returned (pattern analysis step)
       const newPending = (result.data as Record<string, unknown>)?.pending_fingerprint as string | undefined;
       setPendingFingerprint(newPending || null);
 
-      // Run any tool_calls the skill returned (script load, tab activate, etc).
-      // The active skill's declared tool allowlist is enforced in the registry.
+      // Only run tool_calls if the user is still on this conversation
+      // (tool calls mutate live store state like chartData, patternMatches, etc.)
       if (result.tool_calls && result.tool_calls.length > 0) {
-        const activeSkill = skills.find((s) => s.id === activeMode);
-        runToolCalls(result.tool_calls, activeMode, activeSkill?.tools || []);
+        if (useStore.getState().activeConversationId === conversationId) {
+          const activeSkill = skills.find((s) => s.id === activeMode);
+          runToolCalls(result.tool_calls, activeMode, activeSkill?.tools || []);
+        }
       }
 
-      // Handle strategy mode responses
       if (activeMode === "strategy" && result.script) {
-        setCurrentScript(result.script);
-        setView("code");
+        if (useStore.getState().activeConversationId === conversationId) {
+          setCurrentScript(result.script);
+          setView("code");
+        }
       } else if (result.script && result.script_type === "indicator") {
         const indName = (result.data as Record<string, unknown>)?.indicator_name as string || "Custom";
         const defaultParams = (result.data as Record<string, unknown>)?.default_params as Record<string, string> || {};
@@ -176,20 +186,22 @@ export function RightSidebar() {
           custom: true,
           color: colors[indicators.length % colors.length],
         });
-        addMessage({ role: "agent", content: `Custom indicator "${indName}" added to Resources and enabled on chart.` });
+        addMsg({ role: "agent", content: `Custom indicator "${indName}" added to Resources and enabled on chart.` });
       } else if (result.script) {
-        const isEdit = currentScript.length > 0;
-        setCurrentScript(result.script);
-        if (!isEdit) setView("code");
-        if (isEdit) addMessage({ role: "agent", content: "Script updated. Switch to CODE tab to see changes, then click Run." });
+        if (useStore.getState().activeConversationId === conversationId) {
+          const isEdit = currentScript.length > 0;
+          setCurrentScript(result.script);
+          if (!isEdit) setView("code");
+          if (isEdit) addMsg({ role: "agent", content: "Script updated. Switch to CODE tab to see changes, then click Run." });
+        }
       }
     } catch (err) {
-      addMessage({
+      addMsg({
         role: "agent",
         content: `Error: ${err instanceof Error ? err.message : "Something went wrong"}`,
       });
     } finally {
-      setLoading(false);
+      setConversationLoading(conversationId, false);
     }
   };
 

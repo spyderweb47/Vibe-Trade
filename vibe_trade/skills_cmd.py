@@ -26,7 +26,7 @@ def _ensure_repo_on_path() -> None:
 
 def run_skills_list() -> None:
     _ensure_repo_on_path()
-    from skills import skill_registry
+    from core.skill_registry import skill_registry
 
     table = Table(title="Registered Skills", show_lines=False)
     table.add_column("ID", style="cyan", no_wrap=True)
@@ -52,7 +52,7 @@ def run_skills_list() -> None:
 
 def run_skills_show(skill_id: str) -> None:
     _ensure_repo_on_path()
-    from skills import skill_registry
+    from core.skill_registry import skill_registry
 
     skill = skill_registry.get(skill_id)
     if not skill:

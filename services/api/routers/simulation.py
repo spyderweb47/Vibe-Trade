@@ -89,6 +89,15 @@ class DebateResponse(BaseModel):
 # Debate endpoint (v2 — social simulation)
 # ---------------------------------------------------------------------------
 
+def _normalize_confidence(raw: float | int) -> float:
+    """Normalize confidence to 0-100 scale. LLMs sometimes return 0.72 instead of 72."""
+    val = float(raw)
+    if val <= 1.0:
+        # 0-1 scale → multiply to 0-100
+        return round(val * 100, 1)
+    return round(min(val, 100), 1)
+
+
 def _sanitize_message(m: dict) -> dict:
     """Clean LLM-generated message fields so they pass Pydantic validation."""
     pp = m.get("price_prediction")
@@ -161,7 +170,9 @@ async def run_debate(request: DebateRequest) -> DebateResponse:
         total_rounds=results["total_rounds"],
         summary=SummaryResponse(
             consensus_direction=results["summary"].get("consensus_direction", "NEUTRAL"),
-            confidence=results["summary"].get("confidence", 0.5),
+            # Normalize confidence to 0-100 scale. The LLM may return 0.72
+            # (0-1 scale) or 72 (0-100 scale) depending on the model.
+            confidence=_normalize_confidence(results["summary"].get("confidence", 50)),
             key_arguments=results["summary"].get("key_arguments", []),
             dissenting_views=results["summary"].get("dissenting_views", []),
             price_targets=results["summary"].get("price_targets", {}),

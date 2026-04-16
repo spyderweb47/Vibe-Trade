@@ -1,20 +1,21 @@
 """
-Core types for the skill system.
+Core types for the Vibe Trade skill system.
 
-Skills live at the **top level** of the repo (`trading-platform/skills/`).
-Each skill is a self-contained capability package:
-  - SKILL.md   → YAML frontmatter metadata + markdown documentation
-  - handler.py → async `handle(message, context, tools) -> SkillResponse`
+Part of the 3-layer architecture:
+  Layer 1 — Canvas:  UI components, store, chart        (apps/web/src/)
+  Layer 2 — Tools:   product features skills can invoke  (core/tool_catalog.py)
+  Layer 3 — Skills:  SKILL.md instruction files          (skills/{name}/SKILL.md)
 
-The SkillRegistry (see `__init__.py`) auto-discovers all skills at import time
-by scanning this directory for subfolders (except those starting with `_`) and
-parsing their SKILL.md + importing their handler.py.
+These types bridge all three layers:
+  - SkillMetadata   → parsed from SKILL.md, served to the Canvas via /skills
+  - ToolContext      → passed to processors, carries the tool allowlist
+  - SkillResponse    → returned by processors, contains reply + tool_calls
+  - Skill            → loaded skill = metadata + documentation body
 
-The unified "Vibe Trade" agent (see `core/agents/vibe_trade_agent.py`) is the
-single default agent the product exposes to the user. It dispatches messages
-to skills by id. Skills declare the tools they need in their metadata; the
-frontend tool registry (`apps/web/src/lib/toolRegistry.ts`) enforces that
-allowlist when executing `tool_calls` returned in a SkillResponse.
+The SkillRegistry (core/skill_registry.py) discovers skills at import time.
+The VibeTrade agent (core/agents/vibe_trade_agent.py) dispatches to processors.
+Processors (core/agents/processors.py) return SkillResponse with tool_calls.
+The frontend tool registry (apps/web/src/lib/toolRegistry.ts) executes them.
 """
 
 from __future__ import annotations
@@ -84,7 +85,7 @@ class SkillMetadata:
 
 @dataclass
 class ToolContext:
-    """Passed to a skill handler describing which tools it is allowed to invoke."""
+    """Passed to a skill processor describing which tools it is allowed to invoke."""
 
     skill_id: str
     allowed_tools: List[str]
@@ -93,10 +94,10 @@ class ToolContext:
 @dataclass
 class Skill:
     """
-    A loaded skill. Skills are pure documentation + metadata — there is NO
-    `handler` here. The SkillRegistry only knows what the skill declares in
-    SKILL.md; the actual Python logic lives in `core/agents/processors.py`
-    and is looked up at dispatch time by `VibeTrade.dispatch(skill_id, ...)`.
+    A loaded skill. Skills are pure SKILL.md instruction files — natural
+    language programs for the AI agent. No Python handler lives inside the
+    skill folder. The SkillRegistry only parses what the skill declares in
+    SKILL.md; the actual Python logic lives in core/agents/processors.py.
     """
 
     metadata: SkillMetadata
@@ -106,9 +107,9 @@ class Skill:
 @dataclass
 class SkillResponse:
     """
-    Returned by a skill handler. Carries the chat reply, optional generated
-    script, arbitrary data payload, and a list of tool_calls the frontend
-    should execute (e.g. load script into editor, switch bottom-panel tab).
+    Returned by a skill processor. Carries the chat reply, optional script,
+    data payload, and tool_calls the frontend should execute (e.g. load
+    script into editor, push debate data, switch bottom-panel tab).
     """
 
     reply: str

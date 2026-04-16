@@ -351,7 +351,7 @@ async def list_tools() -> list[dict]:
     The frontend uses this catalog to validate + render tool_calls. Source
     of truth: `skills/tools.py::TOOL_CATALOG`.
     """
-    from skills.tools import catalog_to_json
+    from core.tool_catalog import catalog_to_json
     return catalog_to_json()
 
 

@@ -250,6 +250,82 @@ const executors: Record<string, ToolExecutor> = {
     });
   },
 
+  // ─── simulation.* — multi-agent debate / swarm intelligence ────────────
+  "simulation.run_debate": (_args, ctx) => {
+    // Triggers the store's runDebate() which calls POST /debate and streams
+    // results into currentDebate. The processor calls this backend-side, so
+    // this executor is only needed if a frontend-triggered flow uses it.
+    useStore.getState().runDebate();
+  },
+
+  "simulation.set_debate": (debate, ctx) => {
+    if (!debate || typeof debate !== "object") {
+      console.warn(`[skill:${ctx.skillId}] simulation.set_debate expected a debate object`);
+      return;
+    }
+    // The backend returns the debate in the API format. The store's
+    // setCurrentDebate expects the frontend SimulationDebate shape, so we
+    // need to map it. If it's already in the right shape, pass through.
+    const d = debate as Record<string, unknown>;
+
+    // Build the SimulationDebate shape from the backend response
+    const entities = ((d.entities || []) as Array<Record<string, unknown>>).map((e) => ({
+      id: String(e.id || ""),
+      name: String(e.name || ""),
+      role: String(e.role || ""),
+      background: String(e.background || ""),
+      bias: String(e.bias || ""),
+      personality: String(e.personality || ""),
+    }));
+
+    const thread = ((d.thread || []) as Array<Record<string, unknown>>).map((m) => ({
+      id: String(m.id || ""),
+      round: Number(m.round || 0),
+      entityId: String(m.entity_id || m.entityId || ""),
+      entityName: String(m.entity_name || m.entityName || ""),
+      entityRole: String(m.entity_role || m.entityRole || ""),
+      content: String(m.content || ""),
+      sentiment: Number(m.sentiment || 0),
+      pricePrediction: m.price_prediction ?? m.pricePrediction ?? null,
+      agreedWith: (m.agreed_with || m.agreedWith || []) as string[],
+      disagreedWith: (m.disagreed_with || m.disagreedWith || []) as string[],
+      isChartSupport: Boolean(m.is_chart_support || m.isChartSupport),
+    }));
+
+    const summary = d.summary as Record<string, unknown> | null;
+    const assetInfo = d.asset_info as Record<string, unknown> | undefined;
+
+    const mapped = {
+      id: String(d.debate_id || d.id || `debate_${Date.now()}`),
+      datasetId: String(d.dataset_id || d.datasetId || ""),
+      symbol: String(d.symbol || ""),
+      assetClass: String(assetInfo?.asset_class || ""),
+      assetName: String(assetInfo?.asset_name || d.symbol || ""),
+      entities,
+      thread,
+      currentRound: Number(d.total_rounds || 0),
+      totalRounds: Number(d.total_rounds || 0),
+      summary: summary
+        ? {
+            consensusDirection: String(summary.consensus_direction || summary.consensusDirection || "NEUTRAL") as "BULLISH" | "BEARISH" | "NEUTRAL",
+            confidence: Number(summary.confidence || 0),
+            keyArguments: (summary.key_arguments || summary.keyArguments || []) as string[],
+            dissentingViews: (summary.dissenting_views || summary.dissentingViews || []) as string[],
+            priceTargets: (summary.price_targets || summary.priceTargets || { low: 0, mid: 0, high: 0 }) as { low: number; mid: number; high: number },
+            riskFactors: (summary.risk_factors || summary.riskFactors || []) as string[],
+            recommendation: (summary.recommendation || {}) as Record<string, unknown>,
+          }
+        : null,
+      status: "complete" as const,
+    };
+
+    useStore.getState().setCurrentDebate(mapped as never);
+  },
+
+  "simulation.reset": (_args, _ctx) => {
+    useStore.getState().resetSimulation();
+  },
+
   // ─── notify.* — user notifications ─────────────────────────────────────
   "notify.toast": (args, ctx) => {
     // Stub — no toast system yet. Log as a console message so skills can

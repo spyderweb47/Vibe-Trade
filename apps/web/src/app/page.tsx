@@ -9,7 +9,8 @@ import { Chart } from "@/components/Chart";
 import { DrawingToolbar } from "@/components/DrawingToolbar";
 import { TimeframeSelector } from "@/components/TimeframeSelector";
 import { PlaygroundControls } from "@/components/playground/PlaygroundControls";
-import { DAGCanvas } from "@/components/simulation/DAGCanvas";
+// DAGCanvas is now rendered by the Swarm Intelligence skill's DAGGraphTab
+// bottom-panel component instead of directly in page.tsx.
 import { useStore } from "@/store/useStore";
 import { usePlaygroundReplay } from "@/hooks/usePlaygroundReplay";
 
@@ -45,7 +46,7 @@ export default function Home() {
   const [leftSidebarWidth, setLeftSidebarWidth] = useState(240);
   const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
   const [isNarrow, setIsNarrow] = useState(false);
-  const [showDAG, setShowDAG] = useState(false);
+  // showDAG removed — DAG now lives in the Swarm Intelligence skill's bottom-panel tab
   const sidebarDrag = useRef({ active: false, startX: 0, startW: 0 });
   const leftSidebarDrag = useRef({ active: false, startX: 0, startW: 0 });
 
@@ -151,57 +152,12 @@ export default function Home() {
         {/* Playground replay controls (playground mode only) */}
         {appMode === "playground" && <PlaygroundControls />}
 
-        {/* Simulation: Chart/DAG toggle bar */}
-        {appMode === "simulation" && (
-          <div
-            className="flex items-center gap-2 px-3 py-1 shrink-0"
-            style={{ borderBottom: "1px solid var(--border)", background: "var(--surface)" }}
-          >
-            <div
-              className="flex rounded-md p-[2px]"
-              style={{ background: "var(--surface-2)", border: "1px solid var(--border)" }}
-            >
-              <button
-                onClick={() => setShowDAG(false)}
-                className="rounded px-2.5 py-1 text-[9px] font-bold uppercase tracking-wider transition-all"
-                style={{
-                  background: !showDAG ? "var(--accent)" : "transparent",
-                  color: !showDAG ? "#000" : "var(--text-tertiary)",
-                }}
-              >
-                Chart
-              </button>
-              <button
-                onClick={() => setShowDAG(true)}
-                className="rounded px-2.5 py-1 text-[9px] font-bold uppercase tracking-wider transition-all"
-                style={{
-                  background: showDAG ? "var(--accent)" : "transparent",
-                  color: showDAG ? "#000" : "var(--text-tertiary)",
-                }}
-              >
-                DAG Canvas
-              </button>
-            </div>
-            <span className="text-[9px]" style={{ color: "var(--text-muted)" }}>
-              {showDAG ? "Explore agent debate graph" : "View price chart"}
-            </span>
-          </div>
-        )}
-
-        {/* Main content area: Chart or DAG Canvas */}
+        {/* Main content area: Chart + Drawing Toolbar */}
         <div className="flex flex-1 min-h-0">
-          {appMode === "simulation" && showDAG ? (
-            <div className="flex-1 min-h-0">
-              <DAGCanvas />
-            </div>
-          ) : (
-            <>
-              <DrawingToolbar />
-              <div className="flex-1 min-h-0">
-                <Chart data={displayedData} patternMatches={appMode === "playground" ? [] : patternMatches} />
-              </div>
-            </>
-          )}
+          <DrawingToolbar />
+          <div className="flex-1 min-h-0">
+            <Chart data={displayedData} patternMatches={appMode === "playground" ? [] : patternMatches} />
+          </div>
         </div>
 
         {/* Bottom Panel - collapsible, contextual by mode */}

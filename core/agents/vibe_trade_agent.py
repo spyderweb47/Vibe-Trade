@@ -29,8 +29,8 @@ import re
 from typing import Any, Dict, List, Optional
 
 from core.agents.processors import get_processor
-from skills import skill_registry
-from skills.base import Skill, SkillResponse, ToolContext
+from core.skill_registry import skill_registry
+from core.skill_types import Skill, SkillResponse, ToolContext
 
 
 # ─── Multi-step heuristic ──────────────────────────────────────────────────

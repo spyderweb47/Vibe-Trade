@@ -64,7 +64,14 @@ function makeNewConversation(): Conversation {
     strategyConfig: null,
     backtestResults: null,
     activeDataset: null,
-    activeSkillIds: ['pattern'],
+    activeSkillIds: [],
+    // Session isolation defaults
+    chartData: [],
+    datasets: [],
+    datasetChartData: {},
+    selectedTimeframe: null,
+    currentDebate: null,
+    drawings: [],
   };
 }
 
@@ -106,6 +113,15 @@ function _snapshotLiveStateInto(state: any, activeId: string | null): Conversati
     backtestResults: state.backtestResults,
     activeDataset: state.activeDataset,
     activeSkillIds: Array.from(state.activeSkillIds || []),
+    // Session isolation — capture chart, datasets, debate, drawings
+    chartData: state.chartData || [],
+    datasets: (state.datasets || []).map((d: { id: string; name: string; metadata: Record<string, unknown> }) => ({
+      id: d.id, name: d.name, metadata: d.metadata,
+    })),
+    datasetChartData: state.datasetChartData || {},
+    selectedTimeframe: state.selectedTimeframe ?? null,
+    currentDebate: state.currentDebate ?? null,
+    drawings: state.drawings || [],
   };
   const conversations = [...state.conversations];
   conversations[idx] = updated;
@@ -134,6 +150,9 @@ interface AppState {
   // current live state into the previous conversation before swapping.
   conversations: Conversation[];
   activeConversationId: string | null;
+  loadingConversationIds: Set<string>;
+  setConversationLoading: (id: string, loading: boolean) => void;
+  addMessageToConversation: (conversationId: string, message: Omit<Message, 'id' | 'timestamp'>) => string;
   hydrateConversations: () => void;
   createConversation: () => string;
   switchConversation: (id: string) => void;
@@ -294,6 +313,50 @@ export const useStore = create<AppState>((set, get) => ({
   // ─── Conversations (persisted) ──────────────────────────────────────
   conversations: [],
   activeConversationId: null,
+  loadingConversationIds: new Set(),
+
+  setConversationLoading: (id, loading) => set((state) => {
+    const next = new Set(state.loadingConversationIds);
+    if (loading) next.add(id); else next.delete(id);
+    return { loadingConversationIds: next };
+  }),
+
+  // Add a message to a specific conversation — even if the user has
+  // switched away. If the conversation is currently active, the live
+  // message arrays are updated normally. If it's a background conversation,
+  // the message is written directly into the persisted snapshot.
+  addMessageToConversation: (conversationId, msg) => {
+    const state = get();
+    const fullMsg: Message = {
+      ...msg,
+      id: typeof crypto !== 'undefined' ? crypto.randomUUID() : `m_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      timestamp: new Date().toISOString(),
+    };
+
+    if (conversationId === state.activeConversationId) {
+      // Active conversation — update live state normally
+      return state.addMessage(msg);
+    }
+
+    // Background conversation — write directly into the snapshot
+    const idx = state.conversations.findIndex((c) => c.id === conversationId);
+    if (idx === -1) return fullMsg.id;
+    const conv = state.conversations[idx];
+    const updatedConv = {
+      ...conv,
+      patternMessages: [...(conv.patternMessages || []), fullMsg],
+      updatedAt: Date.now(),
+    };
+    // Auto-derive title from first user message
+    if ((updatedConv.title === 'New chat' || !updatedConv.title) && fullMsg.role === 'user') {
+      updatedConv.title = fullMsg.content.slice(0, 60);
+    }
+    const conversations = [...state.conversations];
+    conversations[idx] = updatedConv;
+    set({ conversations });
+    savePersistedConversations(conversations, state.activeConversationId);
+    return fullMsg.id;
+  },
 
   hydrateConversations: () => {
     const { conversations, activeId } = loadPersistedConversations();
@@ -321,8 +384,8 @@ export const useStore = create<AppState>((set, get) => ({
       backtestResults: active.backtestResults,
       patternMatches: active.patternMatches || [],
       activeDataset: active.activeDataset,
-      activeSkillIds: new Set(active.activeSkillIds || ['pattern']),
-      activeMode: active.activeSkillIds?.[0] || 'pattern',
+      activeSkillIds: new Set(active.activeSkillIds || []),
+      activeMode: active.activeSkillIds?.[0] || 'general',
     });
     savePersistedConversations(conversations, active.id);
   },
@@ -336,7 +399,7 @@ export const useStore = create<AppState>((set, get) => ({
     set({
       conversations: next,
       activeConversationId: fresh.id,
-      // Reset live state to fresh defaults
+      // Reset live state to fresh defaults — clean session
       patternMessages: [],
       strategyMessages: [],
       messages: [],
@@ -344,8 +407,15 @@ export const useStore = create<AppState>((set, get) => ({
       patternMatches: [],
       strategyConfig: null,
       backtestResults: null,
-      activeSkillIds: new Set(['pattern']),
-      activeMode: 'pattern',
+      activeSkillIds: new Set(),
+      activeMode: 'general',
+      // Session isolation — fresh chart, datasets, debate, drawings
+      chartData: [],
+      datasets: [] as never,
+      datasetChartData: {} as never,
+      selectedTimeframe: null,
+      currentDebate: null as never,
+      drawings: [] as never,
     });
     savePersistedConversations(next, fresh.id);
     return fresh.id;
@@ -370,9 +440,16 @@ export const useStore = create<AppState>((set, get) => ({
       strategyConfig: target.strategyConfig,
       backtestResults: target.backtestResults,
       activeDataset: target.activeDataset,
-      activeSkillIds: new Set(target.activeSkillIds || ['pattern']),
-      activeMode: target.activeSkillIds?.[0] || 'pattern',
+      activeSkillIds: new Set(target.activeSkillIds || []),
+      activeMode: target.activeSkillIds?.[0] || 'general',
       appMode: target.appMode,
+      // Session isolation — restore chart, datasets, debate, drawings
+      chartData: target.chartData || [],
+      datasets: (target.datasets || []) as never,
+      datasetChartData: (target.datasetChartData || {}) as never,
+      selectedTimeframe: target.selectedTimeframe ?? null,
+      currentDebate: (target.currentDebate ?? null) as never,
+      drawings: (target.drawings || []) as never,
     });
     savePersistedConversations(conversations, id);
   },
@@ -479,14 +556,19 @@ export const useStore = create<AppState>((set, get) => ({
   datasetChartData: {},
   datasetRawData: {},
   syncedDatasets: new Set(),
-  addDataset: (dataset, chartData, rawData) =>
+  addDataset: (dataset, chartData, rawData) => {
     set((state) => ({
       datasets: [...state.datasets, dataset],
       datasetChartData: { ...state.datasetChartData, [dataset.id]: chartData },
       datasetRawData: { ...state.datasetRawData, [dataset.id]: rawData },
       activeDataset: dataset.id,
       chartData,
-    })),
+    }));
+    // Snapshot so chart data persists across conversation switches
+    const s = get();
+    const snapped = _snapshotLiveStateInto(s, s.activeConversationId);
+    if (snapped) set({ conversations: snapped });
+  },
   markSynced: (id) =>
     set((state) => ({
       syncedDatasets: new Set([...state.syncedDatasets, id]),
@@ -920,7 +1002,13 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
-  setCurrentDebate: (d) => set({ currentDebate: d }),
+  setCurrentDebate: (d) => {
+    set({ currentDebate: d });
+    // Snapshot so debate data persists across conversation switches
+    const s = get();
+    const snapped = _snapshotLiveStateInto(s, s.activeConversationId);
+    if (snapped) set({ conversations: snapped });
+  },
   resetSimulation: () => set({ currentDebate: null, simulationLoading: false }),
 }));
 

@@ -9,6 +9,10 @@ import { PositionsTab } from "./playground/PositionsTab";
 import { OrdersTab } from "./playground/OrdersTab";
 import { TradeHistoryTab } from "./playground/TradeHistoryTab";
 import { WalletTab } from "./playground/WalletTab";
+import { DAGGraphTab } from "./tabs/DAGGraphTab";
+import { PersonalitiesTab } from "./tabs/PersonalitiesTab";
+import { DebateThreadTab } from "./tabs/DebateThreadTab";
+import { RunStatsTab } from "./tabs/RunStatsTab";
 
 /**
  * Bottom-panel component registry.
@@ -23,10 +27,13 @@ export const BOTTOM_PANEL_COMPONENTS: Record<string, React.ComponentType> = {
   PortfolioAnalysis,
   TradeList,
   PineScriptPanel,
+  DAGGraphTab,
+  PersonalitiesTab,
+  DebateThreadTab,
+  RunStatsTab,
 };
 
 const PLAYGROUND_TABS = ["Positions", "Open Orders", "Trade History", "Wallet"];
-const SIMULATION_TABS = ["Debate Log"];
 
 interface TabDef {
   id: string;
@@ -74,15 +81,13 @@ export function BottomPanel() {
     [skills, activeSkillIds]
   );
 
-  // Labels to render on the tab bar (string[] for playground/simulation,
-  // TabDef[] for building mode)
+  // Labels to render on the tab bar (string[] for playground,
+  // TabDef[] for building mode — simulation tabs come from the skill now)
   const isBuilding = appMode === "building";
   const tabLabels =
-    appMode === "simulation"
-      ? SIMULATION_TABS
-      : appMode === "playground"
-        ? PLAYGROUND_TABS
-        : skillTabs.map((t) => t.label);
+    appMode === "playground"
+      ? PLAYGROUND_TABS
+      : skillTabs.map((t) => t.label);
 
   // Reset active tab when mode or skill set changes to avoid out-of-range index
   useEffect(() => {
@@ -190,9 +195,7 @@ export function BottomPanel() {
       {/* Content */}
       {!collapsed && (
         <div className="flex-1 overflow-auto">
-          {appMode === "simulation" ? (
-            <SimulationDebateLog />
-          ) : appMode === "playground" ? (
+          {appMode === "playground" ? (
             activeTab === 0 ? <PositionsTab /> :
             activeTab === 1 ? <OrdersTab /> :
             activeTab === 2 ? <TradeHistoryTab /> :

@@ -26,7 +26,29 @@ import { executePatternScript } from "@/lib/scriptExecutor";
 import { executeStrategy } from "@/lib/strategyExecutor";
 import { useStore } from "@/store/useStore";
 import { runToolCalls } from "@/lib/toolRegistry";
-import type { StrategyConfig, TraceStep, TraceData } from "@/types";
+import type { StrategyConfig, TraceStep, TraceSubStep, TraceData } from "@/types";
+
+/**
+ * Known sub-step sequences for long-running skills. When a step with one of
+ * these skill IDs starts running, the trace shows internal progress ticking
+ * through these stages on a timer. When the backend call returns, all
+ * sub-steps snap to done.
+ */
+const SKILL_SUB_PLANS: Record<string, { label: string; durationMs: number }[]> = {
+  swarm_intelligence: [
+    { label: "Classifying asset...", durationMs: 3000 },
+    { label: "Preparing multi-timeframe data...", durationMs: 2000 },
+    { label: "Generating personas (batch 1)...", durationMs: 6000 },
+    { label: "Generating personas (batch 2)...", durationMs: 6000 },
+    { label: "Generating personas (batch 3)...", durationMs: 6000 },
+    { label: "Discussion round 1-5...", durationMs: 20000 },
+    { label: "Discussion round 6-10...", durationMs: 20000 },
+    { label: "Discussion round 11-15...", durationMs: 20000 },
+    { label: "Discussion round 16-20...", durationMs: 20000 },
+    { label: "Checking convergence...", durationMs: 2000 },
+    { label: "Generating final summary...", durationMs: 5000 },
+  ],
+};
 
 interface ExecutePlanArgs {
   steps: PlanStep[];
@@ -97,8 +119,38 @@ export async function executePlanInBrowser({ steps }: ExecutePlanArgs): Promise<
     // Per-step context = accumulated + the planner's per-step overrides
     const stepContext = { ...accumulatedContext, ...(step.context || {}) };
 
+    // Start sub-step ticker for known long-running skills
+    const subPlan = SKILL_SUB_PLANS[step.skill];
+    let subStepTimer: ReturnType<typeof setTimeout> | null = null;
+    if (subPlan) {
+      const subs: TraceSubStep[] = subPlan.map((s) => ({ label: s.label, status: "pending" as const }));
+      subs[0] = { ...subs[0], status: "running" };
+      patchStep(i, { subSteps: subs });
+
+      // Tick through sub-steps on estimated timers
+      let subIdx = 0;
+      const tickNext = () => {
+        subIdx++;
+        if (subIdx >= subs.length) return;
+        const updated = subs.map((s, j) => ({
+          ...s,
+          status: (j < subIdx ? "done" : j === subIdx ? "running" : "pending") as TraceSubStep["status"],
+        }));
+        patchStep(i, { subSteps: updated });
+        subStepTimer = setTimeout(tickNext, subPlan[subIdx].durationMs);
+      };
+      subStepTimer = setTimeout(tickNext, subPlan[0].durationMs);
+    }
+
     try {
       const result = await sendChat(step.message, step.skill, stepContext);
+
+      // Clear sub-step timer and mark all done
+      if (subStepTimer) clearTimeout(subStepTimer);
+      if (subPlan) {
+        const allDone = subPlan.map((s) => ({ label: s.label, status: "done" as const }));
+        patchStep(i, { subSteps: allDone });
+      }
 
       // Run tool_calls (script load, dataset add, timeframe set, etc.)
       const skill = useStore.getState().skills.find((s) => s.id === step.skill);
@@ -197,8 +249,9 @@ export async function executePlanInBrowser({ steps }: ExecutePlanArgs): Promise<
         }
       }
     } catch (err) {
+      if (subStepTimer) clearTimeout(subStepTimer);
       const msg = err instanceof Error ? err.message : String(err);
-      patchStep(i, { status: "failed", error: msg });
+      patchStep(i, { status: "failed", error: msg, subSteps: undefined });
       patchTrace({ status: "failed" });
       return;
     }

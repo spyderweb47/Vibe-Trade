@@ -26,7 +26,7 @@ from typing import Any, Awaitable, Callable, Dict
 from core.agents.pattern_agent import PatternAgent
 from core.agents.strategy_agent import StrategyAgent
 from core.data.fetcher import fetch as fetch_market_data, parse_query
-from skills.base import SkillResponse, ToolContext
+from core.skill_types import SkillResponse, ToolContext
 
 
 # Underlying agents — instantiated once, reused across dispatches.
@@ -182,12 +182,130 @@ async def _data_fetcher_processor(
     )
 
 
+# ─── Swarm Intelligence skill processor ─────────────────────────────────
+
+
+async def _swarm_intelligence_processor(
+    message: str,
+    context: Dict[str, Any],
+    tools: ToolContext,
+) -> SkillResponse:
+    """
+    Run a multi-agent debate on the active dataset.
+
+    Delegates to the existing debate pipeline via DebateOrchestrator.
+    Loads bars from the backend's in-memory store (same as the /debate
+    endpoint) — the frontend only needs to pass the dataset_id.
+    """
+    from core.engine.dag_orchestrator import DebateOrchestrator
+    from services.api.store import store
+
+    dataset_id = context.get("dataset_id") or context.get("activeDataset")
+    report = context.get("report", "") or message
+
+    # Load bars from the backend store (synced by the frontend on dataset load)
+    bars = None
+    symbol = "Unknown"
+    if dataset_id:
+        df = store.get_dataframe(dataset_id)
+        if df is not None and len(df) > 0:
+            bars = df.tail(500).to_dict("records")
+            meta = store.get_metadata(dataset_id)
+            if meta:
+                if isinstance(meta, dict):
+                    symbol = meta.get("symbol") or meta.get("filename", "Unknown")
+                elif hasattr(meta, "symbol") and meta.symbol:
+                    symbol = meta.symbol
+
+    # If no dataset or no bars, also check all datasets in the store
+    if not bars:
+        all_ds = store.list_datasets()
+        if all_ds:
+            # Use the most recently added dataset
+            last_id = all_ds[-1] if isinstance(all_ds[-1], str) else all_ds[-1].get("id", "")
+            df = store.get_dataframe(last_id)
+            if df is not None and len(df) > 0:
+                dataset_id = last_id
+                bars = df.tail(500).to_dict("records")
+                meta = store.get_metadata(last_id)
+                if meta:
+                    if isinstance(meta, dict):
+                        symbol = meta.get("symbol") or meta.get("filename", "Unknown")
+                    elif hasattr(meta, "symbol") and meta.symbol:
+                        symbol = meta.symbol
+
+    if not bars:
+        return SkillResponse(
+            reply=(
+                "I need market data loaded on the chart before running a swarm debate. "
+                "Use the Data Fetcher skill to load a dataset first, then try again."
+            ),
+            tool_calls=[
+                {"tool": "notify.toast", "value": {"level": "warning", "message": "Load a dataset first"}},
+            ],
+        )
+
+    try:
+        orchestrator = DebateOrchestrator()
+        result = await orchestrator.run(
+            bars=bars,
+            symbol=symbol,
+            report_text=report,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return SkillResponse(
+            reply=f"Swarm debate failed: {exc}",
+            tool_calls=[
+                {"tool": "notify.toast", "value": {"level": "error", "message": f"Debate error: {exc}"}},
+            ],
+        )
+
+    # Build summary text for the chat reply
+    summary = result.get("summary", {})
+    direction = summary.get("consensus_direction", "NEUTRAL")
+    raw_confidence = summary.get("confidence", 0)
+    confidence = round(raw_confidence * 100, 1) if raw_confidence <= 1.0 else round(min(raw_confidence, 100), 1)
+    entities = result.get("entities", [])
+    thread = result.get("thread", [])
+    total_rounds = result.get("total_rounds", 0)
+    price_targets = summary.get("price_targets", {})
+
+    reply_parts = [
+        f"**Swarm debate complete** — {len(entities)} personas, {total_rounds} rounds, {len(thread)} messages.",
+        f"",
+        f"**Consensus: {direction}** with {confidence:.0f}% confidence.",
+    ]
+    if price_targets:
+        low = price_targets.get("low", "?")
+        mid = price_targets.get("mid", "?")
+        high = price_targets.get("high", "?")
+        reply_parts.append(f"Price targets: low {low}, mid {mid}, high {high}.")
+
+    key_args = summary.get("key_arguments", [])
+    if key_args:
+        reply_parts.append("")
+        reply_parts.append("**Key arguments:**")
+        for arg in key_args[:3]:
+            reply_parts.append(f"- {arg}")
+
+    return SkillResponse(
+        reply="\n".join(reply_parts),
+        data={"debate": result},
+        tool_calls=[
+            {"tool": "simulation.set_debate", "value": result},
+            {"tool": "bottom_panel.activate_tab", "value": "dag_graph"},
+            {"tool": "notify.toast", "value": {"level": "info", "message": f"Swarm: {direction} ({confidence:.0f}%)"}},
+        ],
+    )
+
+
 # ─── Registry ────────────────────────────────────────────────────────────
 
 PROCESSORS: Dict[str, ProcessorFn] = {
     "pattern": _pattern_processor,
     "strategy": _strategy_processor,
     "data_fetcher": _data_fetcher_processor,
+    "swarm_intelligence": _swarm_intelligence_processor,
 }
 
 

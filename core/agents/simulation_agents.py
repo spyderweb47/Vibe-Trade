@@ -220,48 +220,93 @@ MEDIA & COMMUNITY:
 - Social media influencer (large following, shapes retail sentiment)
 - Academic researcher (publishes papers, long-term structural view)
 
-Respond with ONLY valid JSON (no markdown fences):
+Respond with ONLY valid JSON (no markdown fences). The JSON format is:
 {{
   "entities": [
     {{
-      "id": "marcus_wei",
-      "name": "Marcus Wei",
-      "role": "Macro Hedge Fund PM",
-      "background": "Age 47. 15 years managing a $2B global macro fund at Citadel before going independent. CFA, MIT Sloan MBA. Famous for calling the 2022 crypto crash 3 months early. Lost 30% in 2020 being too bearish on tech. Now trades based on central bank policy divergences and cross-asset correlations. Manages risk religiously — never risks more than 2% per trade.",
-      "bias": "cautious_bullish",
-      "personality": "Speaks in measured, precise language. Always cites specific data points. Never uses exclamation marks. Prefers risk-adjusted returns over raw performance. Will say 'the data suggests' rather than 'I think'. Respects other analysts but challenges sloppy thinking."
+      "id": "lowercase_snake_case_id",
+      "name": "Full Name",
+      "role": "Professional Title",
+      "background": "Age, career history, notable calls, losses, credentials. 2-3 sentences of rich backstory.",
+      "bias": "one of the bias options below",
+      "personality": "Speaking style, catchphrases, quirks. What makes this person instantly recognizable in a debate."
     }},
-    ...
+    ...more entities...
   ]
 }}
 
+IMPORTANT: Do NOT reuse example names. Invent completely original characters every time.
+
 bias options: strongly_bullish, bullish, cautious_bullish, neutral, cautious_bearish, bearish, strongly_bearish, contrarian
 
-Generate exactly 12-15 entities. Cover the most relevant categories for this specific asset. Each one must feel like a real person you could have a conversation with — deep backstory, specific speaking style, earned bias."""
+Generate exactly 30-35 entities. Cover EVERY relevant category for this specific asset — you need depth and diversity. Each one must feel like a real person you could have a conversation with — deep backstory, specific speaking style, earned bias."""
 
 
 class EntityGenerator:
+    TARGET_ENTITIES = 30
+    BATCH_SIZE = 10  # LLMs reliably produce 10-12 entities per call
+
     def generate(self, asset_info: dict, market_summary: str, report_text: str = "") -> list:
-        user_msg = f"Asset: {asset_info.get('asset_name', 'Unknown')} ({asset_info.get('asset_class', 'unknown')})\n"
-        user_msg += f"Description: {asset_info.get('description', '')}\n"
-        user_msg += f"Key price drivers: {', '.join(asset_info.get('price_drivers', []))}\n"
-        user_msg += f"\nMarket summary:\n{market_summary[:800]}\n"
+        base_context = f"Asset: {asset_info.get('asset_name', 'Unknown')} ({asset_info.get('asset_class', 'unknown')})\n"
+        base_context += f"Description: {asset_info.get('description', '')}\n"
+        base_context += f"Key price drivers: {', '.join(asset_info.get('price_drivers', []))}\n"
+        base_context += f"\nMarket summary:\n{market_summary[:800]}\n"
         if report_text:
-            user_msg += f"\nResearch report excerpt:\n{report_text[:2000]}\n"
+            base_context += f"\nResearch report excerpt:\n{report_text[:2000]}\n"
 
         if not llm_available():
             return self._mock(asset_info)
 
-        result = chat_completion_json(
-            system_prompt=ENTITY_GENERATOR_PROMPT,
-            user_message=user_msg,
-            temperature=0.7,
-            max_tokens=8000,
-        )
-        entities = result.get("entities", [])
-        if not entities or len(entities) < 5:
+        all_entities: list = []
+        used_names: list[str] = []
+
+        # Generate in batches to avoid LLM output truncation.
+        # Each batch asks for 10-12 new personas, explicitly excluding
+        # names already generated so there are no duplicates.
+        batches_needed = (self.TARGET_ENTITIES + self.BATCH_SIZE - 1) // self.BATCH_SIZE
+        for batch_idx in range(batches_needed):
+            remaining = self.TARGET_ENTITIES - len(all_entities)
+            if remaining <= 0:
+                break
+
+            count = min(self.BATCH_SIZE + 2, remaining + 2)  # ask for a few extra
+            user_msg = base_context
+
+            if used_names:
+                user_msg += f"\n\nYou have ALREADY created these personas (do NOT repeat any of them):\n"
+                user_msg += ", ".join(used_names) + "\n"
+                user_msg += f"\nGenerate {count} MORE completely different personas. Different names, roles, backgrounds, and biases.\n"
+            else:
+                user_msg += f"\nGenerate exactly {count} entities.\n"
+
+            # Try up to 2 times per batch in case the LLM returns truncated JSON
+            batch: list = []
+            for attempt in range(2):
+                result = chat_completion_json(
+                    system_prompt=ENTITY_GENERATOR_PROMPT,
+                    user_message=user_msg,
+                    temperature=0.75 + (batch_idx * 0.05) + (attempt * 0.05),
+                    max_tokens=8000,
+                )
+                batch = result.get("entities", [])
+                if batch and len(batch) >= 3:
+                    break
+                print(f"[entity_gen] batch {batch_idx + 1} attempt {attempt + 1}: got {len(batch)} entities, retrying...")
+            if not batch:
+                continue
+
+            # Deduplicate against already-generated entities
+            for entity in batch:
+                name = entity.get("name", "")
+                if name and name not in used_names:
+                    all_entities.append(entity)
+                    used_names.append(name)
+
+            print(f"[entity_gen] batch {batch_idx + 1}: got {len(batch)} entities, total now {len(all_entities)}")
+
+        if len(all_entities) < 5:
             return self._mock(asset_info)
-        return entities[:15]
+        return all_entities[:self.TARGET_ENTITIES]
 
     def _mock(self, asset_info: dict) -> list:
         ac = asset_info.get("asset_class", "stock")
@@ -405,7 +450,7 @@ Read the FULL discussion thread below and produce a structured summary report.
 Respond with ONLY valid JSON (no markdown fences):
 {{
   "consensus_direction": "BULLISH",
-  "confidence": 0.72,
+  "confidence": 72,
   "key_arguments": ["Argument 1", "Argument 2", "Argument 3", "Argument 4", "Argument 5"],
   "dissenting_views": ["Contrarian view 1", "Contrarian view 2"],
   "price_targets": {{ "low": 58000, "mid": 65000, "high": 75000 }},
@@ -420,7 +465,7 @@ Respond with ONLY valid JSON (no markdown fences):
 }}
 
 consensus_direction: BULLISH / BEARISH / NEUTRAL
-confidence: 0.0 to 1.0 based on how aligned the panelists were"""
+confidence: an INTEGER from 0 to 100 representing the percentage of panelist alignment. For example, 72 means 72% of panelists agree on the direction. NEVER use a decimal like 0.72 — use the integer 72."""
 
 
 class SummaryAgent:

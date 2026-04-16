@@ -1,15 +1,18 @@
 """
-Central tool catalog for Vibe Trade skills.
+Central tool catalog — Layer 2 of the Vibe Trade architecture.
 
-A **tool** is any product feature that a skill can invoke to affect the UI,
-read data, or trigger an action. Skills declare which tools they need in
-their SKILL.md `tools:` frontmatter — the SkillRegistry validates those ids
-against this catalog on load.
+A **tool** is any product feature that a skill can invoke to affect the
+Canvas (UI), read data, or trigger an action. Tools are the bridge between
+the AI agent's decisions and the user-visible product.
 
-The frontend has a mirror registry (`apps/web/src/lib/toolRegistry.ts`) that
-implements each executor. The backend's only job is to surface the catalog
-via `/tools` and enforce the declared allowlist when a skill emits
-`tool_calls` in its `SkillResponse`.
+  Layer 1 — Canvas:  UI components, store, chart        (apps/web/src/)
+  Layer 2 — Tools:   this file + toolRegistry.ts         (core/tool_catalog.py)
+  Layer 3 — Skills:  SKILL.md instruction files          (skills/{name}/SKILL.md)
+
+Skills declare which tools they need in their SKILL.md `tools:` frontmatter.
+The SkillRegistry validates those ids against this catalog on load. The
+frontend mirror registry (`apps/web/src/lib/toolRegistry.ts`) implements
+each executor and enforces the declared allowlist at runtime.
 
 **Adding a new tool:**
   1. Add a `ToolDef(...)` entry here in the right category
@@ -23,6 +26,7 @@ Categories (prefixes):
   bottom_panel     — bottom panel tab + data control
   script_editor    — code editor load/run
   data             — read/write application data (indicators, datasets)
+  simulation       — multi-agent debate / swarm intelligence
   notify           — user-facing notifications
 """
 
@@ -263,6 +267,37 @@ TOOL_CATALOG: List[ToolDef] = [
             },
         },
         arg_style="object",
+    ),
+
+    # ─── simulation.* — multi-agent debate / swarm intelligence ────────
+    ToolDef(
+        id="simulation.run_debate",
+        name="Run Debate",
+        category="simulation",
+        description="Execute a multi-agent debate on the active dataset. "
+                    "AI personas argue the asset across multiple rounds and converge on a consensus.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "bars_count": "number (10-500, default 500)",
+                "context": "string — optional market context or news report to seed the debate",
+            },
+        },
+        arg_style="object",
+    ),
+    ToolDef(
+        id="simulation.set_debate",
+        name="Set Debate Data",
+        category="simulation",
+        description="Push a full SimulationDebate object into the store so bottom-panel tabs can render it.",
+        input_schema={"type": "object", "description": "SimulationDebate"},
+    ),
+    ToolDef(
+        id="simulation.reset",
+        name="Reset Debate",
+        category="simulation",
+        description="Clear the current debate and history from the store.",
+        input_schema={"type": "null"},
     ),
 
     # ─── notify.* — notifications ───────────────────────────────────────

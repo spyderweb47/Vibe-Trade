@@ -27,7 +27,7 @@ import json
 from typing import Any, Dict, List, Optional
 
 from core.agents.llm_client import chat_completion, is_available as llm_available
-from skills import skill_registry
+from core.skill_registry import skill_registry
 
 
 PLAN_SYSTEM_PROMPT = """You are Vibe Trade's planning module. Your job is to decompose a user's
