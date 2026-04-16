@@ -5,7 +5,14 @@ import { TopBar } from "@/components/TopBar";
 import { LeftSidebar } from "@/components/LeftSidebar";
 import { RightSidebar } from "@/components/RightSidebar";
 import { TimeframeSelector } from "@/components/TimeframeSelector";
-import { MosaicContainer } from "@/components/MosaicContainer";
+import dynamic from "next/dynamic";
+
+// Lazy-load MosaicContainer with SSR disabled — react-mosaic uses `window`
+// at import time which crashes during server-side rendering.
+const MosaicContainer = dynamic(
+  () => import("@/components/MosaicContainer").then((m) => m.MosaicContainer),
+  { ssr: false },
+);
 import { PlaygroundControls } from "@/components/playground/PlaygroundControls";
 // DAGCanvas is now rendered by the Swarm Intelligence skill's DAGGraphTab
 // bottom-panel component instead of directly in page.tsx.
