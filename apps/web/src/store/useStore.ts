@@ -307,46 +307,6 @@ interface AppState {
   runDebate: () => Promise<void>;
   setCurrentDebate: (d: import('@/types').SimulationDebate | null) => void;
   resetSimulation: () => void;
-
-  // ===== Mosaic Layout =====
-  mosaicLayout: unknown;  // MosaicNode<string> — typed as unknown to avoid importing react-mosaic in store
-  tileRegistry: Record<string, import('@/types').TileType>;
-  poppedOutTabs: Set<string>;
-  setMosaicLayout: (layout: unknown) => void;
-  addTile: (type: import('@/types').TileType) => string;
-  removeTile: (tileId: string) => void;
-  popOutTab: (tabId: string, component: string, label: string) => void;
-  dockTab: (tabId: string) => void;
-
-  // ===== Dashboard Parameter Linking =====
-  // Shared params that all tiles on the dashboard subscribe to. Changing
-  // ticker in one chart updates all linked widgets automatically.
-  dashboardParams: Record<string, string | number | null>;
-  setDashboardParam: (key: string, value: string | number | null) => void;
-  setDashboardParams: (params: Record<string, string | number | null>) => void;
-}
-
-/**
- * Remove a tile ID from a mosaic layout tree. If the tile is one side of a
- * split, the other side takes over (collapses the split). Returns the pruned
- * tree, or null if the entire tree was just the removed tile.
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function _pruneTileFromLayout(layout: any, tileId: string): any {
-  if (!layout) return null;
-  // Leaf node — it's a string tile ID
-  if (typeof layout === 'string') {
-    return layout === tileId ? null : layout;
-  }
-  // Branch node — has first + second
-  const first = _pruneTileFromLayout(layout.first, tileId);
-  const second = _pruneTileFromLayout(layout.second, tileId);
-  // If one side was pruned, the other takes over
-  if (first === null && second === null) return null;
-  if (first === null) return second;
-  if (second === null) return first;
-  // Both sides survive — keep the split
-  return { ...layout, first, second };
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -1050,82 +1010,5 @@ export const useStore = create<AppState>((set, get) => ({
     if (snapped) set({ conversations: snapped });
   },
   resetSimulation: () => set({ currentDebate: null, simulationLoading: false }),
-
-  // ===== Mosaic Layout =====
-  mosaicLayout: 'chart-main',  // Single chart tile — bottom panel is outside the mosaic
-  tileRegistry: {
-    'chart-main': { kind: 'chart' as const },
-  },
-  poppedOutTabs: new Set(),
-
-  setMosaicLayout: (layout) => {
-    set({ mosaicLayout: layout });
-    // Notify charts to recalculate dimensions
-    window.dispatchEvent(new Event('resize'));
-  },
-
-  addTile: (type) => {
-    const id = `tile_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    set((s) => ({
-      tileRegistry: { ...s.tileRegistry, [id]: type },
-    }));
-    return id;
-  },
-
-  removeTile: (tileId) => {
-    set((s) => {
-      const { [tileId]: removed, ...rest } = s.tileRegistry;
-      const nextPopped = new Set(s.poppedOutTabs);
-      if (removed?.tabId) nextPopped.delete(removed.tabId);
-      const pruned = _pruneTileFromLayout(s.mosaicLayout, tileId);
-      return { tileRegistry: rest, poppedOutTabs: nextPopped, mosaicLayout: pruned };
-    });
-    window.dispatchEvent(new Event('resize'));
-  },
-
-  popOutTab: (tabId, component, label) => {
-    const state = get();
-    const tileId = state.addTile({ kind: 'tab', tabId, component, label });
-    set((s) => ({
-      poppedOutTabs: new Set([...s.poppedOutTabs, tabId]),
-      // Insert the new tile into the mosaic tree — add it to the right of the current layout
-      mosaicLayout: s.mosaicLayout ? {
-        direction: 'row',
-        first: s.mosaicLayout,
-        second: tileId,
-        splitPercentage: 70,
-      } : tileId,
-    }));
-    window.dispatchEvent(new Event('resize'));
-  },
-
-  // ===== Dashboard Parameter Linking =====
-  dashboardParams: { ticker: null, timeframe: null },
-
-  setDashboardParam: (key, value) => set((s) => ({
-    dashboardParams: { ...s.dashboardParams, [key]: value },
-  })),
-
-  setDashboardParams: (params) => set((s) => ({
-    dashboardParams: { ...s.dashboardParams, ...params },
-  })),
-
-  dockTab: (tabId) => {
-    set((s) => {
-      const nextPopped = new Set(s.poppedOutTabs);
-      nextPopped.delete(tabId);
-      // Find the tile ID to remove
-      const entry = Object.entries(s.tileRegistry).find(([, t]) => t.tabId === tabId);
-      if (entry) {
-        const tileId = entry[0];
-        const { [tileId]: _, ...rest } = s.tileRegistry;
-        // Prune the dead tile from the mosaic layout tree
-        const pruned = _pruneTileFromLayout(s.mosaicLayout, tileId);
-        return { poppedOutTabs: nextPopped, tileRegistry: rest, mosaicLayout: pruned };
-      }
-      return { poppedOutTabs: nextPopped };
-    });
-    window.dispatchEvent(new Event('resize'));
-  },
 }));
 

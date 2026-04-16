@@ -198,22 +198,6 @@ export interface Conversation {
   drawings?: unknown[];
 }
 
-// ─── Mosaic layout types ───────────────────────────────────────────────
-
-export type TileKind = 'chart' | 'tab' | 'dag_graph' | 'metric';
-
-export interface TileType {
-  kind: TileKind;
-  datasetId?: string;      // for chart tiles
-  timeframe?: string;      // for chart tiles
-  tabId?: string;          // for popped-out tab tiles
-  component?: string;      // React component name (for tab tiles)
-  label?: string;          // display label for the tile header
-  metricId?: string;       // for metric tiles (e.g. 'price', 'win_rate')
-}
-
-// ─── Indicator config ──────────────────────────────────────────────────
-
 export interface IndicatorConfig {
   name: string;
   backendName: string;
