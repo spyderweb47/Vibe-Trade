@@ -40,6 +40,7 @@ from core.agents.simulation_agents import (
     AssetClassifier,
     ChartSupportAgent,
     ContextAnalyzer,
+    DataFeedBuilder,
     EntityGenerator,
     DiscussionAgent,
     CrossExaminer,
@@ -88,11 +89,15 @@ class DebateOrchestrator:
         summaries = self.chart_support.prepare_multi_timeframe(bars, symbol)
         main_summary = summaries.get("daily", summaries.get("raw", "No data"))
 
+        # Build rich, specialization-specific data feeds from raw bars
+        data_feeds = DataFeedBuilder.build_feeds(bars, symbol)
+
         # Merge context into a rich knowledge base for all agents
         knowledge = {
             "asset_info": asset_info,
             "context": context,
             "market_summary": main_summary,
+            "data_feeds": data_feeds,
             "report_text": report_text,
         }
 
@@ -118,14 +123,17 @@ class DebateOrchestrator:
             speaker_indices = [(start_idx + j) % n_entities for j in range(self.SPEAKERS_PER_ROUND)]
             speakers = [entities[i] for i in speaker_indices]
 
-            # Build per-agent context: personal memory + relevant thread excerpts
+            # Build per-agent context: personal memory + relevant thread + specialization data
             agents_with_context = []
             for entity in speakers:
                 eid = entity.get("id", "unknown")
                 role = entity.get("role", "").lower()
-                # Selective routing: show messages from related roles + mentions
                 name = entity.get("name", "")
+                spec = entity.get("specialization", "general")
+
+                # Selective routing: show messages from related roles + mentions
                 relevant_thread = self._filter_thread_for_agent(thread, name, role, max_chars=6000)
+
                 # Personal memory of own previous positions
                 own_memory = agent_memory.get(eid, [])
                 memory_text = ""
@@ -133,15 +141,32 @@ class DebateOrchestrator:
                     memory_text = f"\n## Your previous positions:\n" + "\n".join(
                         f"- Round {i+1}: {m}" for i, m in enumerate(own_memory)
                     )
-                agents_with_context.append((entity, relevant_thread, memory_text))
+
+                # Route specialization-specific data feed
+                feed_map = {
+                    "technical": "technical",
+                    "quant": "quant",
+                    "macro": "macro",
+                    "fundamental": "structure",
+                    "industry": "structure",
+                    "sentiment": "volume",
+                    "geopolitical": "macro",
+                }
+                feed_key = feed_map.get(spec, "general")
+                spec_data = data_feeds.get(feed_key, data_feeds.get("general", ""))
+
+                # Combine: general summary + specialization data + memory
+                full_market = main_summary + "\n\n" + spec_data + memory_text
+
+                agents_with_context.append((entity, relevant_thread, full_market))
 
             # All speakers run in parallel
             agents = [DiscussionAgent(e, asset_info) for e, _, _ in agents_with_context]
             results = await asyncio.gather(
                 *[asyncio.to_thread(
                     a.speak,
-                    main_summary + ctx[2],  # market summary + personal memory
-                    ctx[1],                  # filtered thread (not full thread)
+                    ctx[2],                  # full market context (summary + spec data + memory)
+                    ctx[1],                  # filtered thread
                     report_text[:600],
                     round_num,
                 ) for a, ctx in zip(agents, agents_with_context)]
@@ -233,7 +258,8 @@ class DebateOrchestrator:
             thread_text = self._build_thread_text(thread)
 
         # ─── Stage 5: ReACT Report Generation ───────────────────────────
-        # Multi-step report with tools: deep analysis, interviews, citations
+        # Multi-step report with tools: deep analysis, interviews, citations.
+        # Pass ALL data feeds so the report can verify claims against raw data.
         summary = await asyncio.to_thread(
             self.report_agent.generate_report,
             thread_text,
@@ -242,7 +268,7 @@ class DebateOrchestrator:
             asset_info,
             knowledge,
             entity_count=len(entities),
-            round_count=round_num,
+            round_count=round_num + (1 if cross_exam_results else 0),
             message_count=len(thread),
         )
 

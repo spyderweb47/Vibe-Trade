@@ -558,6 +558,158 @@ class SummaryAgent:
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
+# Data Feed Builder — creates rich, specialization-specific data for agents
+# ---------------------------------------------------------------------------
+
+
+class DataFeedBuilder:
+    """
+    Builds different data views for different agent specializations.
+    Technical agents see candlestick patterns and indicators.
+    Fundamental agents see volume trends and price structure.
+    Macro agents see multi-timeframe context.
+    Quant agents see statistical properties.
+    """
+
+    @staticmethod
+    def build_feeds(bars: list, symbol: str) -> Dict[str, str]:
+        """Build all data feeds from raw bars. Returns dict of feed_name → text."""
+        if not bars:
+            return {"general": "No data available."}
+
+        closes = [b["close"] for b in bars]
+        highs = [b["high"] for b in bars]
+        lows = [b["low"] for b in bars]
+        volumes = [b.get("volume", 0) for b in bars]
+        n = len(bars)
+
+        feeds: Dict[str, str] = {}
+
+        # ── General feed (for all agents as baseline) ──
+        feeds["general"] = format_ohlc_summary(bars, symbol, f"Full ({n} bars)")
+
+        # ── Technical feed: last 50 bars as actual OHLC + pattern info ──
+        tech_lines = [f"## {symbol} — Last 50 bars (raw OHLC data)"]
+        recent = bars[-50:] if n > 50 else bars
+        for b in recent:
+            t = b.get("time", 0)
+            tech_lines.append(
+                f"  T={t} O={b['open']:.2f} H={b['high']:.2f} L={b['low']:.2f} C={b['close']:.2f} V={b.get('volume',0):.0f}"
+            )
+        # Add candle patterns in last 10 bars
+        tech_lines.append("\n## Recent candle analysis (last 10 bars):")
+        for i in range(-min(10, n), 0):
+            b = bars[i]
+            body = abs(b["close"] - b["open"])
+            total = b["high"] - b["low"] if b["high"] != b["low"] else 0.0001
+            body_ratio = body / total
+            direction = "green" if b["close"] >= b["open"] else "red"
+            upper_wick = b["high"] - max(b["close"], b["open"])
+            lower_wick = min(b["close"], b["open"]) - b["low"]
+            pattern = "doji" if body_ratio < 0.1 else "hammer" if lower_wick > body * 2 else "shooting_star" if upper_wick > body * 2 else "marubozu" if body_ratio > 0.85 else "normal"
+            tech_lines.append(f"  Bar[{i}]: {direction} {pattern} body={body_ratio:.0%} range={total:.2f}")
+        feeds["technical"] = "\n".join(tech_lines)
+
+        # ── Volume feed: volume analysis ──
+        vol_lines = [f"## {symbol} — Volume Analysis"]
+        if any(v > 0 for v in volumes):
+            avg_vol = sum(volumes[-20:]) / min(20, n)
+            recent_vol = volumes[-1] if volumes else 0
+            vol_ratio = recent_vol / avg_vol if avg_vol > 0 else 0
+            vol_lines.append(f"Current volume: {recent_vol:,.0f}")
+            vol_lines.append(f"20-bar avg volume: {avg_vol:,.0f}")
+            vol_lines.append(f"Volume ratio: {vol_ratio:.2f}x average")
+            # Volume trend
+            if n >= 20:
+                early_avg = sum(volumes[-20:-10]) / 10
+                late_avg = sum(volumes[-10:]) / 10
+                trend = "increasing" if late_avg > early_avg * 1.1 else "decreasing" if late_avg < early_avg * 0.9 else "flat"
+                vol_lines.append(f"Volume trend: {trend}")
+            # High volume bars (potential institutional activity)
+            vol_lines.append("\nHigh-volume bars (>2x average):")
+            for i in range(-min(50, n), 0):
+                if volumes[i] > avg_vol * 2:
+                    b = bars[i]
+                    direction = "up" if b["close"] > b["open"] else "down"
+                    vol_lines.append(f"  Bar[{i}]: {direction} close={b['close']:.2f} vol={volumes[i]:,.0f} ({volumes[i]/avg_vol:.1f}x)")
+        feeds["volume"] = "\n".join(vol_lines)
+
+        # ── Statistical feed: for quant agents ──
+        stat_lines = [f"## {symbol} — Statistical Properties"]
+        if n >= 20:
+            import statistics
+            returns = [(closes[i] - closes[i-1]) / closes[i-1] for i in range(1, n) if closes[i-1] != 0]
+            if returns:
+                stat_lines.append(f"Mean return: {statistics.mean(returns)*100:.4f}%")
+                stat_lines.append(f"Std dev: {statistics.stdev(returns)*100:.4f}%")
+                stat_lines.append(f"Skewness: {sum((r - statistics.mean(returns))**3 for r in returns) / (len(returns) * statistics.stdev(returns)**3):.2f}" if statistics.stdev(returns) > 0 else "Skewness: N/A")
+                stat_lines.append(f"Max drawdown from peak: {min(returns)*100:.2f}%")
+                stat_lines.append(f"Best single bar: {max(returns)*100:.2f}%")
+                # Autocorrelation (are returns trending or mean-reverting?)
+                if len(returns) > 5:
+                    lag1 = sum(returns[i] * returns[i-1] for i in range(1, len(returns))) / sum(r**2 for r in returns) if sum(r**2 for r in returns) > 0 else 0
+                    stat_lines.append(f"Lag-1 autocorrelation: {lag1:.3f} ({'trending' if lag1 > 0.1 else 'mean-reverting' if lag1 < -0.1 else 'random walk'})")
+                # Distribution of returns
+                pos = sum(1 for r in returns if r > 0)
+                stat_lines.append(f"Up bars: {pos}/{len(returns)} ({pos/len(returns)*100:.0f}%)")
+        feeds["quant"] = "\n".join(stat_lines)
+
+        # ── Multi-timeframe feed: for macro agents ──
+        mtf_lines = [f"## {symbol} — Multi-Timeframe View"]
+        mtf_lines.append(format_ohlc_summary(bars, symbol, f"Base ({n} bars)"))
+        # Compute longer-term context
+        if n >= 50:
+            mtf_lines.append(f"\n50-bar performance: {((closes[-1] - closes[-50]) / closes[-50] * 100):+.2f}%")
+        if n >= 200:
+            mtf_lines.append(f"200-bar performance: {((closes[-1] - closes[-200]) / closes[-200] * 100):+.2f}%")
+            # Trend structure
+            sma50 = sum(closes[-50:]) / 50
+            sma200 = sum(closes[-200:]) / 200
+            mtf_lines.append(f"SMA50 vs SMA200: {'golden cross (bullish)' if sma50 > sma200 else 'death cross (bearish)'}")
+        if n >= 20:
+            # Support/resistance from price clustering
+            price_min, price_max = min(lows[-100:] if n >= 100 else lows), max(highs[-100:] if n >= 100 else highs)
+            bucket_size = (price_max - price_min) / 20 if price_max > price_min else 1
+            buckets: Dict[int, int] = {}
+            for h, l in zip(highs[-100:] if n >= 100 else highs, lows[-100:] if n >= 100 else lows):
+                for price in [h, l]:
+                    b_idx = int((price - price_min) / bucket_size)
+                    buckets[b_idx] = buckets.get(b_idx, 0) + 1
+            top_levels = sorted(buckets.items(), key=lambda x: -x[1])[:5]
+            mtf_lines.append("\nKey price levels (by touch frequency):")
+            for b_idx, count in top_levels:
+                level = price_min + b_idx * bucket_size
+                mtf_lines.append(f"  ${level:.2f} — {count} touches")
+        feeds["macro"] = "\n".join(mtf_lines)
+
+        # ── Price structure feed: for fundamental/industry agents ──
+        struct_lines = [f"## {symbol} — Price Structure"]
+        if n >= 5:
+            # Recent swing highs/lows
+            swings_high = []
+            swings_low = []
+            for i in range(2, min(n - 2, 100)):
+                if highs[-i] > highs[-i-1] and highs[-i] > highs[-i+1] and highs[-i] > highs[-i-2]:
+                    swings_high.append(highs[-i])
+                if lows[-i] < lows[-i-1] and lows[-i] < lows[-i+1] and lows[-i] < lows[-i-2]:
+                    swings_low.append(lows[-i])
+            if swings_high:
+                struct_lines.append(f"Recent swing highs: {', '.join(f'${p:.2f}' for p in swings_high[:5])}")
+            if swings_low:
+                struct_lines.append(f"Recent swing lows: {', '.join(f'${p:.2f}' for p in swings_low[:5])}")
+            # Higher highs / lower lows structure
+            if len(swings_high) >= 2:
+                hh = swings_high[0] > swings_high[1]
+                struct_lines.append(f"Swing structure: {'higher highs (uptrend)' if hh else 'lower highs (downtrend)'}")
+            if len(swings_low) >= 2:
+                hl = swings_low[0] > swings_low[1]
+                struct_lines.append(f"Swing lows: {'higher lows (uptrend)' if hl else 'lower lows (downtrend)'}")
+        feeds["structure"] = "\n".join(struct_lines)
+
+        return feeds
+
+
+# ---------------------------------------------------------------------------
 # Stage 1 (new): Context Analyzer — extracts structured knowledge from data
 # ---------------------------------------------------------------------------
 
@@ -783,6 +935,15 @@ Key support: {support}
 Key resistance: {resistance}
 Technical signals: {signals}
 
+## RAW MARKET DATA (for VERIFY tool — cross-reference claims against this)
+{raw_data}
+
+## VOLUME & INSTITUTIONAL ACTIVITY DATA
+{volume_data}
+
+## STATISTICAL PROPERTIES
+{quant_data}
+
 ## Debate Summary (early rounds)
 {early_thread}
 
@@ -857,11 +1018,14 @@ class ReACTReportAgent:
         levels = context.get("key_price_levels", {})
         signals = context.get("technical_signals", [])
 
-        # Split thread into early + late for the prompt
+        # Split thread into early + late — give more to late (recent = more relevant)
         lines = thread_text.split("\n")
-        mid = max(1, len(lines) // 2)
-        early = "\n".join(lines[:mid])[-4000:]
-        late = "\n".join(lines[mid:])[-4000:]
+        third = max(1, len(lines) // 3)
+        early = "\n".join(lines[:third])[-3000:]
+        late = "\n".join(lines[third:])[-6000:]
+
+        # Get raw data feeds for fact-checking
+        data_feeds = knowledge.get("data_feeds", {})
 
         prompt = REACT_REPORT_PROMPT.format(
             asset_name=asset_info.get("asset_name", "Unknown"),
@@ -874,6 +1038,9 @@ class ReACTReportAgent:
             support=json.dumps(levels.get("strong_support", [])),
             resistance=json.dumps(levels.get("strong_resistance", [])),
             signals="\n".join(f"- {s}" for s in signals[:5]),
+            raw_data=data_feeds.get("technical", "N/A")[:3000],
+            volume_data=data_feeds.get("volume", "N/A")[:1500],
+            quant_data=data_feeds.get("quant", "N/A")[:1000],
             early_thread=early,
             late_thread=late,
         )
