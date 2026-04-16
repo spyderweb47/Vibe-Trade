@@ -5,6 +5,7 @@ import { TopBar } from "@/components/TopBar";
 import { LeftSidebar } from "@/components/LeftSidebar";
 import { RightSidebar } from "@/components/RightSidebar";
 import { TimeframeSelector } from "@/components/TimeframeSelector";
+import { BottomPanel } from "@/components/BottomPanel";
 import dynamic from "next/dynamic";
 
 // Lazy-load MosaicContainer with SSR disabled — react-mosaic uses `window`
@@ -153,8 +154,12 @@ export default function Home() {
         {/* Playground replay controls (playground mode only) */}
         {appMode === "playground" && <PlaygroundControls />}
 
-        {/* Mosaic layout — chart tiles + bottom panel + popped-out tabs */}
+        {/* Mosaic layout — chart tiles + popped-out tabs */}
         <MosaicContainer />
+
+        {/* Bottom Panel — collapsible dock below the mosaic. Tabs can be
+            popped out as mosaic tiles; the panel stays as the home dock. */}
+        <BottomPanel />
       </div>
 
       {/* Backdrop for sidebar overlay on narrow screens */}

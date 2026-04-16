@@ -6,7 +6,6 @@ import "react-mosaic-component/react-mosaic-component.css";
 
 import { useStore } from "@/store/useStore";
 import { ChartTile } from "./ChartTile";
-import { BottomPanel } from "./BottomPanel";
 import { TileWrapper } from "./TileWrapper";
 import { BOTTOM_PANEL_COMPONENTS } from "./BottomPanel";
 
@@ -56,10 +55,6 @@ export function MosaicContainer() {
               onClose={tileId !== "chart-main" ? () => removeTile(tileId) : undefined}
             />
           );
-          break;
-
-        case "bottom_panel":
-          content = <BottomPanel />;
           break;
 
         case "tab": {

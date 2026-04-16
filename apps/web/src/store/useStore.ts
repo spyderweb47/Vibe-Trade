@@ -1022,15 +1022,9 @@ export const useStore = create<AppState>((set, get) => ({
   resetSimulation: () => set({ currentDebate: null, simulationLoading: false }),
 
   // ===== Mosaic Layout =====
-  mosaicLayout: {
-    direction: 'column',
-    first: 'chart-main',
-    second: 'bottom-panel',
-    splitPercentage: 70,
-  },
+  mosaicLayout: 'chart-main',  // Single chart tile — bottom panel is outside the mosaic
   tileRegistry: {
     'chart-main': { kind: 'chart' as const },
-    'bottom-panel': { kind: 'bottom_panel' as const },
   },
   poppedOutTabs: new Set(),
 
