@@ -65,7 +65,7 @@ function computeSkillTabs(
 }
 
 export function BottomPanel() {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
   const [height, setHeight] = useState(256);
   const [activeTab, setActiveTab] = useState(0);
   const isDragging = useRef(false);
@@ -156,7 +156,7 @@ export function BottomPanel() {
           const isPopped = skillTab ? poppedOutTabs.has(skillTab.id) : false;
           if (isPopped) return null; // Hide tabs that are popped out as mosaic tiles
           return (
-            <div key={tab} className="flex items-center">
+            <div key={tab} className="group flex items-center gap-0.5">
               <button
                 onClick={() => {
                   setActiveTab(i);
@@ -165,7 +165,7 @@ export function BottomPanel() {
                     requestAnimationFrame(() => window.dispatchEvent(new Event("resize")));
                   }
                 }}
-                className={`px-3 py-1 text-[10px] font-semibold uppercase tracking-wider transition-colors ${
+                className={`px-2 py-1 text-[10px] font-semibold uppercase tracking-wider transition-colors ${
                   activeTab === i && !collapsed
                     ? "text-[var(--text-primary)]"
                     : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
@@ -173,18 +173,18 @@ export function BottomPanel() {
               >
                 {tab}
               </button>
-              {/* Pop-out button — available for skill tabs in building mode */}
+              {/* Pop-out button — detaches this tab as a mosaic tile */}
               {skillTab && (
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
                     popOutTab(skillTab.id, skillTab.component, skillTab.label);
                   }}
-                  className="flex h-4 w-4 items-center justify-center rounded opacity-0 group-hover:opacity-100 hover:!opacity-100 transition-opacity"
+                  className="flex h-5 w-5 items-center justify-center rounded transition-colors hover:bg-[var(--surface)]"
                   style={{ color: "var(--text-muted)" }}
-                  title={`Pop out ${skillTab.label}`}
+                  title={`Detach ${skillTab.label} as a tile`}
                 >
-                  <svg className="h-2.5 w-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                  <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M7 17L17 7M17 7H7M17 7V17" />
                   </svg>
                 </button>
