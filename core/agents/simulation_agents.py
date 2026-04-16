@@ -270,7 +270,7 @@ Generate exactly 40-50 entities. Maximum diversity and depth. Each must feel lik
 
 
 class EntityGenerator:
-    TARGET_ENTITIES = 50
+    TARGET_ENTITIES = 20
     BATCH_SIZE = 10  # LLMs reliably produce 10-12 entities per call
 
     def generate(self, asset_info: dict, market_summary: str, report_text: str = "") -> list:

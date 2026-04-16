@@ -53,8 +53,10 @@ from core.agents.simulation_agents import (
 class DebateOrchestrator:
     """Runs the full MiroFish-inspired 5-stage swarm simulation."""
 
-    MAX_ROUNDS = 30
-    SPEAKERS_PER_ROUND = 15
+    # Heavy mode: 30 rounds × 15 speakers = ~450 messages (15-30 min)
+    # These are the defaults — override per-instance for faster runs.
+    MAX_ROUNDS = 12
+    SPEAKERS_PER_ROUND = 8
 
     def __init__(self) -> None:
         self.classifier = AssetClassifier()
@@ -269,10 +271,10 @@ class DebateOrchestrator:
             weighted_avg = sum(round_sentiments) / total_influence
             sentiments_by_round.append(weighted_avg)
 
-            if round_num >= 20 and len(sentiments_by_round) >= 5:
-                recent = sentiments_by_round[-5:]
+            if round_num >= 8 and len(sentiments_by_round) >= 4:
+                recent = sentiments_by_round[-4:]
                 spread = max(recent) - min(recent)
-                if spread < 0.05:  # Very tight convergence required
+                if spread < 0.10:  # Convergence check
                     break
 
         # ─── Stage 4: Cross-Examination ──────────────────────────────────
