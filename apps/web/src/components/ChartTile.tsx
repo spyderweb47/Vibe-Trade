@@ -11,14 +11,10 @@ interface Props {
 }
 
 /**
- * Independent chart tile for the mosaic layout. Each ChartTile is a
- * self-contained chart instance with its own dataset/timeframe. The
- * DrawingToolbar is docked to the left edge.
- *
- * For the "main" chart tile (tileId === "chart-main"), it reads from
- * the global store state (chartData, patternMatches, etc.) for backward
- * compatibility. Additional chart tiles can be added to show different
- * datasets side-by-side.
+ * Independent chart tile. Reads from the global store for the main chart,
+ * and subscribes to dashboardParams for parameter linking. When the user
+ * changes the dataset, the dashboardParams.ticker updates and all linked
+ * widgets (metrics, other charts) react.
  */
 export function ChartTile({ tileId, onClose }: Props) {
   const chartData = useStore((s) => s.chartData);
@@ -26,15 +22,24 @@ export function ChartTile({ tileId, onClose }: Props) {
   const appMode = useStore((s) => s.appMode);
   const activeDataset = useStore((s) => s.activeDataset);
   const datasets = useStore((s) => s.datasets);
+  const setDashboardParam = useStore((s) => s.setDashboardParam);
 
-  // Build the label from the active dataset
+  // Build label from active dataset
   const ds = datasets.find((d) => d.id === activeDataset);
   const label = ds?.name || "Chart";
+
+  // When this chart loads data, update dashboardParams so linked widgets sync
+  const lastBar = chartData.length > 0 ? chartData[chartData.length - 1] : null;
 
   return (
     <TileWrapper
       label={label}
-      onClose={tileId !== "chart-main" ? onClose : undefined}
+      onClose={onClose}
+      lastUpdated={lastBar ? lastBar.time * 1000 : null}
+      onRefresh={() => {
+        // Trigger a re-render by touching dashboardParams
+        if (ds?.name) setDashboardParam("ticker", ds.name);
+      }}
     >
       <div className="flex h-full w-full">
         <DrawingToolbar />

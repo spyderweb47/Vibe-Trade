@@ -200,7 +200,7 @@ export interface Conversation {
 
 // ─── Mosaic layout types ───────────────────────────────────────────────
 
-export type TileKind = 'chart' | 'bottom_panel' | 'tab' | 'dag_graph';
+export type TileKind = 'chart' | 'tab' | 'dag_graph' | 'metric';
 
 export interface TileType {
   kind: TileKind;
@@ -209,6 +209,7 @@ export interface TileType {
   tabId?: string;          // for popped-out tab tiles
   component?: string;      // React component name (for tab tiles)
   label?: string;          // display label for the tile header
+  metricId?: string;       // for metric tiles (e.g. 'price', 'win_rate')
 }
 
 // ─── Indicator config ──────────────────────────────────────────────────

@@ -317,6 +317,13 @@ interface AppState {
   removeTile: (tileId: string) => void;
   popOutTab: (tabId: string, component: string, label: string) => void;
   dockTab: (tabId: string) => void;
+
+  // ===== Dashboard Parameter Linking =====
+  // Shared params that all tiles on the dashboard subscribe to. Changing
+  // ticker in one chart updates all linked widgets automatically.
+  dashboardParams: Record<string, string | number | null>;
+  setDashboardParam: (key: string, value: string | number | null) => void;
+  setDashboardParams: (params: Record<string, string | number | null>) => void;
 }
 
 /**
@@ -1091,6 +1098,17 @@ export const useStore = create<AppState>((set, get) => ({
     }));
     window.dispatchEvent(new Event('resize'));
   },
+
+  // ===== Dashboard Parameter Linking =====
+  dashboardParams: { ticker: null, timeframe: null },
+
+  setDashboardParam: (key, value) => set((s) => ({
+    dashboardParams: { ...s.dashboardParams, [key]: value },
+  })),
+
+  setDashboardParams: (params) => set((s) => ({
+    dashboardParams: { ...s.dashboardParams, ...params },
+  })),
 
   dockTab: (tabId) => {
     set((s) => {
