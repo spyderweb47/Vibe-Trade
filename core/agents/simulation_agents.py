@@ -356,7 +356,12 @@ YOUR TURN TO RESPOND. You MUST:
 4. If your opinion has SHIFTED based on what others said, explain why
 5. If you feel confident, give a SPECIFIC price prediction with your timeframe
 
-Keep it natural and conversational — like a real forum post (3-5 sentences). Don't be generic.
+Your response should be SUBSTANTIAL — like a real analyst note (6-10 sentences). Cover:
+- Your core thesis with SPECIFIC price levels, indicators, or data points backing it
+- WHY you agree/disagree with others — not just "I agree with X" but "X's point about Y is valid because Z"
+- Risk assessment: what could invalidate your thesis?
+- A concrete trade setup if you have one: entry, stop, target, timeframe
+Don't be generic or surface-level. Each response should add NEW information the thread hasn't covered yet.
 If you need specific chart data (e.g., "what does the 4H look like?"), ask for it.
 
 Respond with ONLY valid JSON (no markdown fences):
@@ -389,7 +394,7 @@ class DiscussionAgent:
 
         thread_context = ""
         if thread_so_far:
-            recent_thread = thread_so_far[-3000:] if len(thread_so_far) > 3000 else thread_so_far
+            recent_thread = thread_so_far[-5000:] if len(thread_so_far) > 5000 else thread_so_far
             thread_context = f"## Recent Discussion\n{recent_thread}"
 
         # Entity dicts from the LLM may use varying key names — be defensive
@@ -422,9 +427,9 @@ class DiscussionAgent:
 
         result = chat_completion_json(
             system_prompt=prompt,
-            user_message="Your turn. Speak now.",
+            user_message="Your turn. Speak now. Give a detailed, substantive response with specific data points and price levels.",
             temperature=0.6,
-            max_tokens=400,
+            max_tokens=800,
         )
         result.setdefault("content", f"{self.entity['name']}: No comment.")
         result.setdefault("sentiment", 0.0)
@@ -439,20 +444,43 @@ class DiscussionAgent:
 # Stage 6: Summary Agent
 # ---------------------------------------------------------------------------
 
-SUMMARY_PROMPT = """You are a senior analyst synthesizing a multi-agent discussion panel about {asset_name} ({asset_class}).
+SUMMARY_PROMPT = """You are a senior chief investment strategist synthesizing a multi-agent discussion panel about {asset_name} ({asset_class}).
 
-Read the FULL discussion thread below and produce a structured summary report.
+You've observed {entity_count} panelists debate across {round_count} rounds with {message_count} total messages.
 
-{thread}
+## Early consensus (rounds 1-3):
+{early_thread}
+
+## Mid-debate developments (middle rounds):
+{mid_thread}
+
+## Final positions (last 3 rounds):
+{late_thread}
+
+## Your task
+Produce a DEEP, ACTIONABLE investment report. This is NOT a casual summary — it's a professional research note that a portfolio manager would use to make a real trading decision. Be specific with price levels, timeframes, and risk quantification.
 
 Respond with ONLY valid JSON (no markdown fences):
 {{
   "consensus_direction": "BULLISH",
   "confidence": 72,
-  "key_arguments": ["Argument 1", "Argument 2", "Argument 3", "Argument 4", "Argument 5"],
-  "dissenting_views": ["Contrarian view 1", "Contrarian view 2"],
+  "key_arguments": [
+    "Argument 1 — with specific price level or data point",
+    "Argument 2 — cite which panelists agree and their reasoning",
+    "Argument 3 — reference technical or fundamental evidence mentioned",
+    "Argument 4 — note any supporting cross-asset signals",
+    "Argument 5 — mention volume, momentum, or sentiment evidence"
+  ],
+  "dissenting_views": [
+    "Contrarian view 1 — cite the panelist and their specific concern",
+    "Contrarian view 2 — note what would need to happen for bears to be right"
+  ],
   "price_targets": {{ "low": 58000, "mid": 65000, "high": 75000 }},
-  "risk_factors": ["Risk 1", "Risk 2", "Risk 3"],
+  "risk_factors": [
+    "Risk 1 — specific trigger event, not generic",
+    "Risk 2 — quantified probability or impact if possible",
+    "Risk 3 — timeframe-specific risk"
+  ],
   "recommendation": {{
     "action": "BUY",
     "entry": 62000,
@@ -467,17 +495,30 @@ confidence: an INTEGER from 0 to 100 representing the percentage of panelist ali
 
 
 class SummaryAgent:
-    def summarize(self, thread_text: str, asset_info: dict) -> dict:
+    def summarize(self, thread_text: str, asset_info: dict, entity_count: int = 0, round_count: int = 0, message_count: int = 0) -> dict:
+        # Split thread into early/mid/late for the summary prompt to see
+        # the full arc of the debate, not just the last N chars.
+        lines = thread_text.split("\n")
+        third = max(1, len(lines) // 3)
+        early_text = "\n".join(lines[:third])[-3000:]
+        mid_text = "\n".join(lines[third:2*third])[-3000:]
+        late_text = "\n".join(lines[2*third:])[-4000:]
+
         prompt = SUMMARY_PROMPT.format(
             asset_name=asset_info.get("asset_name", "Unknown"),
             asset_class=asset_info.get("asset_class", "unknown"),
-            thread=thread_text[-6000:],  # last 6000 chars to fit context
+            entity_count=entity_count,
+            round_count=round_count,
+            message_count=message_count,
+            early_thread=early_text,
+            mid_thread=mid_text,
+            late_thread=late_text,
         )
 
         if not llm_available():
             return {
                 "consensus_direction": "NEUTRAL",
-                "confidence": 0.5,
+                "confidence": 50,
                 "key_arguments": ["Mock: LLM unavailable for summary"],
                 "dissenting_views": [],
                 "price_targets": {"low": 0, "mid": 0, "high": 0},
@@ -487,9 +528,9 @@ class SummaryAgent:
 
         result = chat_completion_json(
             system_prompt=prompt,
-            user_message="Produce the summary report now.",
+            user_message="Produce a deep, professional investment research report. Be specific with price levels, timeframes, and risk quantification. This should read like a real trading desk note.",
             temperature=0.3,
-            max_tokens=2000,
+            max_tokens=3000,
         )
         result.setdefault("consensus_direction", "NEUTRAL")
         result.setdefault("confidence", 0.5)

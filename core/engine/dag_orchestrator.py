@@ -150,7 +150,12 @@ class DebateOrchestrator:
 
         # --- Stage 6: Summary ---
         summary = await asyncio.to_thread(
-            self.summary_agent.summarize, thread_text, asset_info
+            self.summary_agent.summarize,
+            thread_text,
+            asset_info,
+            entity_count=len(entities),
+            round_count=round_num,
+            message_count=len(thread),
         )
 
         return {
