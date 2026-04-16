@@ -153,8 +153,11 @@ export async function executePlanInBrowser({ steps }: ExecutePlanArgs): Promise<
       }
 
       // Run tool_calls (script load, dataset add, timeframe set, etc.)
+      // If the skill isn't found in the frontend registry, allow all tools
+      // rather than blocking everything — the backend already validated.
       const skill = useStore.getState().skills.find((s) => s.id === step.skill);
-      runToolCalls(result.tool_calls, step.skill, skill?.tools || []);
+      const allowedTools = skill?.tools || result.tool_calls?.map((tc) => tc.tool) || [];
+      runToolCalls(result.tool_calls, step.skill, allowedTools);
 
       // Wait a tick for tool calls to settle (e.g. data.dataset.add registers
       // the dataset async-ishly via store update)
@@ -221,6 +224,19 @@ export async function executePlanInBrowser({ steps }: ExecutePlanArgs): Promise<
             patchStep(i, { status: "failed", error: `backtest failed: ${msg}` });
             continue;
           }
+        }
+      }
+
+      // Swarm intelligence summary
+      if (!resultSummary && step.skill === "swarm_intelligence") {
+        const debate = result.data?.debate as Record<string, unknown> | undefined;
+        if (debate) {
+          const entities = (debate.entities as unknown[])?.length || 0;
+          const thread = (debate.thread as unknown[])?.length || 0;
+          const summary = debate.summary as Record<string, unknown> | undefined;
+          const direction = summary?.consensus_direction || "N/A";
+          const confidence = summary?.confidence || 0;
+          resultSummary = `${entities} personas, ${thread} messages. Consensus: ${direction} (${confidence}%)`;
         }
       }
 
