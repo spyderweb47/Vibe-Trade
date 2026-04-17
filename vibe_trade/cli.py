@@ -163,25 +163,42 @@ def fetch(
 @app.command()
 def simulate(
     asset: str = typer.Option(None, "--asset", "-a", help="Asset symbol to debate (e.g. 'BTC', 'AAPL', 'gold'). Prompts interactively if omitted."),
-    rounds: int = typer.Option(6, "--rounds", "-r", help="Number of debate rounds"),
-    speakers: int = typer.Option(5, "--speakers", "-s", help="Number of distinct agent personas"),
+    rounds: int = typer.Option(6, "--rounds", "-r", help="Number of debate rounds (web preset is 30)"),
+    speakers: int = typer.Option(5, "--speakers", "-s", help="Speakers per round (web preset is 15)"),
     report: str = typer.Option("", "--context", "-c", help="Optional market context / news report to seed the debate"),
+    interval: str = typer.Option("1d", "--interval", "-i", help="Bar interval to fetch for analysis (1m, 5m, 1h, 1d, ...)"),
+    bars_limit: int = typer.Option(500, "--bars", "-b", help="How many recent bars to fetch and feed into the debate"),
 ) -> None:
     """
-    Run a multi-agent debate simulation on an asset and stream it to the
-    terminal. Uses the same engine that powers the web UI's Simulation
-    mode, but renders the discussion live with Rich.
+    Run the full multi-agent debate pipeline on an asset and stream the
+    result to the terminal. Fetches real OHLCV bars via yfinance/ccxt and
+    runs the same 5-stage DebateOrchestrator the web UI's Simulation mode
+    uses (Context → Intelligence → Personas → Debate → Cross-Exam → Report).
 
-    Requires an LLM provider to be configured via .env (OPENAI_API_KEY,
-    ANTHROPIC_API_KEY, or any other supported provider).
+    Requires an LLM provider (OPENAI_API_KEY, ANTHROPIC_API_KEY, DEEPSEEK_API_KEY,
+    GROQ_API_KEY, GEMINI_API_KEY, ...). Run [bold]vibe-trade setup[/bold] to
+    configure one interactively.
+
+    Relevant env vars (override in your .env to tune behavior):
+      LLM_CALL_TIMEOUT_S    per-LLM-call timeout (default 90)
+      LLM_MAX_RETRIES       retries on transient failures (default 2)
+      DEBATE_TIMEOUT_S      outer ceiling for the whole run (default 2700)
 
     Example:
       vibe-trade simulate --asset BTC --rounds 8 --speakers 5
       vibe-trade simulate -a gold -c "Fed just cut rates by 50bps"
+      vibe-trade simulate -a AAPL -i 1h -b 1000 -r 10
     """
     from vibe_trade.simulate_cmd import run_simulate
 
-    run_simulate(asset=asset, rounds=rounds, speakers=speakers, report=report)
+    run_simulate(
+        asset=asset,
+        rounds=rounds,
+        speakers=speakers,
+        report=report,
+        interval=interval,
+        bars_limit=bars_limit,
+    )
 
 
 # ─── skills ──────────────────────────────────────────────────────────────
