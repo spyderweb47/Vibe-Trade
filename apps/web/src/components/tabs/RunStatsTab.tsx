@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useStore } from "@/store/useStore";
 
 /**
@@ -36,10 +36,31 @@ export function RunStatsTab() {
   const totalResearchQueries = Object.values(agentResearch).reduce((acc, arr) => acc + arr.length, 0);
 
   const [exporting, setExporting] = useState(false);
-  const [includeThread, setIncludeThread] = useState(false);
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
 
-  const handleExportPDF = async () => {
+  // Close dropdown on outside click or Escape
+  useEffect(() => {
+    if (!dropdownOpen) return;
+    const onClick = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setDropdownOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setDropdownOpen(false);
+    };
+    document.addEventListener("mousedown", onClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [dropdownOpen]);
+
+  const handleExportPDF = async (includeThread: boolean) => {
     if (exporting) return;
+    setDropdownOpen(false);
     setExporting(true);
     try {
       // Lazy-load jsPDF so it stays out of the initial bundle
@@ -580,47 +601,99 @@ export function RunStatsTab() {
         <div className="text-[9px] font-bold uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
           {debate.assetName} · {debate.entities.length} personas · {debate.totalRounds} rounds
         </div>
-        <label
-          className="ml-auto flex items-center gap-1.5 cursor-pointer text-[10px] select-none rounded px-2 py-1"
-          style={{
-            color: "var(--text-secondary)",
-            background: "var(--surface-2)",
-            border: "1px solid var(--border)",
-          }}
-          title={`Include the full ${debate.thread?.length ?? 0}-message debate thread in the PDF (makes it significantly longer)`}
-        >
-          <input
-            type="checkbox"
-            checked={includeThread}
-            onChange={(e) => setIncludeThread(e.target.checked)}
-            className="h-3 w-3 cursor-pointer accent-orange-500"
-            style={{ accentColor: "var(--accent)" }}
-          />
-          <span>
-            Full debate thread
-            {debate.thread?.length ? (
-              <span className="ml-1" style={{ color: "var(--text-muted)" }}>
-                ({debate.thread.length})
-              </span>
-            ) : null}
-          </span>
-        </label>
-        <button
-          onClick={handleExportPDF}
-          disabled={exporting}
-          className="flex items-center gap-1.5 rounded px-2.5 py-1 text-[10px] font-semibold transition-colors disabled:opacity-40"
-          style={{
-            background: exporting ? "var(--surface-2)" : "rgba(255, 107, 0, 0.12)",
-            color: "var(--accent)",
-            border: "1px solid rgba(255, 107, 0, 0.3)",
-          }}
-          title={includeThread ? "Export full report including debate thread" : "Export summary report (no debate thread)"}
-        >
-          <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-          </svg>
-          {exporting ? "Generating..." : includeThread ? "Export Full PDF" : "Export Summary PDF"}
-        </button>
+        <div className="ml-auto relative" ref={dropdownRef}>
+          <button
+            onClick={() => !exporting && setDropdownOpen((v) => !v)}
+            disabled={exporting}
+            aria-haspopup="menu"
+            aria-expanded={dropdownOpen}
+            className="flex items-center gap-1.5 rounded px-2.5 py-1 text-[10px] font-semibold transition-colors disabled:opacity-40"
+            style={{
+              background: exporting ? "var(--surface-2)" : dropdownOpen ? "rgba(255, 107, 0, 0.2)" : "rgba(255, 107, 0, 0.12)",
+              color: "var(--accent)",
+              border: "1px solid rgba(255, 107, 0, 0.3)",
+            }}
+            title="Export report as PDF"
+          >
+            <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            </svg>
+            {exporting ? "Generating..." : "Export PDF"}
+            <svg
+              className="h-2.5 w-2.5 transition-transform"
+              style={{ transform: dropdownOpen ? "rotate(180deg)" : "rotate(0)" }}
+              fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+
+          {dropdownOpen && !exporting && (
+            <div
+              role="menu"
+              className="absolute right-0 top-full mt-1 z-20 rounded-md shadow-lg overflow-hidden"
+              style={{
+                background: "var(--surface-2)",
+                border: "1px solid var(--border)",
+                minWidth: "240px",
+              }}
+            >
+              <button
+                role="menuitem"
+                onClick={() => handleExportPDF(false)}
+                className="w-full text-left px-3 py-2 transition-colors"
+                style={{ background: "transparent" }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = "var(--surface)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+              >
+                <div className="flex items-center gap-2">
+                  <svg className="h-3 w-3 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} style={{ color: "var(--accent)" }}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                  <span className="text-[11px] font-semibold" style={{ color: "var(--text-primary)" }}>
+                    Summary PDF
+                  </span>
+                </div>
+                <div className="mt-0.5 text-[9px] leading-snug pl-5" style={{ color: "var(--text-muted)" }}>
+                  Consensus, briefing, research, cross-exams, personas.
+                  No debate thread.
+                </div>
+              </button>
+
+              <div style={{ borderTop: "1px solid var(--border)" }} />
+
+              <button
+                role="menuitem"
+                onClick={() => handleExportPDF(true)}
+                className="w-full text-left px-3 py-2 transition-colors"
+                style={{ background: "transparent" }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = "var(--surface)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+              >
+                <div className="flex items-center gap-2">
+                  <svg className="h-3 w-3 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} style={{ color: "var(--accent)" }}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+                  </svg>
+                  <span className="text-[11px] font-semibold" style={{ color: "var(--text-primary)" }}>
+                    Full PDF
+                  </span>
+                  {debate.thread?.length ? (
+                    <span
+                      className="ml-auto rounded px-1.5 py-0.5 text-[8px] font-bold"
+                      style={{ background: "rgba(255,107,0,0.15)", color: "var(--accent)" }}
+                    >
+                      +{debate.thread.length} msgs
+                    </span>
+                  ) : null}
+                </div>
+                <div className="mt-0.5 text-[9px] leading-snug pl-5" style={{ color: "var(--text-muted)" }}>
+                  Everything above plus the complete debate thread —
+                  every message from every agent.
+                </div>
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="rounded-lg p-3" style={{ background: "var(--surface-2)", border: "1px solid var(--border)" }}>
