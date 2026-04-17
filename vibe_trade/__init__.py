@@ -11,4 +11,4 @@ installed, a `vibe-trade` command is available globally with subcommands:
     vibe-trade version               # print the installed version
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
