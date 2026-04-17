@@ -908,22 +908,36 @@ export function Chart({
 
           if (x1 != null && x2 != null && y1 != null && y2 != null) {
             const dpr = window.devicePixelRatio || 1;
+            // Source coords in the underlying canvas buffer (already DPR-scaled)
             const sx = Math.min(x1, x2) * dpr;
             const sy = Math.min(y1, y2) * dpr;
             const sw = Math.abs(x2 - x1) * dpr;
             const sh = Math.abs(y2 - y1) * dpr;
 
             if (sw > 10 && sh > 10) {
+              // Guarantee at least ~2x CSS-pixel density in the exported image
+              // so small selections don't blur when the chat renders them.
+              // On DPR=2 devices the factor is 1 (we already have the pixels);
+              // on DPR=1 we upscale the destination by 2x with high-quality
+              // interpolation so the <img> has enough intrinsic pixels.
+              const targetDpr = 2;
+              const upscale = targetDpr / dpr > 1 ? targetDpr / dpr : 1;
+              const dw = Math.round(sw * upscale);
+              const dh = Math.round(sh * upscale);
+
               const tempCanvas = document.createElement("canvas");
-              tempCanvas.width = sw;
-              tempCanvas.height = sh;
+              tempCanvas.width = dw;
+              tempCanvas.height = dh;
               const ctx = tempCanvas.getContext("2d");
               if (ctx) {
+                ctx.imageSmoothingEnabled = true;
+                ctx.imageSmoothingQuality = "high";
                 // Composite all canvas layers (candles + primitives/overlays)
                 for (const cvs of allCanvases) {
-                  ctx.drawImage(cvs, sx, sy, sw, sh, 0, 0, sw, sh);
+                  ctx.drawImage(cvs, sx, sy, sw, sh, 0, 0, dw, dh);
                 }
-                snapshotUrl = tempCanvas.toDataURL("image/png", 0.8);
+                // PNG is lossless; drop the bogus quality arg (ignored for PNG)
+                snapshotUrl = tempCanvas.toDataURL("image/png");
               }
             }
           }

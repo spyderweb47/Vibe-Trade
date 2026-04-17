@@ -485,8 +485,15 @@ export function RightSidebar() {
                     <img
                       src={msg.image}
                       alt="Pattern snapshot"
-                      className="w-full rounded mb-1.5"
-                      style={{ border: "1px solid var(--border)", maxHeight: 120 }}
+                      className="max-w-full h-auto rounded mb-1.5 block"
+                      style={{
+                        border: "1px solid var(--border)",
+                        maxHeight: 160,
+                        // Browser-native smooth scaling — avoids nearest-neighbour
+                        // blockiness when the image IS scaled. No upscaling past
+                        // intrinsic size thanks to max-w-full + h-auto.
+                        imageRendering: "auto",
+                      }}
                     />
                   )}
                   <span className="whitespace-pre-wrap">{msg.content}</span>
