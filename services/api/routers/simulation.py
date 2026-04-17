@@ -7,6 +7,8 @@ and a multi-agent debate endpoint for the Simulation mode committee.
 
 from __future__ import annotations
 
+import asyncio
+import os
 import uuid
 from dataclasses import asdict
 from typing import Any, Dict, List, Optional
@@ -192,7 +194,27 @@ async def run_debate(request: DebateRequest) -> DebateResponse:
     symbol = raw_name
 
     orchestrator = DebateOrchestrator()
-    results = await orchestrator.run(bars, symbol, report_text=request.context or "")
+    # Hard ceiling so the endpoint can't hang indefinitely. A full 50-persona
+    # × 30-round run takes ~10-20 min under normal load; 45 min gives comfort
+    # margin for slow providers without letting a wedged call stall forever.
+    # The per-LLM-call and per-speaker timeouts inside the orchestrator will
+    # normally catch stalls well before this outer fuse fires.
+    debate_timeout_s = int(os.environ.get("DEBATE_TIMEOUT_S", "2700"))
+    try:
+        results = await asyncio.wait_for(
+            orchestrator.run(bars, symbol, report_text=request.context or ""),
+            timeout=debate_timeout_s,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                f"Debate exceeded {debate_timeout_s}s wall-clock budget. "
+                "This usually means the LLM provider is stalling — check "
+                "server logs for [llm_client] retry messages, and consider "
+                "reducing MAX_ROUNDS or SPEAKERS_PER_ROUND."
+            ),
+        )
 
     ai = results["asset_info"]
     ctx = results.get("market_context", {}) or {}

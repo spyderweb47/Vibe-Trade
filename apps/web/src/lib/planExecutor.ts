@@ -56,13 +56,17 @@ const SKILL_SUB_PLANS: Record<string, { label: string; durationMs: number }[]> =
     { label: "Stage 2.5: Executing iterative web searches per agent (up to 4 queries each)...", durationMs: 60000 },
     { label: "Stage 2.5: Agents evaluating findings + deciding if more research needed...", durationMs: 30000 },
     { label: "Stage 2.5: Caching research findings per agent for debate prompts...", durationMs: 2000 },
-    // Stage 3: Debate
-    { label: "Stage 3: Rounds 1-3 — agents inject their research into first messages...", durationMs: 45000 },
-    { label: "Stage 3: Rounds 4-8 — initial positions forming...", durationMs: 45000 },
-    { label: "Stage 3: Rounds 9-13 — counterarguments and rebuttals...", durationMs: 45000 },
-    { label: "Stage 3: Rounds 14-18 — evidence-based refinement...", durationMs: 45000 },
-    { label: "Stage 3: Rounds 19-23 — consensus emerging...", durationMs: 45000 },
-    { label: "Stage 3: Rounds 24-30 — final positions + convergence check...", durationMs: 45000 },
+    // Stage 3: Debate — these are approximate timeline markers driven by a
+    // local timer, NOT synced to actual backend rounds. If the real pipeline
+    // is slower than the labels, the UI will sit on the final marker while
+    // the backend keeps working. Check server logs ([swarm.stage3] Round X/Y)
+    // for true round-by-round progress.
+    { label: "Stage 3: Debate starting — agents inject research into first messages...", durationMs: 45000 },
+    { label: "Stage 3: Debate continuing — initial positions forming...", durationMs: 45000 },
+    { label: "Stage 3: Debate continuing — counterarguments and rebuttals...", durationMs: 45000 },
+    { label: "Stage 3: Debate continuing — evidence-based refinement...", durationMs: 45000 },
+    { label: "Stage 3: Debate continuing — consensus emerging...", durationMs: 45000 },
+    { label: "Stage 3: Debate finishing — final positions + convergence check (check server logs for true progress)...", durationMs: 45000 },
     // Stage 4: Cross-Exam
     { label: "Stage 4: Selecting 6-8 most divergent agents for cross-exam...", durationMs: 2000 },
     { label: "Stage 4: Cross-examining extreme positions (parallel)...", durationMs: 20000 },

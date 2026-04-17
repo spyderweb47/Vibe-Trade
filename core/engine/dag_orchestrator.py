@@ -191,8 +191,15 @@ class DebateOrchestrator:
                 name = entity.get("name", "")
                 spec = entity.get("specialization", "general")
 
-                # Selective routing: show messages from related roles + mentions
-                relevant_thread = self._filter_thread_for_agent(thread, name, role, max_chars=6000)
+                # Selective routing: show messages from related roles + mentions.
+                # Cap the thread we score to the last 4 rounds worth of messages —
+                # by round 20 the full thread is 300+ messages, and _filter_thread
+                # iterates the whole list for every one of 15 speakers per round
+                # (O(messages × speakers × rounds) which grows quadratically).
+                # Only recent messages carry debate state anyway.
+                recent_cap = self.SPEAKERS_PER_ROUND * 4 + 10  # ~70 messages
+                thread_window = thread[-recent_cap:] if len(thread) > recent_cap else thread
+                relevant_thread = self._filter_thread_for_agent(thread_window, name, role, max_chars=6000)
 
                 # Personal memory of own previous positions
                 own_memory = agent_memory.get(eid, [])
@@ -253,16 +260,66 @@ class DebateOrchestrator:
 
                 agents_with_context.append((entity, relevant_thread, full_market, tool_calls_log))
 
-            # All speakers run in parallel
+            # All speakers run in parallel. Each speak() call can make 1+ LLM
+            # requests; the LLM client already has per-request timeouts + retries,
+            # but we ALSO wrap each agent task in asyncio.wait_for so that one
+            # slow / stuck speaker cannot freeze the whole round (which in turn
+            # would freeze the whole debate because rounds run sequentially).
+            # On timeout the agent is treated as a no-show for this round.
             agents = [DiscussionAgent(e, asset_info) for e, _, _, _ in agents_with_context]
+
+            # 3x the single-call budget — a speak() may chain multiple LLM calls
+            # (tool use, reflection) and we want to tolerate a retry or two.
+            per_speaker_timeout = 180.0
+
+            async def _run_speaker(
+                agent: DiscussionAgent,
+                ctx: Any,
+            ) -> Dict[str, Any]:
+                try:
+                    return await asyncio.wait_for(
+                        asyncio.to_thread(
+                            agent.speak,
+                            ctx[2],        # full market context
+                            ctx[1],        # filtered thread
+                            report_text[:600],
+                            round_num,
+                        ),
+                        timeout=per_speaker_timeout,
+                    )
+                except asyncio.TimeoutError:
+                    entity = ctx[0]
+                    self._log(
+                        "stage3",
+                        f"  ! {entity.get('name', 'unknown')} timed out after "
+                        f"{per_speaker_timeout:.0f}s — skipping this round",
+                    )
+                    return {
+                        "content": "(agent timed out this round)",
+                        "sentiment": 0.0,
+                        "price_prediction": None,
+                        "agreed_with": [],
+                        "disagreed_with": [],
+                        "_timed_out": True,
+                    }
+                except Exception as err:  # noqa: BLE001
+                    entity = ctx[0]
+                    self._log(
+                        "stage3",
+                        f"  ! {entity.get('name', 'unknown')} failed: "
+                        f"{type(err).__name__}: {str(err)[:120]}",
+                    )
+                    return {
+                        "content": f"(agent error: {type(err).__name__})",
+                        "sentiment": 0.0,
+                        "price_prediction": None,
+                        "agreed_with": [],
+                        "disagreed_with": [],
+                        "_errored": True,
+                    }
+
             results = await asyncio.gather(
-                *[asyncio.to_thread(
-                    a.speak,
-                    ctx[2],                  # full market context (summary + spec data + memory)
-                    ctx[1],                  # filtered thread
-                    report_text[:600],
-                    round_num,
-                ) for a, ctx in zip(agents, agents_with_context)]
+                *[_run_speaker(a, ctx) for a, ctx in zip(agents, agents_with_context)]
             )
 
             # Append to thread + update agent memory

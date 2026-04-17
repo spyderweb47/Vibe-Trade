@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import json
 import os
+import random
+import time
 from typing import Any, Dict, Optional
 
 try:
@@ -36,6 +38,18 @@ try:
     import anthropic
 except ImportError:
     anthropic = None  # type: ignore
+
+
+# ─── Retry / timeout policy ──────────────────────────────────────────────────
+
+# Per-call hard timeout (seconds). The SDKs also honour their own network
+# timeouts, but providers occasionally stall mid-stream. With 50 personas x
+# 30 rounds and 15 speakers per round we do hundreds of LLM calls — a single
+# hang would freeze the entire pipeline without this cap.
+LLM_CALL_TIMEOUT_S = int(os.environ.get("LLM_CALL_TIMEOUT_S", "90"))
+
+# Retry budget for transient failures (network blips, 5xx, rate-limit bursts).
+LLM_MAX_RETRIES = int(os.environ.get("LLM_MAX_RETRIES", "2"))
 
 
 # ─── Provider configuration ─────────────────────────────────────────────────
@@ -142,9 +156,13 @@ def _get_openai_compat_client() -> "OpenAI":
             )
         base_url = config["base_url"]
 
+    # `timeout` is picked up by the underlying httpx client — caps each
+    # individual request, matching the same ceiling we enforce at the
+    # `chat_completion` level. Without it, the SDK will happily wait
+    # forever on a stalled provider response.
     if base_url:
-        return OpenAI(api_key=api_key, base_url=base_url)
-    return OpenAI(api_key=api_key)
+        return OpenAI(api_key=api_key, base_url=base_url, timeout=LLM_CALL_TIMEOUT_S)
+    return OpenAI(api_key=api_key, timeout=LLM_CALL_TIMEOUT_S)
 
 
 # ─── Anthropic client factory ────────────────────────────────────────────────
@@ -161,7 +179,9 @@ def _get_anthropic_client():
             "ANTHROPIC_API_KEY environment variable is not set. "
             "Set it in your .env file before starting the server."
         )
-    return anthropic.Anthropic(api_key=api_key)
+    # Cap the underlying network timeout so a stalled upstream can't hang
+    # us forever — matches the per-call ceiling above.
+    return anthropic.Anthropic(api_key=api_key, timeout=LLM_CALL_TIMEOUT_S)
 
 
 # ─── Unified chat_completion API ─────────────────────────────────────────────
@@ -198,35 +218,61 @@ def chat_completion(
     kind = PROVIDER_CONFIG[provider]["kind"]
     chosen_model = model or _active_model()
 
-    if kind == "anthropic":
-        client = _get_anthropic_client()
-        response = client.messages.create(
+    def _once() -> str:
+        if kind == "anthropic":
+            client = _get_anthropic_client()
+            response = client.messages.create(
+                model=chosen_model,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_message}],
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            # Anthropic returns a list of content blocks — join text blocks
+            text_parts = []
+            for block in response.content:
+                if hasattr(block, "text"):
+                    text_parts.append(block.text)
+            return "".join(text_parts)
+
+        # OpenAI-compatible path (openai, openrouter, deepseek, groq, gemini,
+        # together, fireworks, ollama)
+        client = _get_openai_compat_client()
+        response = client.chat.completions.create(
             model=chosen_model,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_message}],
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
             temperature=temperature,
             max_tokens=max_tokens,
         )
-        # Anthropic returns a list of content blocks — join text blocks
-        text_parts = []
-        for block in response.content:
-            if hasattr(block, "text"):
-                text_parts.append(block.text)
-        return "".join(text_parts)
+        return response.choices[0].message.content or ""
 
-    # OpenAI-compatible path (openai, openrouter, deepseek, groq, gemini,
-    # together, fireworks, ollama)
-    client = _get_openai_compat_client()
-    response = client.chat.completions.create(
-        model=chosen_model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message},
-        ],
-        temperature=temperature,
-        max_tokens=max_tokens,
-    )
-    return response.choices[0].message.content or ""
+    # Retry wrapper: bounded exponential backoff with jitter. We catch the
+    # broad Exception because provider SDKs raise different classes
+    # (openai.APIError, anthropic.APIError, httpx.TimeoutException, etc.)
+    # and we want uniform handling. The per-request HTTP timeout configured
+    # on the clients above caps the worst case at ~90s per attempt.
+    last_err: Optional[BaseException] = None
+    for attempt in range(LLM_MAX_RETRIES + 1):
+        try:
+            return _once()
+        except Exception as err:  # noqa: BLE001 — intentional broad catch
+            last_err = err
+            if attempt >= LLM_MAX_RETRIES:
+                break
+            # 1.5s, 3s, 6s base + up to 1s jitter
+            delay = (1.5 * (2 ** attempt)) + random.random()
+            print(
+                f"[llm_client] call failed (attempt {attempt + 1}/{LLM_MAX_RETRIES + 1}): "
+                f"{type(err).__name__}: {str(err)[:180]} — retrying in {delay:.1f}s",
+                flush=True,
+            )
+            time.sleep(delay)
+    # All retries exhausted — re-raise so the caller can decide what to do
+    assert last_err is not None
+    raise last_err
 
 
 def chat_completion_json(
