@@ -370,7 +370,18 @@ class DebateOrchestrator:
             message_count=len(thread),
         )
 
-        self._log("stage5", f"Report done. Consensus: {summary.get('consensus_direction')} ({summary.get('confidence')}%)")
+        self._log("stage5", f"Report done. LLM said: {summary.get('consensus_direction')} ({summary.get('confidence')}%)")
+
+        # ─── Ground-truth consensus computed from actual thread sentiment ───
+        # The LLM tends to copy the example values from the prompt (always
+        # "BULLISH 72%"). Override with the real math from the messages.
+        computed = self._compute_consensus(thread, entities)
+        self._log("stage5", f"Computed from thread: {computed['direction']} ({computed['confidence']}%) — bulls={computed['bulls']}, bears={computed['bears']}, neutrals={computed['neutrals']}")
+
+        # Trust the computed values over the LLM output
+        summary["consensus_direction"] = computed["direction"]
+        summary["confidence"] = computed["confidence"]
+
         self._log("complete", f"Pipeline done. {len(entities)} agents, {round_num} rounds, {len(thread)} messages.")
 
         return {
@@ -381,6 +392,83 @@ class DebateOrchestrator:
             "summary": summary,
             "intel_briefing": intel_briefing,       # Include for UI display
             "cross_exam_results": cross_exam_results,  # Include for UI display
+        }
+
+    def _compute_consensus(self, thread: list, entities: list) -> dict:
+        """
+        Compute the real influence-weighted consensus from the debate thread.
+        Used as ground truth to override the LLM's summary output (which
+        tends to hallucinate or copy example values from the prompt).
+
+        Algorithm:
+          1. For each agent, compute their final sentiment (average of last
+             3 messages, weighted by recency).
+          2. Weight by the agent's influence (0.5-3.0).
+          3. Classify as bull (>0.2), bear (<-0.2), or neutral.
+          4. Confidence = majority_weight / total_weight * 100.
+        """
+        # Build per-agent final sentiment from their last 3 messages
+        agent_sentiments: Dict[str, list] = {}
+        for msg in thread:
+            eid = msg.get("entity_id", "")
+            if eid == "chart_support" or msg.get("is_chart_support"):
+                continue
+            agent_sentiments.setdefault(eid, []).append(msg.get("sentiment", 0))
+
+        # Build influence lookup
+        influence_by_id: Dict[str, float] = {
+            e.get("id", ""): float(e.get("influence", 1.0)) for e in entities
+        }
+
+        bull_weight = 0.0
+        bear_weight = 0.0
+        neutral_weight = 0.0
+        bulls = 0
+        bears = 0
+        neutrals = 0
+
+        for eid, sentiments in agent_sentiments.items():
+            if not sentiments:
+                continue
+            # Average of last 3 messages, weighted toward recent
+            recent = sentiments[-3:]
+            weights = [1.0, 1.5, 2.0][-len(recent):]
+            avg_sent = sum(s * w for s, w in zip(recent, weights)) / sum(weights)
+            influence = influence_by_id.get(eid, 1.0)
+
+            if avg_sent > 0.2:
+                bulls += 1
+                bull_weight += influence
+            elif avg_sent < -0.2:
+                bears += 1
+                bear_weight += influence
+            else:
+                neutrals += 1
+                neutral_weight += influence
+
+        total_weight = bull_weight + bear_weight + neutral_weight or 1.0
+
+        if bull_weight > bear_weight and bull_weight > neutral_weight:
+            direction = "BULLISH"
+            majority_weight = bull_weight
+        elif bear_weight > bull_weight and bear_weight > neutral_weight:
+            direction = "BEARISH"
+            majority_weight = bear_weight
+        else:
+            direction = "NEUTRAL"
+            majority_weight = max(bull_weight, bear_weight, neutral_weight)
+
+        confidence = int(round((majority_weight / total_weight) * 100))
+
+        return {
+            "direction": direction,
+            "confidence": confidence,
+            "bulls": bulls,
+            "bears": bears,
+            "neutrals": neutrals,
+            "bull_weight": round(bull_weight, 2),
+            "bear_weight": round(bear_weight, 2),
+            "neutral_weight": round(neutral_weight, 2),
         }
 
     def _format_briefing(self, briefing: dict) -> str:

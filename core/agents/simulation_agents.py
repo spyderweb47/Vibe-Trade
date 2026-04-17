@@ -491,10 +491,10 @@ You've observed {entity_count} panelists debate across {round_count} rounds with
 ## Your task
 Produce a DEEP, ACTIONABLE investment report. This is NOT a casual summary — it's a professional research note that a portfolio manager would use to make a real trading decision. Be specific with price levels, timeframes, and risk quantification.
 
-Respond with ONLY valid JSON (no markdown fences):
+Respond with ONLY valid JSON (no markdown fences). Schema:
 {{
-  "consensus_direction": "BULLISH",
-  "confidence": 72,
+  "consensus_direction": "<BULLISH or BEARISH or NEUTRAL based on influence-weighted sentiment>",
+  "confidence": "<INTEGER 0-100 — compute this from actual panelist agreement: 50 = split, 70+ = strong consensus, 90+ = near unanimous>",
   "key_arguments": [
     "Argument 1 — with specific price level or data point",
     "Argument 2 — cite which panelists agree and their reasoning",
@@ -1075,10 +1075,10 @@ Your report MUST:
 - Provide a concrete trade setup (entry, stop, target, position size)
 - List specific triggers that would invalidate the thesis
 
-Respond with JSON:
+Respond with JSON. Schema (DO NOT copy these literal values — compute them from the debate):
 {{
-  "consensus_direction": "BULLISH",
-  "confidence": 72,
+  "consensus_direction": "<BULLISH or BEARISH or NEUTRAL — based on majority influence-weighted sentiment>",
+  "confidence": "<INTEGER 0-100 — NOT always 72 — compute it: count bulls, bears, neutrals weighted by influence, then confidence = (majority side count / total) * 100>",
   "key_arguments": [
     "Argument 1 — cite panelist + specific data (min 2 sentences each)",
     "Argument 2 — cite panelist + specific data",
