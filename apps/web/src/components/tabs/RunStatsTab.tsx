@@ -209,8 +209,8 @@ export function RunStatsTab() {
       setText(includeThread ? ACCENT : MUTED);
       pdf.text(
         includeThread
-          ? "Report type: FULL — includes complete debate thread"
-          : "Report type: SUMMARY — debate thread omitted",
+          ? "Report type: FULL — includes agent profiles and complete debate thread"
+          : "Report type: SUMMARY — agent profiles and debate thread omitted",
         margin, y + 4,
       );
       y += 8;
@@ -475,8 +475,8 @@ export function RunStatsTab() {
         });
       }
 
-      // ─── Personas ─────────────────────────────────────────────
-      if (debate.entities?.length) {
+      // ─── Personas (opt-in: full profiles of all agents) ───────
+      if (includeThread && debate.entities?.length) {
         addHeading(`Personas (${debate.entities.length})`);
         debate.entities.forEach((ent, i) => {
           if (i > 0) addDivider();
@@ -655,8 +655,9 @@ export function RunStatsTab() {
                   </span>
                 </div>
                 <div className="mt-0.5 text-[9px] leading-snug pl-5" style={{ color: "var(--text-muted)" }}>
-                  Consensus, briefing, research, cross-exams, personas.
-                  No debate thread.
+                  Consensus, briefing, market context, data feeds,
+                  cross-exams, research trail. No agent profiles or
+                  debate thread.
                 </div>
               </button>
 
@@ -677,18 +678,17 @@ export function RunStatsTab() {
                   <span className="text-[11px] font-semibold" style={{ color: "var(--text-primary)" }}>
                     Full PDF
                   </span>
-                  {debate.thread?.length ? (
-                    <span
-                      className="ml-auto rounded px-1.5 py-0.5 text-[8px] font-bold"
-                      style={{ background: "rgba(255,107,0,0.15)", color: "var(--accent)" }}
-                    >
-                      +{debate.thread.length} msgs
-                    </span>
-                  ) : null}
+                  <span
+                    className="ml-auto rounded px-1.5 py-0.5 text-[8px] font-bold"
+                    style={{ background: "rgba(255,107,0,0.15)", color: "var(--accent)" }}
+                  >
+                    +{debate.entities?.length ?? 0} agents, +{debate.thread?.length ?? 0} msgs
+                  </span>
                 </div>
                 <div className="mt-0.5 text-[9px] leading-snug pl-5" style={{ color: "var(--text-muted)" }}>
-                  Everything above plus the complete debate thread —
-                  every message from every agent.
+                  Everything above plus full agent profiles and the
+                  complete debate thread — every message from every
+                  persona.
                 </div>
               </button>
             </div>
