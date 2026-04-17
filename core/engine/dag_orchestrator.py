@@ -42,6 +42,7 @@ from core.agents.simulation_agents import (
     ContextAnalyzer,
     DataFeedBuilder,
     IntelligenceGatherer,
+    IterativeResearcher,
     EntityGenerator,
     DiscussionAgent,
     CrossExaminer,
@@ -62,6 +63,7 @@ class DebateOrchestrator:
         self.chart_support = ChartSupportAgent()
         self.context_analyzer = ContextAnalyzer()
         self.intelligence = IntelligenceGatherer()
+        self.researcher = IterativeResearcher()
         self.entity_gen = EntityGenerator()
         self.cross_examiner = CrossExaminer()
         self.report_agent = ReACTReportAgent()
@@ -141,6 +143,38 @@ class DebateOrchestrator:
         # Per-agent memory: tracks each agent's own previous statements
         agent_memory: Dict[str, List[str]] = {e.get("id", f"a{i}"): [] for i, e in enumerate(entities)}
 
+        # ─── Stage 2.5: Iterative Agent Research ───────────────────────────
+        # Each agent with web tools plans their OWN research queries (up to 4
+        # iterations each). This runs once before the debate — findings are
+        # cached and injected into their debate prompts.
+        self._log("stage2.5", f"Starting iterative research phase for {n_entities} agents...")
+        agent_research: Dict[str, dict] = {}
+
+        # Run research in parallel (10 agents at a time to avoid overwhelming
+        # the rate limiter)
+        import itertools
+        research_entities = [e for e in entities if any(t.startswith(("web_", "fetch_")) for t in e.get("tools", []))]
+        self._log("stage2.5", f"{len(research_entities)}/{n_entities} agents have web tools — running research")
+
+        batch_size = 10
+        for batch_start in range(0, len(research_entities), batch_size):
+            batch = research_entities[batch_start:batch_start + batch_size]
+            results = await asyncio.gather(
+                *[asyncio.to_thread(self.researcher.research, e, asset_info, main_summary) for e in batch],
+                return_exceptions=True,
+            )
+            for entity, res in zip(batch, results):
+                eid = entity.get("id", "unknown")
+                if isinstance(res, dict) and res.get("findings"):
+                    agent_research[eid] = res
+                    self._log("stage2.5", f"  {entity.get('name')}: {res['total_iterations']} queries")
+            # Progress log
+            done = min(batch_start + batch_size, len(research_entities))
+            self._log("stage2.5", f"Research progress: {done}/{len(research_entities)} agents")
+
+        total_queries = sum(r.get("total_iterations", 0) for r in agent_research.values())
+        self._log("stage2.5", f"Research complete: {len(agent_research)} agents did {total_queries} total queries")
+
         self._log("stage3", f"Starting debate: up to {self.MAX_ROUNDS} rounds x {self.SPEAKERS_PER_ROUND} speakers = max {self.MAX_ROUNDS * self.SPEAKERS_PER_ROUND} messages")
         for round_num in range(1, self.MAX_ROUNDS + 1):
             self._log("stage3", f"Round {round_num}/{self.MAX_ROUNDS} — {len(thread)} messages so far")
@@ -181,28 +215,36 @@ class DebateOrchestrator:
                 feed_key = feed_map.get(spec, "general")
                 spec_data = data_feeds.get(feed_key, data_feeds.get("general", ""))
 
-                # Execute agent-specific tools before they speak. Web tools
-                # go through a global rate limiter + retry/fallback; local
-                # tools (indicators, levels) are fast and pure Python.
+                # Inject iterative research findings (done in Stage 2.5)
+                # plus any local tool results (indicators, levels for tech agents).
                 tool_results_text = ""
                 tool_calls_log: Dict[str, str] = {}  # tool_name -> short result
                 agent_tools = entity.get("tools", [])
-                if agent_tools and round_num <= 3:  # Tools only in first 3 rounds
+
+                # 1. Iterative research findings (already done pre-debate) — only in round 1
+                if round_num == 1 and eid in agent_research:
+                    research = agent_research[eid]
+                    tool_results_text += "\n\n" + research["summary"]
+                    # Log each query as a separate "tool call" for UI
+                    for f in research["findings"]:
+                        tool_name = f"{f['tool']}[q{f['iteration']}]"
+                        tool_calls_log[tool_name] = f"Query: {f['query']}\nReasoning: {f['reasoning']}\n{f['result'][:500]}"
+
+                # 2. Local tools (run_indicator, compute_levels) — only in round 1 for quant/tech agents
+                if agent_tools and round_num == 1:
                     from core.agents.swarm_tools import execute_tool
-                    tool_outputs = []
                     local_tools = [t for t in agent_tools if t in ("run_indicator", "compute_levels")]
-                    web_tools = [t for t in agent_tools if t.startswith(("web_", "fetch_"))]
-                    for tool_name in local_tools[:2] + web_tools[:1]:
+                    local_outputs = []
+                    for tool_name in local_tools[:2]:
                         try:
                             result = execute_tool(tool_name, bars, asset_info.get("asset_name", symbol))
                             if result and len(result) > 20:
-                                tool_outputs.append(f"[{tool_name}]: {result[:1500]}")
-                                tool_calls_log[tool_name] = result[:500]  # Short summary for UI
+                                local_outputs.append(f"[{tool_name}]: {result[:1500]}")
+                                tool_calls_log[tool_name] = result[:500]
                         except Exception as e:
-                            tool_outputs.append(f"[{tool_name}]: error — {str(e)[:100]}")
                             tool_calls_log[tool_name] = f"Error: {str(e)[:200]}"
-                    if tool_outputs:
-                        tool_results_text = "\n\n## Your research findings:\n" + "\n".join(tool_outputs)
+                    if local_outputs:
+                        tool_results_text += "\n\n## Local analysis:\n" + "\n".join(local_outputs)
 
                 # Combine: general summary + specialization data + briefing + tools + memory
                 full_market = main_summary + "\n\n" + spec_data

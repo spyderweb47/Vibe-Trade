@@ -51,8 +51,13 @@ const SKILL_SUB_PLANS: Record<string, { label: string; durationMs: number }[]> =
     { label: "Stage 2: Generating personas batch 4 (10-12 more)...", durationMs: 8000 },
     { label: "Stage 2: Generating personas batch 5 (final batch, target 50)...", durationMs: 8000 },
     { label: "Stage 2: Assigning tools per specialization (technical, macro, quant, etc.)...", durationMs: 1000 },
+    // Stage 2.5: Iterative Research Phase
+    { label: "Stage 2.5: Agents planning their own research queries (LLM-driven)...", durationMs: 30000 },
+    { label: "Stage 2.5: Executing iterative web searches per agent (up to 4 queries each)...", durationMs: 60000 },
+    { label: "Stage 2.5: Agents evaluating findings + deciding if more research needed...", durationMs: 30000 },
+    { label: "Stage 2.5: Caching research findings per agent for debate prompts...", durationMs: 2000 },
     // Stage 3: Debate
-    { label: "Stage 3: Rounds 1-3 — RESEARCH PHASE (agents use their tools)...", durationMs: 45000 },
+    { label: "Stage 3: Rounds 1-3 — agents inject their research into first messages...", durationMs: 45000 },
     { label: "Stage 3: Rounds 4-8 — initial positions forming...", durationMs: 45000 },
     { label: "Stage 3: Rounds 9-13 — counterarguments and rebuttals...", durationMs: 45000 },
     { label: "Stage 3: Rounds 14-18 — evidence-based refinement...", durationMs: 45000 },

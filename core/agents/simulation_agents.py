@@ -1117,6 +1117,186 @@ up scales (e.g., putting $85,000 targets for a $90 commodity)."""
 
 
 # ---------------------------------------------------------------------------
+# Iterative Researcher — agent-driven multi-query research loop
+# ---------------------------------------------------------------------------
+
+RESEARCH_PLAN_PROMPT = """You are {name}, a {role}.
+Background: {background}
+Your bias: {bias}
+
+You're about to participate in a debate about {asset_name} ({asset_class}).
+Before you speak, you want to gather real-world information that's RELEVANT
+TO YOUR SPECIFIC EXPERTISE.
+
+## Your previous research so far
+{prior_findings}
+
+## What you know already from the market data
+{market_summary}
+
+Your task: decide what to research next. Think step by step about what a
+{role} would actually want to know RIGHT NOW that you don't already have.
+
+Respond with ONLY valid JSON (no markdown fences):
+{{
+  "need_more_research": true,
+  "reasoning": "Short 1-sentence explanation of what information gap you're trying to fill",
+  "next_query": "A specific, targeted web search query (as a professional analyst would search)",
+  "tool": "web_search"
+}}
+
+OR, if you have enough information already:
+{{
+  "need_more_research": false,
+  "reasoning": "Short 1-sentence explanation of why you're satisfied",
+  "next_query": null,
+  "tool": null
+}}
+
+Rules:
+- Each query must be DIFFERENT from previous ones (no repeats)
+- Query should reflect YOUR expertise — a geopolitical analyst asks about wars/sanctions, a macro analyst asks about Fed policy, a journalist asks about specific events/scandals
+- After 3-5 queries you should usually have enough — don't research indefinitely
+- Pick `tool` from: web_search, fetch_news, fetch_policy, fetch_url (most common: web_search)
+"""
+
+
+class IterativeResearcher:
+    """
+    Agent-driven iterative research. The agent plans its own queries based
+    on their role/expertise, executes each one, reviews findings, and
+    decides whether to research more or stop.
+
+    Unlike single-shot tool execution, this mimics how a real analyst
+    works: "I searched for X, found Y, now I need more on Z..."
+    """
+
+    MAX_ITERATIONS = 4  # Hard cap — each agent's research must finish in <= 4 queries
+
+    def research(
+        self,
+        entity: dict,
+        asset_info: dict,
+        market_summary: str,
+    ) -> dict:
+        """
+        Run the iterative research loop for one agent.
+
+        Returns:
+          {
+            'findings': [{'iteration': 1, 'query': '...', 'reasoning': '...', 'result': '...'}, ...],
+            'summary': 'aggregated findings as text for injection into debate prompt',
+            'total_iterations': int,
+          }
+        """
+        from core.agents.swarm_tools import execute_tool
+
+        if not llm_available():
+            return {"findings": [], "summary": "", "total_iterations": 0}
+
+        # Only do iterative research if this agent has web tools
+        tools = entity.get("tools", [])
+        web_tools = [t for t in tools if t.startswith(("web_", "fetch_"))]
+        if not web_tools:
+            return {"findings": [], "summary": "", "total_iterations": 0}
+
+        findings: List[Dict[str, Any]] = []
+        prior_queries: List[str] = []
+        name = entity.get("name", "Analyst")
+        role = entity.get("role", "Analyst")
+        asset_name = asset_info.get("asset_name", "the asset")
+        asset_class = asset_info.get("asset_class", "unknown")
+
+        for iteration in range(1, self.MAX_ITERATIONS + 1):
+            # Build the research plan prompt with accumulated findings
+            prior_text = ""
+            if findings:
+                prior_lines = []
+                for f in findings:
+                    prior_lines.append(
+                        f"Iteration {f['iteration']}: searched '{f['query']}'\n"
+                        f"  Found: {f['result'][:400]}..."
+                    )
+                prior_text = "\n".join(prior_lines)
+            else:
+                prior_text = "(No research done yet.)"
+
+            prompt = RESEARCH_PLAN_PROMPT.format(
+                name=name,
+                role=role,
+                background=entity.get("background", "")[:300],
+                bias=entity.get("bias", "neutral"),
+                asset_name=asset_name,
+                asset_class=asset_class,
+                prior_findings=prior_text,
+                market_summary=market_summary[:1000],
+            )
+
+            try:
+                plan = chat_completion_json(
+                    system_prompt=prompt,
+                    user_message="Plan your next research step.",
+                    temperature=0.5,
+                    max_tokens=300,
+                )
+            except Exception as e:
+                # LLM call failed — stop research
+                break
+
+            if not plan.get("need_more_research", False):
+                # Agent decided they have enough
+                break
+
+            query = plan.get("next_query", "").strip()
+            if not query or query in prior_queries:
+                # Duplicate or empty — stop
+                break
+
+            tool = plan.get("tool", "web_search")
+            reasoning = plan.get("reasoning", "")
+            prior_queries.append(query)
+
+            # Execute the tool with the agent's chosen query
+            try:
+                result = execute_tool(
+                    tool,
+                    bars=[],
+                    asset_name=asset_name,
+                    params={"query": query, "max_results": 3} if tool == "web_search" else {},
+                )
+                if not result or len(result) < 20:
+                    # Search returned nothing useful — try once more with different query, then stop
+                    result = f"(Search returned no useful results for '{query}')"
+            except Exception as e:
+                result = f"(Search failed: {str(e)[:100]})"
+
+            findings.append({
+                "iteration": iteration,
+                "query": query,
+                "reasoning": reasoning,
+                "tool": tool,
+                "result": result[:2000],
+            })
+
+        # Build a summary text for injection into the debate prompt
+        if findings:
+            summary_lines = [f"## {name}'s Research ({len(findings)} queries):"]
+            for f in findings:
+                summary_lines.append(f"\n### Query {f['iteration']}: {f['query']}")
+                summary_lines.append(f"Reasoning: {f['reasoning']}")
+                summary_lines.append(f"Findings: {f['result'][:1200]}")
+            summary_text = "\n".join(summary_lines)
+        else:
+            summary_text = ""
+
+        return {
+            "findings": findings,
+            "summary": summary_text,
+            "total_iterations": len(findings),
+        }
+
+
+# ---------------------------------------------------------------------------
 # Interview Agent — on-demand follow-up Q&A after the debate completes
 # ---------------------------------------------------------------------------
 
