@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useRef } from "react";
 import { useStore } from "@/store/useStore";
 
 /**
@@ -34,8 +35,101 @@ export function RunStatsTab() {
   const agentResearch = debate.agentResearch || {};
   const totalResearchQueries = Object.values(agentResearch).reduce((acc, arr) => acc + arr.length, 0);
 
+  const [exporting, setExporting] = useState(false);
+  const reportRef = useRef<HTMLDivElement>(null);
+
+  const handleExportPDF = async () => {
+    if (!reportRef.current || exporting) return;
+    setExporting(true);
+    try {
+      // Lazy-load to keep initial bundle small
+      const [{ default: jsPDF }, { default: html2canvas }] = await Promise.all([
+        import("jspdf"),
+        import("html2canvas"),
+      ]);
+
+      const element = reportRef.current;
+      // Expand all <details> elements for the PDF so nothing is hidden
+      const detailsEls = Array.from(element.querySelectorAll("details"));
+      const originalStates = detailsEls.map((d) => d.open);
+      detailsEls.forEach((d) => { d.open = true; });
+
+      // Small delay to let the DOM reflow
+      await new Promise((r) => setTimeout(r, 100));
+
+      const canvas = await html2canvas(element, {
+        scale: 2,
+        backgroundColor: "#0d0d10",
+        useCORS: true,
+        allowTaint: true,
+        logging: false,
+      });
+
+      // Restore details states
+      detailsEls.forEach((d, i) => { d.open = originalStates[i]; });
+
+      const imgData = canvas.toDataURL("image/png");
+      const pdf = new jsPDF({
+        orientation: "portrait",
+        unit: "mm",
+        format: "a4",
+      });
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = pdf.internal.pageSize.getHeight();
+      const imgWidth = pdfWidth - 10;
+      const imgHeight = (canvas.height * imgWidth) / canvas.width;
+
+      // Multi-page if content is taller than one A4 page
+      let heightLeft = imgHeight;
+      let position = 5;
+
+      pdf.addImage(imgData, "PNG", 5, position, imgWidth, imgHeight);
+      heightLeft -= (pdfHeight - 10);
+
+      while (heightLeft > 0) {
+        position = -(imgHeight - heightLeft) - 5;
+        pdf.addPage();
+        pdf.addImage(imgData, "PNG", 5, position, imgWidth, imgHeight);
+        heightLeft -= (pdfHeight - 10);
+      }
+
+      const assetName = (debate.assetName || debate.symbol || "asset").replace(/\s+/g, "_");
+      const date = new Date().toISOString().slice(0, 10);
+      pdf.save(`swarm_debate_${assetName}_${date}.pdf`);
+    } catch (err) {
+      console.error("PDF export failed:", err);
+      alert("PDF export failed: " + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
-    <div className="h-full overflow-y-auto p-3 space-y-3">
+    <div className="h-full overflow-y-auto p-3 space-y-3" ref={reportRef}>
+      {/* Export header */}
+      <div className="flex items-center gap-2 -mb-1">
+        <div className="text-[9px] font-bold uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
+          {debate.assetName} · {debate.entities.length} personas · {debate.totalRounds} rounds
+        </div>
+        <button
+          onClick={handleExportPDF}
+          disabled={exporting}
+          className="ml-auto flex items-center gap-1.5 rounded px-2.5 py-1 text-[10px] font-semibold transition-colors disabled:opacity-40"
+          style={{
+            background: exporting ? "var(--surface-2)" : "rgba(255, 107, 0, 0.12)",
+            color: "var(--accent)",
+            border: "1px solid rgba(255, 107, 0, 0.3)",
+          }}
+          title="Export full report as PDF"
+          data-html2canvas-ignore="true"
+        >
+          <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+          </svg>
+          {exporting ? "Generating..." : "Export PDF"}
+        </button>
+      </div>
+
       <div className="rounded-lg p-3" style={{ background: "var(--surface-2)", border: "1px solid var(--border)" }}>
         <div className="text-[9px] font-bold uppercase tracking-wider mb-2" style={{ color: "var(--text-muted)" }}>
           Pipeline Data Available
