@@ -192,6 +192,7 @@ def chat_completion(
     model: Optional[str] = None,
     temperature: float = 0.3,
     max_tokens: int = 4096,
+    timeout_s: Optional[float] = None,
 ) -> str:
     """
     Send a chat completion request to the configured LLM provider.
@@ -208,6 +209,11 @@ def chat_completion(
         Sampling temperature (lower = more deterministic).
     max_tokens : int
         Maximum tokens in the response.
+    timeout_s : float, optional
+        Per-request timeout override. Use this for known-slow calls
+        (e.g. report generation with max_tokens in the thousands) so
+        the retry logic doesn't mistake a legitimate long generation
+        for a hang. Defaults to LLM_CALL_TIMEOUT_S.
 
     Returns
     -------
@@ -217,6 +223,7 @@ def chat_completion(
     provider = _active_provider()
     kind = PROVIDER_CONFIG[provider]["kind"]
     chosen_model = model or _active_model()
+    effective_timeout = timeout_s if timeout_s is not None else LLM_CALL_TIMEOUT_S
 
     def _once() -> str:
         if kind == "anthropic":
@@ -227,6 +234,7 @@ def chat_completion(
                 messages=[{"role": "user", "content": user_message}],
                 temperature=temperature,
                 max_tokens=max_tokens,
+                timeout=effective_timeout,  # per-request override
             )
             # Anthropic returns a list of content blocks — join text blocks
             text_parts = []
@@ -238,7 +246,7 @@ def chat_completion(
         # OpenAI-compatible path (openai, openrouter, deepseek, groq, gemini,
         # together, fireworks, ollama)
         client = _get_openai_compat_client()
-        response = client.chat.completions.create(
+        response = client.with_options(timeout=effective_timeout).chat.completions.create(
             model=chosen_model,
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -281,11 +289,13 @@ def chat_completion_json(
     model: Optional[str] = None,
     temperature: float = 0.3,
     max_tokens: int = 4096,
+    timeout_s: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Send a chat completion request and parse the response as JSON.
 
     Falls back to returning {"raw": response_text} if JSON parsing fails.
+    Accepts the same `timeout_s` override as chat_completion().
     """
     text = chat_completion(
         system_prompt=system_prompt,
@@ -293,6 +303,7 @@ def chat_completion_json(
         model=model,
         temperature=temperature,
         max_tokens=max_tokens,
+        timeout_s=timeout_s,
     )
     cleaned = text.strip()
     if cleaned.startswith("```"):

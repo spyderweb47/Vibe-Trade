@@ -461,6 +461,10 @@ class DebateOrchestrator:
         # ─── Stage 5: ReACT Report Generation ───────────────────────────
         self._log("stage5", "Generating ReACT report (deep analysis + interviews + verification)...")
         summary: Dict[str, Any]
+        # Outer ceiling: 8 min is enough for a 4500-token report across all
+        # supported providers (50-100 tok/s = 45-90s) with one retry buffer.
+        # The LLM client itself handles per-request timeouts + retries; this
+        # wait_for is the last-resort fuse.
         try:
             summary = await asyncio.wait_for(
                 asyncio.to_thread(
@@ -474,40 +478,24 @@ class DebateOrchestrator:
                     round_count=round_num + (1 if cross_exam_results else 0),
                     message_count=len(thread),
                 ),
-                timeout=600.0,
+                timeout=480.0,
             )
         except asyncio.TimeoutError:
             self._event(
                 "error",
                 "stage5",
-                "Report generation timed out after 10 minutes. "
-                "Falling back to a minimal summary computed directly from thread sentiment.",
+                "Report generation timed out after 8 minutes. "
+                "Falling back to a summary extracted directly from the debate thread.",
             )
-            summary = {
-                "consensus_direction": "NEUTRAL",
-                "confidence": 0,
-                "key_arguments": [],
-                "dissenting_views": [],
-                "price_targets": {"low": 0, "mid": 0, "high": 0},
-                "risk_factors": ["Report generation timed out — see warnings."],
-                "recommendation": {"action": "HOLD"},
-            }
+            summary = self._fallback_summary_from_thread(thread, entities, bars, "timeout")
         except Exception as err:  # noqa: BLE001
             self._event(
                 "error",
                 "stage5",
                 f"Report generation failed: {type(err).__name__}: {str(err)[:180]}. "
-                "Falling back to a minimal summary.",
+                "Falling back to a summary extracted from the debate thread.",
             )
-            summary = {
-                "consensus_direction": "NEUTRAL",
-                "confidence": 0,
-                "key_arguments": [],
-                "dissenting_views": [],
-                "price_targets": {"low": 0, "mid": 0, "high": 0},
-                "risk_factors": [f"Report generation failed: {type(err).__name__}"],
-                "recommendation": {"action": "HOLD"},
-            }
+            summary = self._fallback_summary_from_thread(thread, entities, bars, str(err)[:120])
 
         self._log("stage5", f"Report done. LLM said: {summary.get('consensus_direction')} ({summary.get('confidence')}%)")
 
@@ -560,6 +548,88 @@ class DebateOrchestrator:
             "convergence_timeline": convergence_timeline,
             # Everything the user should know about what went right/wrong
             "events": self.run_events,
+        }
+
+    def _fallback_summary_from_thread(
+        self, thread: List[Dict], entities: List[Dict], bars: List[Dict], reason: str,
+    ) -> Dict[str, Any]:
+        """
+        Build a usable summary when Stage 5's LLM call fails or times out.
+        Previously we returned an empty NEUTRAL stub, which wiped out all the
+        debate data. This extracts what we can directly from the thread so
+        the user still gets real output:
+          - consensus from _compute_consensus (ground truth math)
+          - key_arguments from the top-N most-confident bullish messages
+          - dissenting_views from the top-N most-confident bearish messages
+          - price_targets from the median / spread of predicted prices
+          - current_price for recommendation anchoring
+        """
+        computed = self._compute_consensus(thread, entities)
+
+        # Pull excerpts from the most-influential bullish / bearish messages
+        bull_msgs = sorted(
+            [m for m in thread if float(m.get("sentiment", 0)) > 0.2],
+            key=lambda m: float(m.get("sentiment", 0)) * float(m.get("influence", 1.0)),
+            reverse=True,
+        )
+        bear_msgs = sorted(
+            [m for m in thread if float(m.get("sentiment", 0)) < -0.2],
+            key=lambda m: abs(float(m.get("sentiment", 0))) * float(m.get("influence", 1.0)),
+            reverse=True,
+        )
+
+        def _excerpt(m: Dict) -> str:
+            content = (m.get("content", "") or "").strip()
+            # First sentence or first 200 chars, whichever is shorter
+            if "." in content[:220]:
+                return content[: content.index(".") + 1].strip()
+            return content[:200].strip() + ("..." if len(content) > 200 else "")
+
+        key_arguments = [f"{m.get('entity_name', '?')}: {_excerpt(m)}" for m in bull_msgs[:5]]
+        dissenting = [f"{m.get('entity_name', '?')}: {_excerpt(m)}" for m in bear_msgs[:3]]
+
+        # Price targets from predictions in the thread
+        preds: List[float] = []
+        for m in thread:
+            p = m.get("price_prediction")
+            if isinstance(p, (int, float)) and p > 0:
+                preds.append(float(p))
+        if preds:
+            preds.sort()
+            low = preds[0]
+            high = preds[-1]
+            mid = preds[len(preds) // 2]
+            price_targets = {"low": round(low, 2), "mid": round(mid, 2), "high": round(high, 2)}
+        else:
+            cur = float(bars[-1]["close"]) if bars else 0
+            price_targets = {"low": cur * 0.95, "mid": cur, "high": cur * 1.05}
+
+        # Recommendation based on computed consensus
+        cur_price = float(bars[-1]["close"]) if bars else 0
+        direction = computed["direction"]
+        action = "BUY" if direction == "BULLISH" else "SELL" if direction == "BEARISH" else "HOLD"
+        recommendation: Dict[str, Any] = {"action": action}
+        if cur_price and direction != "NEUTRAL":
+            recommendation["entry"] = round(cur_price, 2)
+            if direction == "BULLISH":
+                recommendation["target"] = price_targets["high"]
+                recommendation["stop"] = round(cur_price * 0.95, 2)
+            else:
+                recommendation["target"] = price_targets["low"]
+                recommendation["stop"] = round(cur_price * 1.05, 2)
+
+        return {
+            "consensus_direction": computed["direction"],
+            "confidence": computed["confidence"],
+            "key_arguments": key_arguments,
+            "dissenting_views": dissenting,
+            "price_targets": price_targets,
+            "risk_factors": [
+                f"Auto-generated fallback (Stage 5 failed: {reason}). "
+                "The LLM report was skipped — numbers below are computed directly from the debate.",
+            ],
+            "recommendation": recommendation,
+            "conviction_shifts": [],
         }
 
     def _compute_consensus(self, thread: list, entities: list) -> dict:

@@ -1477,6 +1477,15 @@ class ReACTReportAgent:
                 "conviction_shifts": [],
             }
 
+        # Token budget: 4500 is enough for a detailed multi-section report
+        # and cuts generation time roughly in half vs 8000. Each provider
+        # generates at ~50-100 tokens/sec, so 4500 is ~45-90s wall-clock —
+        # well under our per-call timeout.
+        #
+        # timeout_s=240 overrides the default 90s LLM_CALL_TIMEOUT_S because
+        # this single call legitimately produces several thousand tokens and
+        # can take 60-120s end-to-end on slower providers. Without the
+        # override the retry loop would fire mid-generation and waste budget.
         result = chat_completion_json(
             system_prompt=prompt,
             user_message=(
@@ -1486,7 +1495,8 @@ class ReACTReportAgent:
                 "Reference actual price levels from the data."
             ),
             temperature=0.3,
-            max_tokens=8000,
+            max_tokens=4500,
+            timeout_s=240.0,
         )
         result.setdefault("consensus_direction", "NEUTRAL")
         result.setdefault("confidence", 50)

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vibe-trade"
-version = "0.4.0"
+version = "0.4.1"
 description = "AI-powered trading agent platform — skill-based architecture with planner, pattern detection, strategy backtesting, and multi-agent simulation debates."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -38,8 +38,11 @@ dependencies = [
     "numpy>=1.24",
     "yfinance>=0.2",
     "ccxt>=4.0",
-    # Web research (swarm agent tools)
-    "duckduckgo-search>=7.0",
+    # Web research (swarm agent tools). `ddgs` is the maintained successor
+    # to `duckduckgo-search` (the old name emits a deprecation warning on
+    # every call). `swarm_tools.web_search` falls back to the old package
+    # if only it is installed, so existing checkouts keep working.
+    "ddgs>=9.0",
     "beautifulsoup4>=4.12",
     "pypdf2>=3.0",
     "requests>=2.31",
