@@ -49,26 +49,65 @@ export function RunStatsTab() {
       ]);
 
       const element = reportRef.current;
-      // Expand all <details> elements for the PDF so nothing is hidden
+
+      // Expand all <details> elements so nothing is hidden in the PDF
       const detailsEls = Array.from(element.querySelectorAll("details"));
       const originalStates = detailsEls.map((d) => d.open);
       detailsEls.forEach((d) => { d.open = true; });
 
-      // Small delay to let the DOM reflow
-      await new Promise((r) => setTimeout(r, 100));
+      // Force the container and ALL its scrollable ancestors to show full
+      // content. html2canvas only captures visible content — with overflow:auto
+      // + fixed height, it only gets the viewport. We temporarily override
+      // these styles, clone-less via direct mutation, then restore.
+      const restoreFns: Array<() => void> = [];
+      let el: HTMLElement | null = element;
+      while (el && el !== document.body) {
+        const styles: Partial<CSSStyleDeclaration> = {
+          height: el.style.height,
+          maxHeight: el.style.maxHeight,
+          overflow: el.style.overflow,
+          overflowY: el.style.overflowY,
+          overflowX: el.style.overflowX,
+        };
+        const elRef = el;
+        restoreFns.push(() => {
+          elRef.style.height = styles.height || "";
+          elRef.style.maxHeight = styles.maxHeight || "";
+          elRef.style.overflow = styles.overflow || "";
+          elRef.style.overflowY = styles.overflowY || "";
+          elRef.style.overflowX = styles.overflowX || "";
+        });
+        el.style.height = "auto";
+        el.style.maxHeight = "none";
+        el.style.overflow = "visible";
+        el.style.overflowY = "visible";
+        el.style.overflowX = "visible";
+        el = el.parentElement;
+      }
 
+      // Let the DOM reflow so we get the full scroll height
+      await new Promise((r) => setTimeout(r, 150));
+
+      // Now capture — html2canvas will see the entire report
       const canvas = await html2canvas(element, {
         scale: 2,
         backgroundColor: "#0d0d10",
         useCORS: true,
         allowTaint: true,
         logging: false,
+        scrollX: 0,
+        scrollY: 0,
+        windowWidth: element.scrollWidth,
+        windowHeight: element.scrollHeight,
+        width: element.scrollWidth,
+        height: element.scrollHeight,
       });
 
-      // Restore details states
+      // Restore original styles + details states
+      restoreFns.forEach((fn) => fn());
       detailsEls.forEach((d, i) => { d.open = originalStates[i]; });
 
-      const imgData = canvas.toDataURL("image/png");
+      // Build multi-page PDF: slice the canvas into A4-sized chunks
       const pdf = new jsPDF({
         orientation: "portrait",
         unit: "mm",
@@ -76,24 +115,39 @@ export function RunStatsTab() {
       });
       const pdfWidth = pdf.internal.pageSize.getWidth();
       const pdfHeight = pdf.internal.pageSize.getHeight();
-      const imgWidth = pdfWidth - 10;
-      const imgHeight = (canvas.height * imgWidth) / canvas.width;
+      const margin = 5;
+      const contentWidth = pdfWidth - margin * 2;
+      const contentHeight = pdfHeight - margin * 2;
 
-      // Multi-page if content is taller than one A4 page
-      let heightLeft = imgHeight;
-      let position = 5;
+      // Scale factor from canvas px → mm on page
+      const scale = contentWidth / canvas.width;
 
-      pdf.addImage(imgData, "PNG", 5, position, imgWidth, imgHeight);
-      heightLeft -= (pdfHeight - 10);
+      // How much canvas height fits on one page (in canvas px)?
+      const pagePxHeight = contentHeight / scale;
 
-      while (heightLeft > 0) {
-        position = -(imgHeight - heightLeft) - 5;
-        pdf.addPage();
-        pdf.addImage(imgData, "PNG", 5, position, imgWidth, imgHeight);
-        heightLeft -= (pdfHeight - 10);
+      let offsetY = 0;
+      let pageNum = 0;
+      while (offsetY < canvas.height) {
+        if (pageNum > 0) pdf.addPage();
+        const sliceHeight = Math.min(pagePxHeight, canvas.height - offsetY);
+        // Create a temporary canvas for this slice
+        const sliceCanvas = document.createElement("canvas");
+        sliceCanvas.width = canvas.width;
+        sliceCanvas.height = sliceHeight;
+        const ctx = sliceCanvas.getContext("2d");
+        if (ctx) {
+          // Fill with dark background so the slice is consistent
+          ctx.fillStyle = "#0d0d10";
+          ctx.fillRect(0, 0, sliceCanvas.width, sliceCanvas.height);
+          ctx.drawImage(canvas, 0, offsetY, canvas.width, sliceHeight, 0, 0, canvas.width, sliceHeight);
+        }
+        const sliceData = sliceCanvas.toDataURL("image/png");
+        pdf.addImage(sliceData, "PNG", margin, margin, contentWidth, sliceHeight * scale);
+        offsetY += sliceHeight;
+        pageNum++;
       }
 
-      const assetName = (debate.assetName || debate.symbol || "asset").replace(/\s+/g, "_");
+      const assetName = (debate.assetName || debate.symbol || "asset").replace(/[^a-zA-Z0-9_-]/g, "_");
       const date = new Date().toISOString().slice(0, 10);
       pdf.save(`swarm_debate_${assetName}_${date}.pdf`);
     } catch (err) {
