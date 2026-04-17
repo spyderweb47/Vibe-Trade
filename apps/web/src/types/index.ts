@@ -325,6 +325,11 @@ export interface EntityProfile {
   background: string;
   bias: string;
   personality: string;
+  // Extended metadata (previously hidden)
+  stance?: string;              // bull / bear / neutral / observer
+  influence?: number;           // 0.5 - 3.0
+  specialization?: string;      // technical / macro / fundamental / etc.
+  tools?: string[];             // assigned tool names
 }
 
 export interface DiscussionMessage {
@@ -381,6 +386,32 @@ export interface CrossExamResult {
   newSentiment?: number | null;
 }
 
+export interface MarketContext {
+  marketRegime?: string;
+  keyPriceLevels?: {
+    strongResistance?: number[];
+    strongSupport?: number[];
+    recentPivot?: string | number;
+  };
+  technicalSignals?: string[];
+  volumeAnalysis?: string;
+  keyThemes?: string[];
+  riskEvents?: string[];
+}
+
+export interface AgentResearchFinding {
+  iteration: number;
+  query: string;
+  reasoning: string;
+  tool: string;
+  result: string;
+}
+
+export interface ConvergenceDataPoint {
+  round: number;
+  sentiment: number;
+}
+
 export interface SimulationDebate {
   id: string;
   datasetId: string;
@@ -397,4 +428,8 @@ export interface SimulationDebate {
   // Pipeline-rich data
   intelBriefing?: IntelBriefing;
   crossExamResults?: CrossExamResult[];
+  marketContext?: MarketContext;
+  dataFeeds?: Record<string, string>;                       // general/technical/volume/quant/macro/structure
+  agentResearch?: Record<string, AgentResearchFinding[]>;   // entityId → findings
+  convergenceTimeline?: ConvergenceDataPoint[];
 }

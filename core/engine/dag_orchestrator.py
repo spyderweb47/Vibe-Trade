@@ -384,14 +384,30 @@ class DebateOrchestrator:
 
         self._log("complete", f"Pipeline done. {len(entities)} agents, {round_num} rounds, {len(thread)} messages.")
 
+        # Build the convergence timeline for UI charting
+        convergence_timeline = [
+            {"round": i + 1, "sentiment": s} for i, s in enumerate(sentiments_by_round)
+        ]
+
+        # Flatten agent_research dict to serializable form
+        agent_research_out: Dict[str, List[Dict[str, Any]]] = {}
+        for eid, res in agent_research.items():
+            if res and res.get("findings"):
+                agent_research_out[eid] = res["findings"]
+
         return {
             "asset_info": asset_info,
             "entities": entities,
             "thread": thread,
             "total_rounds": round_num + (1 if cross_exam_results else 0),
             "summary": summary,
-            "intel_briefing": intel_briefing,       # Include for UI display
-            "cross_exam_results": cross_exam_results,  # Include for UI display
+            "intel_briefing": intel_briefing,
+            "cross_exam_results": cross_exam_results,
+            # New: expose previously-hidden pipeline data
+            "market_context": context,
+            "data_feeds": data_feeds,
+            "agent_research": agent_research_out,
+            "convergence_timeline": convergence_timeline,
         }
 
     def _compute_consensus(self, thread: list, entities: list) -> dict:

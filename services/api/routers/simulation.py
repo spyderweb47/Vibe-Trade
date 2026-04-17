@@ -41,6 +41,11 @@ class EntityResponse(BaseModel):
     background: str
     bias: str
     personality: str
+    # Extended metadata (previously dropped in response)
+    stance: Optional[str] = None              # bull / bear / neutral / observer
+    influence: Optional[float] = None         # 0.5 - 3.0
+    specialization: Optional[str] = None      # technical / macro / fundamental / etc.
+    tools: List[str] = []                     # Tools this entity can use
 
 
 class DiscussionMessageResponse(BaseModel):
@@ -77,6 +82,29 @@ class AssetInfoResponse(BaseModel):
     price_drivers: List[str]
 
 
+class MarketContextResponse(BaseModel):
+    """Stage 1 output — structured knowledge from the OHLC data."""
+    market_regime: Optional[str] = None
+    key_price_levels: Dict[str, Any] = {}      # {strong_resistance, strong_support, recent_pivot}
+    technical_signals: List[str] = []
+    volume_analysis: Optional[str] = None
+    key_themes: List[str] = []
+    risk_events: List[str] = []
+
+
+class AgentResearchFinding(BaseModel):
+    iteration: int
+    query: str
+    reasoning: str
+    tool: str
+    result: str
+
+
+class ConvergenceDataPoint(BaseModel):
+    round: int
+    sentiment: float
+
+
 class DebateResponse(BaseModel):
     debate_id: str
     asset_info: AssetInfoResponse
@@ -86,6 +114,13 @@ class DebateResponse(BaseModel):
     summary: SummaryResponse
     bars_analyzed: int
     symbol: str
+    # Extended pipeline data (previously not exposed)
+    market_context: Optional[MarketContextResponse] = None
+    data_feeds: Dict[str, str] = {}            # general, technical, volume, quant, macro, structure
+    agent_research: Dict[str, List[AgentResearchFinding]] = {}  # entity_id -> findings
+    convergence_timeline: List[ConvergenceDataPoint] = []       # per-round sentiment
+    intel_briefing: Dict[str, Any] = {}        # full intel briefing
+    cross_exam_results: List[Dict[str, Any]] = []  # full cross-exam results
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +195,38 @@ async def run_debate(request: DebateRequest) -> DebateResponse:
     results = await orchestrator.run(bars, symbol, report_text=request.context or "")
 
     ai = results["asset_info"]
+    ctx = results.get("market_context", {}) or {}
+
+    # Build market_context response
+    market_context_response = MarketContextResponse(
+        market_regime=ctx.get("market_regime"),
+        key_price_levels=ctx.get("key_price_levels", {}),
+        technical_signals=ctx.get("technical_signals", []),
+        volume_analysis=ctx.get("volume_analysis"),
+        key_themes=ctx.get("key_themes", []),
+        risk_events=ctx.get("risk_events", []),
+    )
+
+    # Convert agent_research findings to Pydantic models
+    agent_research: Dict[str, List[AgentResearchFinding]] = {}
+    for eid, findings in (results.get("agent_research", {}) or {}).items():
+        agent_research[eid] = [
+            AgentResearchFinding(
+                iteration=f.get("iteration", 0),
+                query=f.get("query", ""),
+                reasoning=f.get("reasoning", ""),
+                tool=f.get("tool", ""),
+                result=f.get("result", "")[:3000],  # Cap length
+            )
+            for f in findings
+        ]
+
+    # Convergence timeline
+    convergence = [
+        ConvergenceDataPoint(round=p.get("round", 0), sentiment=p.get("sentiment", 0))
+        for p in (results.get("convergence_timeline", []) or [])
+    ]
+
     return DebateResponse(
         debate_id=str(uuid.uuid4()),
         asset_info=AssetInfoResponse(
@@ -168,13 +235,25 @@ async def run_debate(request: DebateRequest) -> DebateResponse:
             description=ai.get("description", ""),
             price_drivers=ai.get("price_drivers", []),
         ),
-        entities=[EntityResponse(**e) for e in results["entities"]],
+        entities=[
+            EntityResponse(
+                id=e.get("id", ""),
+                name=e.get("name", ""),
+                role=e.get("role", ""),
+                background=e.get("background", ""),
+                bias=e.get("bias", "neutral"),
+                personality=e.get("personality", ""),
+                stance=e.get("stance"),
+                influence=e.get("influence"),
+                specialization=e.get("specialization"),
+                tools=e.get("tools", []),
+            )
+            for e in results["entities"]
+        ],
         thread=[DiscussionMessageResponse(**_sanitize_message(m)) for m in results["thread"]],
         total_rounds=results["total_rounds"],
         summary=SummaryResponse(
             consensus_direction=results["summary"].get("consensus_direction", "NEUTRAL"),
-            # Normalize confidence to 0-100 scale. The LLM may return 0.72
-            # (0-1 scale) or 72 (0-100 scale) depending on the model.
             confidence=_normalize_confidence(results["summary"].get("confidence", 50)),
             key_arguments=results["summary"].get("key_arguments", []),
             dissenting_views=results["summary"].get("dissenting_views", []),
@@ -184,6 +263,12 @@ async def run_debate(request: DebateRequest) -> DebateResponse:
         ),
         bars_analyzed=len(bars),
         symbol=symbol,
+        market_context=market_context_response,
+        data_feeds=results.get("data_feeds", {}),
+        agent_research=agent_research,
+        convergence_timeline=convergence,
+        intel_briefing=results.get("intel_briefing", {}),
+        cross_exam_results=results.get("cross_exam_results", []),
     )
 
 

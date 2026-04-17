@@ -27,6 +27,7 @@ export function AgentDetailPanel({ agentId, onBack }: Props) {
   const entity = debate?.entities.find((e) => e.id === agentId);
   const messages = (debate?.thread || []).filter((m) => m.entityId === agentId);
   const crossExam = (debate?.crossExamResults || []).find((c) => c.entityId === agentId);
+  const researchFindings = (debate?.agentResearch?.[agentId] || []);
   const interviewHistory = agentInterviews[agentId] || [];
   const isLoading = agentInterviewLoading.has(agentId);
 
@@ -133,8 +134,28 @@ export function AgentDetailPanel({ agentId, onBack }: Props) {
           <div className="text-[10px]" style={{ color: "var(--accent)" }}>{entity.role}</div>
         </div>
         <div className="text-right text-[9px]" style={{ color: "var(--text-muted)" }}>
-          <div>{messages.length} messages</div>
-          <div>Bias: <span style={{ color: "var(--text-secondary)" }}>{entity.bias}</span></div>
+          <div>{messages.length} messages · {researchFindings.length} queries</div>
+          <div className="flex items-center justify-end gap-2">
+            <span>Bias: <span style={{ color: "var(--text-secondary)" }}>{entity.bias}</span></span>
+            {entity.specialization && (
+              <span>· <span style={{ color: "var(--accent)" }}>{entity.specialization}</span></span>
+            )}
+          </div>
+          {(entity.stance || entity.influence != null) && (
+            <div className="mt-0.5 flex items-center justify-end gap-2">
+              {entity.stance && (
+                <span className="rounded px-1.5 py-0.5 text-[8px] font-bold uppercase" style={{
+                  background: entity.stance === "bull" ? "rgba(34,197,94,0.15)" : entity.stance === "bear" ? "rgba(239,68,68,0.15)" : entity.stance === "observer" ? "rgba(139,92,246,0.15)" : "var(--surface)",
+                  color: entity.stance === "bull" ? "#22c55e" : entity.stance === "bear" ? "#ef4444" : entity.stance === "observer" ? "#8b5cf6" : "var(--text-muted)",
+                }}>{entity.stance}</span>
+              )}
+              {entity.influence != null && (
+                <span className="rounded px-1.5 py-0.5 text-[8px] font-mono" style={{ background: "var(--surface)", color: "var(--accent)" }}>
+                  inf {entity.influence.toFixed(1)}x
+                </span>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -216,6 +237,43 @@ export function AgentDetailPanel({ agentId, onBack }: Props) {
             <p className="text-[10px] leading-relaxed" style={{ color: "var(--text-secondary)" }}>
               {crossExam.response}
             </p>
+          </div>
+        )}
+
+        {/* Research Trail — iterative queries this agent made before the debate */}
+        {researchFindings.length > 0 && (
+          <div>
+            <div className="text-[9px] font-bold uppercase tracking-wider mb-2" style={{ color: "var(--accent)" }}>
+              Research Trail ({researchFindings.length} queries)
+            </div>
+            <div className="space-y-2">
+              {researchFindings.map((f) => (
+                <div key={f.iteration} className="rounded-lg p-2.5" style={{ background: "var(--surface-2)", border: "1px solid rgba(255,107,0,0.2)" }}>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="rounded px-1.5 py-0.5 text-[8px] font-bold" style={{ background: "rgba(255,107,0,0.15)", color: "var(--accent)" }}>
+                      Q{f.iteration}
+                    </span>
+                    <span className="text-[9px] font-mono" style={{ color: "var(--text-muted)" }}>{f.tool}</span>
+                  </div>
+                  <div className="mt-1 text-[10px] font-semibold" style={{ color: "var(--text-primary)" }}>
+                    {f.query}
+                  </div>
+                  {f.reasoning && (
+                    <div className="mt-1 text-[9px] italic" style={{ color: "var(--text-muted)" }}>
+                      Why: {f.reasoning}
+                    </div>
+                  )}
+                  <details className="mt-1.5">
+                    <summary className="cursor-pointer text-[9px] font-bold uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
+                      Result ({f.result.length} chars)
+                    </summary>
+                    <pre className="mt-1 whitespace-pre-wrap font-mono text-[9px] leading-snug p-1.5 rounded" style={{ background: "var(--surface)", color: "var(--text-secondary)", border: "1px solid var(--border-subtle)" }}>
+                      {f.result.slice(0, 2000)}
+                    </pre>
+                  </details>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 

@@ -276,6 +276,10 @@ const executors: Record<string, ToolExecutor> = {
       background: String(e.background || ""),
       bias: String(e.bias || ""),
       personality: String(e.personality || ""),
+      stance: e.stance ? String(e.stance) : undefined,
+      influence: e.influence != null ? Number(e.influence) : undefined,
+      specialization: e.specialization ? String(e.specialization) : undefined,
+      tools: (e.tools || []) as string[],
     }));
 
     const thread = ((d.thread || []) as Array<Record<string, unknown>>).map((m) => ({
@@ -327,6 +331,40 @@ const executors: Record<string, ToolExecutor> = {
       newSentiment: c.new_sentiment ?? c.newSentiment ?? null,
     }));
 
+    // Map market context (Stage 1 output)
+    const mc = d.market_context as Record<string, unknown> | undefined;
+    const marketContext = mc ? {
+      marketRegime: mc.market_regime ? String(mc.market_regime) : undefined,
+      keyPriceLevels: mc.key_price_levels ? {
+        strongResistance: ((mc.key_price_levels as Record<string, unknown>).strong_resistance || []) as number[],
+        strongSupport: ((mc.key_price_levels as Record<string, unknown>).strong_support || []) as number[],
+        recentPivot: (mc.key_price_levels as Record<string, unknown>).recent_pivot as string | number | undefined,
+      } : undefined,
+      technicalSignals: (mc.technical_signals || []) as string[],
+      volumeAnalysis: mc.volume_analysis ? String(mc.volume_analysis) : undefined,
+      keyThemes: (mc.key_themes || []) as string[],
+      riskEvents: (mc.risk_events || []) as string[],
+    } : undefined;
+
+    // Map agent research (per-agent iterative query findings)
+    const rawResearch = (d.agent_research || {}) as Record<string, Array<Record<string, unknown>>>;
+    const agentResearch: Record<string, Array<{iteration: number; query: string; reasoning: string; tool: string; result: string}>> = {};
+    for (const [eid, findings] of Object.entries(rawResearch)) {
+      agentResearch[eid] = (findings || []).map((f) => ({
+        iteration: Number(f.iteration || 0),
+        query: String(f.query || ""),
+        reasoning: String(f.reasoning || ""),
+        tool: String(f.tool || ""),
+        result: String(f.result || ""),
+      }));
+    }
+
+    // Map convergence timeline
+    const timeline = ((d.convergence_timeline || []) as Array<Record<string, unknown>>).map((p) => ({
+      round: Number(p.round || 0),
+      sentiment: Number(p.sentiment || 0),
+    }));
+
     const mapped = {
       id: String(d.debate_id || d.id || `debate_${Date.now()}`),
       datasetId: String(d.dataset_id || d.datasetId || ""),
@@ -352,6 +390,10 @@ const executors: Record<string, ToolExecutor> = {
       status: "complete" as const,
       intelBriefing,
       crossExamResults,
+      marketContext,
+      dataFeeds: (d.data_feeds || {}) as Record<string, string>,
+      agentResearch,
+      convergenceTimeline: timeline,
     };
 
     useStore.getState().setCurrentDebate(mapped as never);

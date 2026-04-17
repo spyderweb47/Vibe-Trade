@@ -28,6 +28,11 @@ export function RunStatsTab() {
   const brief = debate.intelBriefing;
   const crossExam = (debate.crossExamResults || []) as import("@/types").CrossExamResult[];
   const convictionShifts: string[] = summary.convictionShifts || [];
+  const marketContext = debate.marketContext;
+  const dataFeeds = debate.dataFeeds || {};
+  const timeline = debate.convergenceTimeline || [];
+  const agentResearch = debate.agentResearch || {};
+  const totalResearchQueries = Object.values(agentResearch).reduce((acc, arr) => acc + arr.length, 0);
 
   return (
     <div className="h-full overflow-y-auto p-3 space-y-3">
@@ -48,8 +53,93 @@ export function RunStatsTab() {
           <DataStatus label="Tech Indicators" has={!!brief?.rawFindings?.technicalIndicators} />
           <DataStatus label="Regulatory" has={!!brief?.rawFindings?.regulatory} />
           <DataStatus label="Market Analysis" has={!!brief?.rawFindings?.marketAnalysis} />
+          <DataStatus label="Market Context" has={!!marketContext?.marketRegime} />
+          <DataStatus label="Technical Signals" has={(marketContext?.technicalSignals?.length ?? 0) > 0} count={marketContext?.technicalSignals?.length} />
+          <DataStatus label="Key Themes" has={(marketContext?.keyThemes?.length ?? 0) > 0} count={marketContext?.keyThemes?.length} />
+          <DataStatus label="Risk Events" has={(marketContext?.riskEvents?.length ?? 0) > 0} count={marketContext?.riskEvents?.length} />
+          <DataStatus label="Data Feeds" has={Object.keys(dataFeeds).length > 0} count={Object.keys(dataFeeds).length} />
+          <DataStatus label="Agent Research" has={totalResearchQueries > 0} count={totalResearchQueries} />
+          <DataStatus label="Convergence Timeline" has={timeline.length > 0} count={timeline.length} />
         </div>
       </div>
+
+      {/* Market Context (Stage 1 output — previously hidden) */}
+      {marketContext && (
+        <Card title="Market Context (Stage 1)" accent>
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+            {marketContext.marketRegime && (
+              <div>
+                <div className="text-[9px] font-bold uppercase tracking-wider mb-1" style={{ color: "var(--text-muted)" }}>Market Regime</div>
+                <div className="text-[11px] font-bold" style={{ color: dirColor }}>{marketContext.marketRegime}</div>
+              </div>
+            )}
+            {marketContext.volumeAnalysis && (
+              <div>
+                <div className="text-[9px] font-bold uppercase tracking-wider mb-1" style={{ color: "var(--text-muted)" }}>Volume Analysis</div>
+                <div className="text-[10px]" style={{ color: "var(--text-secondary)" }}>{marketContext.volumeAnalysis}</div>
+              </div>
+            )}
+            {marketContext.keyPriceLevels && (
+              <div className="lg:col-span-2">
+                <div className="text-[9px] font-bold uppercase tracking-wider mb-1" style={{ color: "var(--text-muted)" }}>Key Price Levels</div>
+                <div className="flex gap-3 text-[10px]">
+                  {marketContext.keyPriceLevels.strongResistance && marketContext.keyPriceLevels.strongResistance.length > 0 && (
+                    <span><span style={{ color: "#ef4444" }}>Resistance:</span> {marketContext.keyPriceLevels.strongResistance.map(n => `$${Number(n).toLocaleString()}`).join(", ")}</span>
+                  )}
+                  {marketContext.keyPriceLevels.strongSupport && marketContext.keyPriceLevels.strongSupport.length > 0 && (
+                    <span><span style={{ color: "#22c55e" }}>Support:</span> {marketContext.keyPriceLevels.strongSupport.map(n => `$${Number(n).toLocaleString()}`).join(", ")}</span>
+                  )}
+                </div>
+              </div>
+            )}
+            {marketContext.technicalSignals && marketContext.technicalSignals.length > 0 && (
+              <div>
+                <div className="text-[9px] font-bold uppercase tracking-wider mb-1" style={{ color: "var(--text-muted)" }}>Technical Signals</div>
+                <ul className="space-y-0.5 text-[10px]" style={{ color: "var(--text-secondary)" }}>
+                  {marketContext.technicalSignals.map((s, i) => <li key={i}>• {s}</li>)}
+                </ul>
+              </div>
+            )}
+            {marketContext.keyThemes && marketContext.keyThemes.length > 0 && (
+              <div>
+                <div className="text-[9px] font-bold uppercase tracking-wider mb-1" style={{ color: "var(--text-muted)" }}>Key Themes</div>
+                <div className="flex flex-wrap gap-1">
+                  {marketContext.keyThemes.map((t, i) => (
+                    <span key={i} className="rounded px-1.5 py-0.5 text-[9px]" style={{ background: "var(--surface)", color: "var(--text-secondary)", border: "1px solid var(--border)" }}>{t}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {marketContext.riskEvents && marketContext.riskEvents.length > 0 && (
+              <div className="lg:col-span-2">
+                <div className="text-[9px] font-bold uppercase tracking-wider mb-1" style={{ color: "var(--text-muted)" }}>Risk Events</div>
+                <ul className="space-y-0.5 text-[10px]" style={{ color: "var(--text-secondary)" }}>
+                  {marketContext.riskEvents.map((r, i) => <li key={i} className="flex gap-1"><span style={{ color: "#f59e0b" }}>!</span>{r}</li>)}
+                </ul>
+              </div>
+            )}
+          </div>
+        </Card>
+      )}
+
+      {/* Convergence Timeline (sentiment per round) */}
+      {timeline.length > 0 && (
+        <Card title={`Sentiment Convergence (${timeline.length} rounds)`}>
+          <ConvergenceChart timeline={timeline} />
+        </Card>
+      )}
+
+      {/* Agent Research Summary */}
+      {totalResearchQueries > 0 && (
+        <Card title={`Iterative Research (${totalResearchQueries} queries across ${Object.keys(agentResearch).length} agents)`} accent>
+          <div className="text-[10px]" style={{ color: "var(--text-secondary)" }}>
+            Agents did deep research before the debate. Click any persona card in the Personalities tab to see each agent's full research trail with query reasoning and findings.
+          </div>
+          <div className="mt-2 text-[9px]" style={{ color: "var(--text-muted)" }}>
+            Average per agent: {(totalResearchQueries / Object.keys(agentResearch).length).toFixed(1)} queries
+          </div>
+        </Card>
+      )}
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         <Card title="Consensus">
           <div className="flex items-baseline gap-3">
@@ -338,6 +428,46 @@ function Card({ title, accent, children }: { title: string; accent?: boolean; ch
         {title}
       </div>
       {children}
+    </div>
+  );
+}
+
+function ConvergenceChart({ timeline }: { timeline: Array<{ round: number; sentiment: number }> }) {
+  if (timeline.length === 0) return null;
+  const width = 400;
+  const height = 80;
+  const padding = 10;
+  const minSent = -1;
+  const maxSent = 1;
+  const xStep = (width - padding * 2) / Math.max(1, timeline.length - 1);
+  const points = timeline.map((p, i) => {
+    const x = padding + i * xStep;
+    const y = height - padding - ((p.sentiment - minSent) / (maxSent - minSent)) * (height - padding * 2);
+    return `${x},${y}`;
+  }).join(" ");
+  const zeroY = height - padding - ((0 - minSent) / (maxSent - minSent)) * (height - padding * 2);
+  return (
+    <div className="overflow-x-auto">
+      <svg width={width} height={height} className="block" style={{ minWidth: width }}>
+        {/* Zero line */}
+        <line x1={padding} y1={zeroY} x2={width - padding} y2={zeroY} stroke="var(--border)" strokeDasharray="2 2" />
+        {/* Sentiment line */}
+        <polyline points={points} fill="none" stroke="var(--accent)" strokeWidth={2} />
+        {/* Points */}
+        {timeline.map((p, i) => {
+          const x = padding + i * xStep;
+          const y = height - padding - ((p.sentiment - minSent) / (maxSent - minSent)) * (height - padding * 2);
+          const color = p.sentiment > 0.2 ? "#22c55e" : p.sentiment < -0.2 ? "#ef4444" : "var(--text-muted)";
+          return <circle key={i} cx={x} cy={y} r={3} fill={color} />;
+        })}
+        {/* Y-axis labels */}
+        <text x={2} y={padding + 4} fontSize={8} fill="var(--text-muted)">+1</text>
+        <text x={2} y={zeroY + 3} fontSize={8} fill="var(--text-muted)">0</text>
+        <text x={2} y={height - 2} fontSize={8} fill="var(--text-muted)">-1</text>
+      </svg>
+      <div className="mt-1 text-[9px]" style={{ color: "var(--text-muted)" }}>
+        Round {timeline[0]?.round} → Round {timeline[timeline.length - 1]?.round} · {timeline.length} data points
+      </div>
     </div>
   );
 }

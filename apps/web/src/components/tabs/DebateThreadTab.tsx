@@ -83,6 +83,20 @@ export function DebateThreadTab() {
                   Chart data injected
                 </span>
               )}
+              {msg.toolsUsed && msg.toolsUsed.length > 0 && (
+                <div className="flex gap-1 ml-auto">
+                  {msg.toolsUsed.map((t) => (
+                    <span
+                      key={t}
+                      className="rounded px-1.5 py-0.5 text-[8px] font-mono"
+                      style={{ background: "rgba(255,107,0,0.12)", color: "var(--accent)" }}
+                      title={msg.toolResults?.[t] || t}
+                    >
+                      {t}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         );
