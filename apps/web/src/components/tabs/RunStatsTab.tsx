@@ -209,8 +209,8 @@ export function RunStatsTab() {
       setText(includeThread ? ACCENT : MUTED);
       pdf.text(
         includeThread
-          ? "Report type: FULL — includes agent profiles and complete debate thread"
-          : "Report type: SUMMARY — agent profiles and debate thread omitted",
+          ? "Report type: FULL — includes cross-exams, agent profiles, and debate thread"
+          : "Report type: SUMMARY — cross-exams, agent profiles, and debate thread omitted",
         margin, y + 4,
       );
       y += 8;
@@ -365,8 +365,8 @@ export function RunStatsTab() {
         }
       }
 
-      // ─── Cross-Examination ────────────────────────────────────
-      if (crossExam.length) {
+      // ─── Cross-Examination (opt-in: per-agent Q&A) ────────────
+      if (includeThread && crossExam.length) {
         addHeading(`Cross-Examination (${crossExam.length} agents)`);
         crossExam.forEach((ex, i) => {
           if (i > 0) addDivider();
@@ -656,7 +656,7 @@ export function RunStatsTab() {
                 </div>
                 <div className="mt-0.5 text-[9px] leading-snug pl-5" style={{ color: "var(--text-muted)" }}>
                   Consensus, briefing, market context, data feeds,
-                  cross-exams, research trail. No agent profiles or
+                  research trail. No cross-exams, agent profiles, or
                   debate thread.
                 </div>
               </button>
@@ -686,9 +686,9 @@ export function RunStatsTab() {
                   </span>
                 </div>
                 <div className="mt-0.5 text-[9px] leading-snug pl-5" style={{ color: "var(--text-muted)" }}>
-                  Everything above plus full agent profiles and the
-                  complete debate thread — every message from every
-                  persona.
+                  Everything above plus cross-examinations, full agent
+                  profiles, and the complete debate thread — every
+                  message from every persona.
                 </div>
               </button>
             </div>
