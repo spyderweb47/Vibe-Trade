@@ -26,12 +26,11 @@ export function RunStatsTab() {
 
   const rec = (summary.recommendation || {}) as Record<string, unknown>;
   const brief = debate.intelBriefing;
-  const crossExam = debate.crossExamResults || [];
-  const convictionShifts = summary.convictionShifts || [];
+  const crossExam = (debate.crossExamResults || []) as import("@/types").CrossExamResult[];
+  const convictionShifts: string[] = summary.convictionShifts || [];
 
   return (
     <div className="h-full overflow-y-auto p-3 space-y-3">
-      {/* ── Pipeline Status Overview ── */}
       <div className="rounded-lg p-3" style={{ background: "var(--surface-2)", border: "1px solid var(--border)" }}>
         <div className="text-[9px] font-bold uppercase tracking-wider mb-2" style={{ color: "var(--text-muted)" }}>
           Pipeline Data Available
@@ -51,8 +50,6 @@ export function RunStatsTab() {
           <DataStatus label="Market Analysis" has={!!brief?.rawFindings?.marketAnalysis} />
         </div>
       </div>
-
-      {/* ── Top row: consensus + price targets ── */}
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         <Card title="Consensus">
           <div className="flex items-baseline gap-3">
@@ -93,8 +90,6 @@ export function RunStatsTab() {
           </Card>
         )}
       </div>
-
-      {/* ── Intelligence Briefing (from Stage 1.5) ── */}
       <Card title="Intelligence Briefing (Stage 1.5)" accent>
         {brief?.executiveSummary ? (
           <>
@@ -114,8 +109,6 @@ export function RunStatsTab() {
           </p>
         )}
       </Card>
-
-      {/* ── Bull vs Bear case (from intel briefing) ── */}
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         <Card title="Bull Case (Research)">
           {brief?.bullCase && brief.bullCase.length > 0 ? (
@@ -146,8 +139,6 @@ export function RunStatsTab() {
           )}
         </Card>
       </div>
-
-      {/* ── Key events from research ── */}
       {brief?.keyEvents && brief.keyEvents.length > 0 && (
         <Card title="Upcoming Events">
           <ul className="space-y-1.5">
@@ -160,8 +151,6 @@ export function RunStatsTab() {
           </ul>
         </Card>
       )}
-
-      {/* ── Debate consensus arguments ── */}
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         {summary.keyArguments && summary.keyArguments.length > 0 && (
           <Card title="Key Arguments (Debate)">
@@ -189,8 +178,6 @@ export function RunStatsTab() {
           </Card>
         )}
       </div>
-
-      {/* ── Cross-Examination Results (Stage 4) ── */}
       <Card title={`Cross-Examination (Stage 4) — ${crossExam.length} agents`} accent>
         {crossExam.length > 0 ? (
           <div className="space-y-2">
@@ -227,8 +214,6 @@ export function RunStatsTab() {
           </p>
         )}
       </Card>
-
-      {/* ── Conviction Shifts ── */}
       {convictionShifts.length > 0 && (
         <Card title="Conviction Shifts During Debate">
           <ul className="space-y-1.5">
@@ -241,8 +226,6 @@ export function RunStatsTab() {
           </ul>
         </Card>
       )}
-
-      {/* ── Risk Factors ── */}
       {summary.riskFactors && summary.riskFactors.length > 0 && (
         <Card title="Risk Factors">
           <ul className="space-y-1.5">
@@ -255,8 +238,6 @@ export function RunStatsTab() {
           </ul>
         </Card>
       )}
-
-      {/* ── Data points cited ── */}
       {brief?.dataPoints && brief.dataPoints.length > 0 && (
         <Card title="Key Data Points">
           <ul className="space-y-1 text-[10px] leading-snug" style={{ color: "var(--text-secondary)" }}>
@@ -266,9 +247,7 @@ export function RunStatsTab() {
           </ul>
         </Card>
       )}
-
-      {/* ── Trade Recommendation ── */}
-      {rec.action && (
+      {Boolean(rec.action) && (
         <Card title="Trade Recommendation" accent>
           <div className="mt-1">
             <span className="rounded px-2 py-1 text-[11px] font-bold uppercase" style={{ background: `${dirColor}22`, color: dirColor }}>
@@ -303,8 +282,6 @@ export function RunStatsTab() {
           </div>
         </Card>
       )}
-
-      {/* ── Raw Research Feeds (collapsible) ── */}
       {brief?.rawFindings && (
         <details className="rounded-lg" style={{ background: "var(--surface-2)", border: "1px solid var(--border)" }}>
           <summary className="cursor-pointer p-3 text-[9px] font-bold uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
