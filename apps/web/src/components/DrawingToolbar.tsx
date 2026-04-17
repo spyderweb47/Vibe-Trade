@@ -147,35 +147,22 @@ export function DrawingToolbar() {
             ? activeDrawingTool === null
             : activeDrawingTool === tool.key;
 
-        // Hero tool — Pattern Selector gets special treatment
+        // Hero tool — Pattern Selector gets a slightly larger button
+        // and a subtle idle tint so users can find it, but NO glow /
+        // pulsing animation once selected (too distracting).
         if (tool.hero) {
           return (
             <div key={tool.key}>
               <button
                 onClick={() => setActiveDrawingTool(tool.key as DrawingType)}
-                className="relative flex h-10 w-10 items-center justify-center rounded-lg transition-all"
+                className="flex h-10 w-10 items-center justify-center rounded-lg transition-colors"
                 style={{
-                  background: isActive
-                    ? "var(--accent)"
-                    : "rgba(255, 107, 0, 0.08)",
+                  background: isActive ? "var(--accent)" : "rgba(255, 107, 0, 0.08)",
                   color: isActive ? "#fff" : "#ff6b00",
-                  boxShadow: isActive
-                    ? "0 0 12px rgba(255, 107, 0, 0.5)"
-                    : "inset 0 0 0 1.5px rgba(255, 107, 0, 0.25)",
                 }}
                 title={tool.label}
               >
                 {tool.icon}
-                {isActive && (
-                  <span
-                    className="absolute inset-0 rounded-lg animate-ping"
-                    style={{
-                      border: "2px solid var(--accent)",
-                      opacity: 0.3,
-                      animationDuration: "1.5s",
-                    }}
-                  />
-                )}
               </button>
               {tool.separator && (
                 <div className="mx-1.5 my-1 h-px" style={{ background: "var(--border-subtle)" }} />
