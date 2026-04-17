@@ -412,6 +412,17 @@ export interface ConvergenceDataPoint {
   sentiment: number;
 }
 
+export interface RunEvent {
+  /** ISO-ish local timestamp from the backend (e.g. "2026-04-17T15:23:45"). */
+  timestamp: string;
+  /** info | warn | error */
+  level: 'info' | 'warn' | 'error';
+  /** stage1 / stage1.5 / stage2 / stage3 / stage4 / stage5 / complete. */
+  stage: string;
+  /** Human-readable description of what happened. */
+  message: string;
+}
+
 export interface SimulationDebate {
   id: string;
   datasetId: string;
@@ -432,4 +443,8 @@ export interface SimulationDebate {
   dataFeeds?: Record<string, string>;                       // general/technical/volume/quant/macro/structure
   agentResearch?: Record<string, AgentResearchFinding[]>;   // entityId → findings
   convergenceTimeline?: ConvergenceDataPoint[];
+  // Errors / timeouts / warnings emitted by the backend pipeline. Rendered
+  // as a prominent banner in Run Stats so the user can see what went wrong
+  // without opening server logs.
+  events?: RunEvent[];
 }

@@ -365,6 +365,15 @@ const executors: Record<string, ToolExecutor> = {
       sentiment: Number(p.sentiment || 0),
     }));
 
+    // Map run events (errors / timeouts / warnings from backend)
+    const rawEvents = (d.events || []) as Array<Record<string, unknown>>;
+    const events = rawEvents.map((e) => ({
+      timestamp: String(e.timestamp || ""),
+      level: (String(e.level || "info") as "info" | "warn" | "error"),
+      stage: String(e.stage || ""),
+      message: String(e.message || ""),
+    }));
+
     const mapped = {
       id: String(d.debate_id || d.id || `debate_${Date.now()}`),
       datasetId: String(d.dataset_id || d.datasetId || ""),
@@ -394,6 +403,7 @@ const executors: Record<string, ToolExecutor> = {
       dataFeeds: (d.data_feeds || {}) as Record<string, string>,
       agentResearch,
       convergenceTimeline: timeline,
+      events,
     };
 
     useStore.getState().setCurrentDebate(mapped as never);

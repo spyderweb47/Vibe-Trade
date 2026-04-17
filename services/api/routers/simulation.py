@@ -107,6 +107,17 @@ class ConvergenceDataPoint(BaseModel):
     sentiment: float
 
 
+class RunEvent(BaseModel):
+    """A notable event during the debate run (error, timeout, warning).
+    Surfaced to the UI so the user can see what happened without reading
+    server logs.
+    """
+    timestamp: str                              # "2026-04-17T15:23:45"
+    level: str                                  # info | warn | error
+    stage: str                                  # stage1 / stage1.5 / stage2 / stage3 / stage4 / stage5
+    message: str                                # human-readable description
+
+
 class DebateResponse(BaseModel):
     debate_id: str
     asset_info: AssetInfoResponse
@@ -123,6 +134,8 @@ class DebateResponse(BaseModel):
     convergence_timeline: List[ConvergenceDataPoint] = []       # per-round sentiment
     intel_briefing: Dict[str, Any] = {}        # full intel briefing
     cross_exam_results: List[Dict[str, Any]] = []  # full cross-exam results
+    # Errors / timeouts / warnings that fired during the run
+    events: List[RunEvent] = []
 
 
 # ---------------------------------------------------------------------------
@@ -206,14 +219,52 @@ async def run_debate(request: DebateRequest) -> DebateResponse:
             timeout=debate_timeout_s,
         )
     except asyncio.TimeoutError:
+        # Include whatever events were accumulated before the stall so the
+        # user has context. The orchestrator instance still has them on
+        # self.run_events even though run() never returned.
+        partial_events = [
+            {
+                "timestamp": e.get("timestamp", ""),
+                "level": e.get("level", "info"),
+                "stage": e.get("stage", ""),
+                "message": e.get("message", ""),
+            }
+            for e in (orchestrator.run_events or [])
+        ]
         raise HTTPException(
             status_code=504,
-            detail=(
-                f"Debate exceeded {debate_timeout_s}s wall-clock budget. "
-                "This usually means the LLM provider is stalling — check "
-                "server logs for [llm_client] retry messages, and consider "
-                "reducing MAX_ROUNDS or SPEAKERS_PER_ROUND."
-            ),
+            detail={
+                "error": "debate_timeout",
+                "message": (
+                    f"Debate exceeded {debate_timeout_s}s ({debate_timeout_s//60} min) "
+                    "wall-clock budget. The LLM provider is likely stalling or "
+                    "rate-limiting. Try a smaller dataset or retry in a few minutes."
+                ),
+                "timeout_seconds": debate_timeout_s,
+                "events": partial_events,
+            },
+        )
+    except Exception as err:  # noqa: BLE001
+        # Any other unhandled failure inside the pipeline — surface events +
+        # error details so the user can see what went wrong.
+        import traceback
+        traceback.print_exc()
+        partial_events = [
+            {
+                "timestamp": e.get("timestamp", ""),
+                "level": e.get("level", "info"),
+                "stage": e.get("stage", ""),
+                "message": e.get("message", ""),
+            }
+            for e in (orchestrator.run_events or [])
+        ]
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "debate_failed",
+                "message": f"{type(err).__name__}: {str(err)[:500]}",
+                "events": partial_events,
+            },
         )
 
     ai = results["asset_info"]
@@ -291,6 +342,15 @@ async def run_debate(request: DebateRequest) -> DebateResponse:
         convergence_timeline=convergence,
         intel_briefing=results.get("intel_briefing", {}),
         cross_exam_results=results.get("cross_exam_results", []),
+        events=[
+            RunEvent(
+                timestamp=e.get("timestamp", ""),
+                level=e.get("level", "info"),
+                stage=e.get("stage", ""),
+                message=e.get("message", ""),
+            )
+            for e in (results.get("events", []) or [])
+        ],
     )
 
 

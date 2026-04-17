@@ -34,6 +34,9 @@ export function RunStatsTab() {
   const timeline = debate.convergenceTimeline || [];
   const agentResearch = debate.agentResearch || {};
   const totalResearchQueries = Object.values(agentResearch).reduce((acc, arr) => acc + arr.length, 0);
+  const runEvents = debate.events || [];
+  const errorEvents = runEvents.filter((e) => e.level === "error");
+  const warnEvents = runEvents.filter((e) => e.level === "warn");
 
   const [exporting, setExporting] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -266,6 +269,24 @@ export function RunStatsTab() {
       if (convictionShifts.length) {
         addHeading("Conviction Shifts During Debate");
         convictionShifts.forEach((s) => addBullet(s));
+      }
+
+      // ─── Run Warnings / Errors ─────────────────────────────────
+      // If anything unusual happened during the run (agent timeouts,
+      // cross-exam failure, etc.), surface it here so the reader knows
+      // what the numbers were computed from.
+      if (errorEvents.length > 0 || warnEvents.length > 0) {
+        addHeading(
+          `Run Warnings (${errorEvents.length} error${errorEvents.length === 1 ? "" : "s"}, ${warnEvents.length} warning${warnEvents.length === 1 ? "" : "s"})`,
+        );
+        addParagraph(
+          "The pipeline completed but some steps did not finish normally. " +
+          "These are the issues recorded during this run:",
+        );
+        [...errorEvents, ...warnEvents].forEach((ev) => {
+          const tag = `[${ev.level.toUpperCase()}] ${ev.stage}${ev.timestamp ? ` @ ${ev.timestamp.slice(11, 19)}` : ""}`;
+          addKV(tag, ev.message, ev.level === "error" ? BEAR : [200, 130, 30]);
+        });
       }
 
       // ─── Intelligence Briefing ────────────────────────────────
@@ -696,6 +717,13 @@ export function RunStatsTab() {
         </div>
       </div>
 
+      {/* Errors / timeouts / warnings from the backend pipeline.
+          Surfaced prominently so the user knows exactly what went wrong
+          without having to read server logs. */}
+      {(errorEvents.length > 0 || warnEvents.length > 0) && (
+        <EventsBanner errors={errorEvents} warnings={warnEvents} />
+      )}
+
       <div className="rounded-lg p-3" style={{ background: "var(--surface-2)", border: "1px solid var(--border)" }}>
         <div className="text-[9px] font-bold uppercase tracking-wider mb-2" style={{ color: "var(--text-muted)" }}>
           Pipeline Data Available
@@ -1071,6 +1099,104 @@ export function RunStatsTab() {
           </div>
         </details>
       )}
+    </div>
+  );
+}
+
+/**
+ * Banner that surfaces errors/timeouts/warnings from the backend pipeline
+ * so the user immediately knows something went wrong, without needing to
+ * read server logs. Errors get a red card, warnings an amber card.
+ */
+function EventsBanner({
+  errors,
+  warnings,
+}: {
+  errors: import("@/types").RunEvent[];
+  warnings: import("@/types").RunEvent[];
+}) {
+  const hasErrors = errors.length > 0;
+  const hue = hasErrors ? "#ef4444" : "#f59e0b";
+  const bg = hasErrors ? "rgba(239, 68, 68, 0.08)" : "rgba(245, 158, 11, 0.08)";
+  const border = hasErrors ? "rgba(239, 68, 68, 0.35)" : "rgba(245, 158, 11, 0.35)";
+  const title = hasErrors
+    ? `Run finished with ${errors.length} error${errors.length === 1 ? "" : "s"}${
+        warnings.length ? ` and ${warnings.length} warning${warnings.length === 1 ? "" : "s"}` : ""
+      }`
+    : `Run finished with ${warnings.length} warning${warnings.length === 1 ? "" : "s"}`;
+
+  const all = [...errors, ...warnings];
+
+  return (
+    <div
+      className="rounded-lg p-3"
+      style={{ background: bg, border: `1px solid ${border}` }}
+    >
+      <div className="flex items-center gap-2 mb-2">
+        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke={hue} strokeWidth={2}>
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+          />
+        </svg>
+        <div className="text-[11px] font-bold" style={{ color: hue }}>
+          {title}
+        </div>
+      </div>
+      <div className="text-[9px] mb-2" style={{ color: "var(--text-muted)" }}>
+        The pipeline continued and produced a result, but some steps didn&apos;t
+        complete normally. Details below — these also appear in the server console.
+      </div>
+      <div className="space-y-1.5">
+        {all.map((ev, i) => {
+          const isErr = ev.level === "error";
+          const dotColor = isErr ? "#ef4444" : "#f59e0b";
+          const labelColor = isErr ? "#ef4444" : "#f59e0b";
+          return (
+            <div
+              key={i}
+              className="flex gap-2 rounded p-2"
+              style={{
+                background: "var(--surface)",
+                border: `1px solid ${isErr ? "rgba(239, 68, 68, 0.25)" : "rgba(245, 158, 11, 0.2)"}`,
+              }}
+            >
+              <span
+                className="inline-block mt-1 h-1.5 w-1.5 rounded-full flex-shrink-0"
+                style={{ background: dotColor }}
+              />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span
+                    className="rounded px-1.5 py-0.5 text-[8px] font-bold uppercase"
+                    style={{
+                      background: isErr ? "rgba(239, 68, 68, 0.15)" : "rgba(245, 158, 11, 0.15)",
+                      color: labelColor,
+                    }}
+                  >
+                    {ev.level}
+                  </span>
+                  <span className="text-[9px] font-mono" style={{ color: "var(--text-muted)" }}>
+                    {ev.stage}
+                  </span>
+                  {ev.timestamp && (
+                    <span className="text-[9px] font-mono" style={{ color: "var(--text-muted)" }}>
+                      {ev.timestamp.slice(11, 19)}
+                    </span>
+                  )}
+                </div>
+                <div
+                  className="mt-0.5 text-[10px] leading-snug"
+                  style={{ color: "var(--text-secondary)" }}
+                >
+                  {ev.message}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

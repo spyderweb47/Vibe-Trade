@@ -68,12 +68,35 @@ class DebateOrchestrator:
         self.cross_examiner = CrossExaminer()
         self.report_agent = ReACTReportAgent()
         self.summary_agent = SummaryAgent()
+        # Run-level events we want to surface to the end user in the UI
+        # (timeouts, errors, partial-failure warnings). Distinct from the
+        # chatty _log() progress lines, which stay server-side.
+        self.run_events: List[Dict[str, Any]] = []
 
     def _log(self, stage: str, msg: str) -> None:
-        """Log pipeline progress with timestamp."""
+        """Log pipeline progress with timestamp (server console only)."""
         import time
         ts = time.strftime("%H:%M:%S")
         print(f"[{ts}] [swarm.{stage}] {msg}", flush=True)
+
+    def _event(self, level: str, stage: str, msg: str) -> None:
+        """
+        Record a user-visible event AND log it. `level` is one of
+        'info', 'warn', 'error'. Events are surfaced to the frontend
+        via the /debate response so the user can see what happened
+        without reading server logs.
+        """
+        import time
+        ts_human = time.strftime("%H:%M:%S")
+        ts_iso = time.strftime("%Y-%m-%dT%H:%M:%S")
+        prefix = {"info": "i", "warn": "!", "error": "x"}.get(level, "-")
+        print(f"[{ts_human}] [swarm.{stage}] {prefix} {msg}", flush=True)
+        self.run_events.append({
+            "timestamp": ts_iso,
+            "level": level,
+            "stage": stage,
+            "message": msg,
+        })
 
     async def run(
         self,
@@ -289,10 +312,12 @@ class DebateOrchestrator:
                     )
                 except asyncio.TimeoutError:
                     entity = ctx[0]
-                    self._log(
+                    self._event(
+                        "warn",
                         "stage3",
-                        f"  ! {entity.get('name', 'unknown')} timed out after "
-                        f"{per_speaker_timeout:.0f}s — skipping this round",
+                        f"{entity.get('name', 'unknown')} (round {round_num}) "
+                        f"timed out after {per_speaker_timeout:.0f}s — "
+                        "skipped. LLM provider may be slow or rate-limiting.",
                     )
                     return {
                         "content": "(agent timed out this round)",
@@ -304,10 +329,11 @@ class DebateOrchestrator:
                     }
                 except Exception as err:  # noqa: BLE001
                     entity = ctx[0]
-                    self._log(
+                    self._event(
+                        "warn",
                         "stage3",
-                        f"  ! {entity.get('name', 'unknown')} failed: "
-                        f"{type(err).__name__}: {str(err)[:120]}",
+                        f"{entity.get('name', 'unknown')} (round {round_num}) "
+                        f"failed: {type(err).__name__}: {str(err)[:180]}",
                     )
                     return {
                         "content": f"(agent error: {type(err).__name__})",
@@ -397,13 +423,32 @@ class DebateOrchestrator:
 
         # ─── Stage 4: Cross-Examination ──────────────────────────────────
         self._log("stage4", "Running cross-examination on most divergent agents...")
-        cross_exam_results = await asyncio.to_thread(
-            self.cross_examiner.examine,
-            thread,
-            entities,
-            asset_info,
-            main_summary,
-        )
+        cross_exam_results: List[Dict[str, Any]] = []
+        try:
+            cross_exam_results = await asyncio.wait_for(
+                asyncio.to_thread(
+                    self.cross_examiner.examine,
+                    thread,
+                    entities,
+                    asset_info,
+                    main_summary,
+                ),
+                timeout=300.0,
+            )
+        except asyncio.TimeoutError:
+            self._event(
+                "warn",
+                "stage4",
+                "Cross-examination timed out after 5 minutes — "
+                "continuing without it. Divergent-agent Q&A will be missing from the report.",
+            )
+        except Exception as err:  # noqa: BLE001
+            self._event(
+                "warn",
+                "stage4",
+                f"Cross-examination failed: {type(err).__name__}: {str(err)[:180]} "
+                "— continuing without it.",
+            )
         # Add cross-examination messages to the thread
         for msg in cross_exam_results:
             msg["round"] = round_num + 1  # Mark as the cross-exam round
@@ -415,17 +460,54 @@ class DebateOrchestrator:
 
         # ─── Stage 5: ReACT Report Generation ───────────────────────────
         self._log("stage5", "Generating ReACT report (deep analysis + interviews + verification)...")
-        summary = await asyncio.to_thread(
-            self.report_agent.generate_report,
-            thread_text,
-            thread,
-            entities,
-            asset_info,
-            knowledge,
-            entity_count=len(entities),
-            round_count=round_num + (1 if cross_exam_results else 0),
-            message_count=len(thread),
-        )
+        summary: Dict[str, Any]
+        try:
+            summary = await asyncio.wait_for(
+                asyncio.to_thread(
+                    self.report_agent.generate_report,
+                    thread_text,
+                    thread,
+                    entities,
+                    asset_info,
+                    knowledge,
+                    entity_count=len(entities),
+                    round_count=round_num + (1 if cross_exam_results else 0),
+                    message_count=len(thread),
+                ),
+                timeout=600.0,
+            )
+        except asyncio.TimeoutError:
+            self._event(
+                "error",
+                "stage5",
+                "Report generation timed out after 10 minutes. "
+                "Falling back to a minimal summary computed directly from thread sentiment.",
+            )
+            summary = {
+                "consensus_direction": "NEUTRAL",
+                "confidence": 0,
+                "key_arguments": [],
+                "dissenting_views": [],
+                "price_targets": {"low": 0, "mid": 0, "high": 0},
+                "risk_factors": ["Report generation timed out — see warnings."],
+                "recommendation": {"action": "HOLD"},
+            }
+        except Exception as err:  # noqa: BLE001
+            self._event(
+                "error",
+                "stage5",
+                f"Report generation failed: {type(err).__name__}: {str(err)[:180]}. "
+                "Falling back to a minimal summary.",
+            )
+            summary = {
+                "consensus_direction": "NEUTRAL",
+                "confidence": 0,
+                "key_arguments": [],
+                "dissenting_views": [],
+                "price_targets": {"low": 0, "mid": 0, "high": 0},
+                "risk_factors": [f"Report generation failed: {type(err).__name__}"],
+                "recommendation": {"action": "HOLD"},
+            }
 
         self._log("stage5", f"Report done. LLM said: {summary.get('consensus_direction')} ({summary.get('confidence')}%)")
 
@@ -452,6 +534,17 @@ class DebateOrchestrator:
             if res and res.get("findings"):
                 agent_research_out[eid] = res["findings"]
 
+        # Log a summary of any events that fired during the run so the
+        # user can see them in the server console as well as the UI.
+        warn_count = sum(1 for e in self.run_events if e["level"] == "warn")
+        err_count = sum(1 for e in self.run_events if e["level"] == "error")
+        if warn_count or err_count:
+            self._log(
+                "complete",
+                f"Run finished with {err_count} error(s) and {warn_count} warning(s). "
+                "See `events` in the response or the UI 'Run Warnings' card for details.",
+            )
+
         return {
             "asset_info": asset_info,
             "entities": entities,
@@ -465,6 +558,8 @@ class DebateOrchestrator:
             "data_feeds": data_feeds,
             "agent_research": agent_research_out,
             "convergence_timeline": convergence_timeline,
+            # Everything the user should know about what went right/wrong
+            "events": self.run_events,
         }
 
     def _compute_consensus(self, thread: list, entities: list) -> dict:

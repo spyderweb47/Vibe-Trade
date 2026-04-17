@@ -23,8 +23,31 @@ async function request<T>(
   });
 
   if (!res.ok) {
-    const error = await res.text();
-    throw new Error(`API error ${res.status}: ${error}`);
+    // Backend uses HTTPException(detail=...). For the debate endpoint the
+    // detail is a structured object { error, message, events? }; for older
+    // endpoints it's a plain string. Try to parse JSON first so the user
+    // gets the friendly `message` plus any accumulated events, and fall
+    // back to the raw text if parsing fails.
+    const raw = await res.text();
+    let friendly = raw;
+    let events: unknown[] | undefined;
+    try {
+      const parsed = JSON.parse(raw) as { detail?: unknown };
+      const detail = parsed.detail;
+      if (typeof detail === "string") {
+        friendly = detail;
+      } else if (detail && typeof detail === "object") {
+        const d = detail as { message?: unknown; error?: unknown; events?: unknown };
+        friendly = String(d.message || d.error || raw);
+        if (Array.isArray(d.events)) events = d.events;
+      }
+    } catch {
+      // not JSON — keep raw text
+    }
+    const err = new Error(`API error ${res.status}: ${friendly}`);
+    if (events) (err as Error & { events?: unknown[] }).events = events;
+    (err as Error & { status?: number }).status = res.status;
+    throw err;
   }
 
   return res.json();
