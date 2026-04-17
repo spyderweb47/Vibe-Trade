@@ -57,6 +57,12 @@ interface PixelDrawing {
   rectY1?: number;
   rectX2?: number;
   rectY2?: number;
+  /** Rectangle measurement data — raw prices + span so the renderer can
+   *  show a standard "+2.35% / +$1,250 / 24 bars" label like every pro
+   *  charting platform does. */
+  rectPrice1?: number;
+  rectPrice2?: number;
+  rectBars?: number;
   /** For fibonacci */
   fibLevels?: { level: number; y: number; price: number }[];
   fibX1?: number;
@@ -194,6 +200,70 @@ class DrawingRenderer implements IPrimitivePaneRenderer {
         ctx.stroke();
       }
     }
+
+    // Measurement pill — industry-standard rectangle readout shown on every
+    // pro charting platform. Displays percent change, absolute price delta,
+    // and bar count. Anchored to the center of the box; drops below if the
+    // box is too small to fit inside.
+    if (d.rectPrice1 != null && d.rectPrice2 != null && w > 40 && h > 8) {
+      const p1 = d.rectPrice1;
+      const p2 = d.rectPrice2;
+      const delta = p2 - p1;
+      const pct = p1 !== 0 ? (delta / p1) * 100 : 0;
+      const pctStr = `${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%`;
+      const deltaStr = `${delta >= 0 ? "+" : ""}$${Math.abs(delta).toFixed(2)}`;
+      const barsStr = d.rectBars != null ? ` · ${d.rectBars} bars` : "";
+      const label = `${pctStr}  ${deltaStr}${barsStr}`;
+
+      ctx.font = "bold 11px 'Chakra Petch', sans-serif";
+      const textW = ctx.measureText(label).width;
+      const padX = 6;
+      const pillW = textW + padX * 2;
+      const pillH = 18;
+
+      // Pill positioning: centered inside if there's room, else above the box
+      const cx = x + w / 2;
+      const inside = h > pillH + 10;
+      const pillY = inside ? y + h / 2 - pillH / 2 : y - pillH - 4;
+      const pillX = cx - pillW / 2;
+
+      // Background pill
+      const bgColor = pct >= 0 ? "rgba(22, 163, 74, 0.9)" : "rgba(220, 38, 38, 0.9)";
+      ctx.fillStyle = bgColor;
+      this._roundRect(ctx, pillX, pillY, pillW, pillH, 4);
+      ctx.fill();
+
+      // Text
+      ctx.fillStyle = "#ffffff";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(label, cx, pillY + pillH / 2 + 0.5);
+      ctx.textAlign = "left";
+      ctx.textBaseline = "alphabetic";
+    }
+  }
+
+  /** Rounded-rect helper — missing from old canvas APIs, polyfilled here. */
+  private _roundRect(
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    r: number,
+  ) {
+    const rr = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.lineTo(x + w - rr, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + rr);
+    ctx.lineTo(x + w, y + h - rr);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - rr, y + h);
+    ctx.lineTo(x + rr, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - rr);
+    ctx.lineTo(x, y + rr);
+    ctx.quadraticCurveTo(x, y, x + rr, y);
+    ctx.closePath();
   }
 
   private _drawFibonacci(ctx: CanvasRenderingContext2D, d: PixelDrawing) {
@@ -306,9 +376,11 @@ class DrawingRenderer implements IPrimitivePaneRenderer {
       }
     }
 
-    // Entry line
-    ctx.strokeStyle = d.selected ? "#2563eb" : LONG_ENTRY_COLOR;
-    ctx.lineWidth = d.selected ? 2 : 1.5;
+    // Entry line — color-coded by direction so LONG and SHORT are visually
+    // distinct at a glance (green for long, red for short).
+    const entryColor = isLong ? "#16a34a" : "#dc2626";
+    ctx.strokeStyle = d.selected ? "#2563eb" : entryColor;
+    ctx.lineWidth = d.selected ? 2 : 1.8;
     ctx.setLineDash([4, 3]);
     ctx.beginPath();
     ctx.moveTo(x1, entryY);
@@ -316,15 +388,59 @@ class DrawingRenderer implements IPrimitivePaneRenderer {
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // Entry label
-    ctx.fillStyle = LONG_ENTRY_COLOR;
-    ctx.font = "bold 10px 'Chakra Petch', sans-serif";
-    ctx.textBaseline = "bottom";
+    // Direction badge (LONG/SHORT pill at the left of the entry line) —
+    // color-coded so you can't confuse the two.
+    const badgeText = isLong ? "LONG" : "SHORT";
+    ctx.font = "bold 9px 'Chakra Petch', sans-serif";
+    const badgeW = ctx.measureText(badgeText).width + 10;
+    const badgeH = 14;
+    const badgeX = x1;
+    const badgeY = entryY - badgeH / 2;
+    ctx.fillStyle = entryColor;
+    this._roundRect(ctx, badgeX, badgeY, badgeW, badgeH, 3);
+    ctx.fill();
+    ctx.fillStyle = "#ffffff";
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "center";
+    ctx.fillText(badgeText, badgeX + badgeW / 2, badgeY + badgeH / 2 + 0.5);
     ctx.textAlign = "left";
-    ctx.fillText(isLong ? "LONG" : "SHORT", x1 + 4, entryY - 4);
+    ctx.textBaseline = "alphabetic";
+
+    // Entry price label (right after the direction badge)
     if (d.entry != null) {
-      ctx.textBaseline = "top";
-      ctx.fillText(`$${d.entry.toFixed(0)}`, x1 + 4, entryY + 4);
+      ctx.fillStyle = entryColor;
+      ctx.font = "bold 10px 'Chakra Petch', sans-serif";
+      ctx.textBaseline = "middle";
+      ctx.fillText(`$${d.entry.toFixed(0)}`, badgeX + badgeW + 5, entryY);
+      ctx.textBaseline = "alphabetic";
+    }
+
+    // R:R ratio pill — prominently shown at the right of the entry line.
+    // This is the #1 metric pro traders look at, and standard in every
+    // pro trading platform. Computed purely from the TP/SL distances.
+    if (d.tp != null && d.sl != null && d.entry != null) {
+      const rewardDist = Math.abs(d.tp - d.entry);
+      const riskDist = Math.abs(d.sl - d.entry);
+      if (riskDist > 0) {
+        const rr = rewardDist / riskDist;
+        const rrText = `R:R 1:${rr.toFixed(2)}`;
+        ctx.font = "bold 10px 'Chakra Petch', sans-serif";
+        const rrW = ctx.measureText(rrText).width + 12;
+        const rrH = 16;
+        const rrX = x1 + w - rrW;
+        const rrY = entryY - rrH / 2;
+        // Green when R:R > 1 (favorable), amber when < 1 (risky), red when < 0.5
+        const rrColor = rr >= 2 ? "#16a34a" : rr >= 1 ? "#ca8a04" : "#dc2626";
+        ctx.fillStyle = rrColor;
+        this._roundRect(ctx, rrX, rrY, rrW, rrH, 3);
+        ctx.fill();
+        ctx.fillStyle = "#ffffff";
+        ctx.textBaseline = "middle";
+        ctx.textAlign = "center";
+        ctx.fillText(rrText, rrX + rrW / 2, rrY + rrH / 2 + 0.5);
+        ctx.textAlign = "left";
+        ctx.textBaseline = "alphabetic";
+      }
     }
 
     // Selection indicator
@@ -541,7 +657,21 @@ export class DrawingToolsPrimitive implements ISeriesPrimitive<Time> {
       const x2 = this._timeToX(d.points[1].time);
       const y2 = this._priceToY(d.points[1].price);
       if (x1 == null || y1 == null || x2 == null || y2 == null) return null;
-      return { id: d.id, type: d.type, px: [x1, x2], py: [y1, y2], selected: d.selected, rectX1: x1, rectY1: y1, rectX2: x2, rectY2: y2 };
+      // Compute bar count from the pixel span and the chart's bar spacing.
+      // This is approximate but matches what users see visually.
+      const barSpacing = this._chart?.timeScale().options().barSpacing ?? 6;
+      const bars = Math.max(1, Math.round(Math.abs(x2 - x1) / barSpacing));
+      return {
+        id: d.id,
+        type: d.type,
+        px: [x1, x2],
+        py: [y1, y2],
+        selected: d.selected,
+        rectX1: x1, rectY1: y1, rectX2: x2, rectY2: y2,
+        rectPrice1: d.points[0].price,
+        rectPrice2: d.points[1].price,
+        rectBars: bars,
+      };
     }
 
     if (d.type === "fibonacci") {
