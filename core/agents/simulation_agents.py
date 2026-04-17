@@ -1124,40 +1124,55 @@ RESEARCH_PLAN_PROMPT = """You are {name}, a {role}.
 Background: {background}
 Your bias: {bias}
 
-You're about to participate in a debate about {asset_name} ({asset_class}).
-Before you speak, you want to gather real-world information that's RELEVANT
-TO YOUR SPECIFIC EXPERTISE.
+You're about to participate in a PROFESSIONAL investment debate about {asset_name} ({asset_class}).
+You are a serious analyst — one search is NEVER enough. Real analysts do deep,
+multi-angle research before forming opinions. You must investigate THOROUGHLY.
 
-## Your previous research so far
+## Your research completed so far (iteration {current_iteration} of {max_iterations})
 {prior_findings}
 
-## What you know already from the market data
+## Market data you already have
 {market_summary}
 
-Your task: decide what to research next. Think step by step about what a
-{role} would actually want to know RIGHT NOW that you don't already have.
+## Angles YOU must cover as a {role}
+Depending on your role, research MULTIPLE angles:
+- **Recent events & news** — what happened this week/month affecting {asset_name}?
+- **Specific data points** — concrete numbers, dates, figures to cite
+- **Alternative viewpoints** — what are the bears saying? What are the bulls saying?
+- **Hidden risks** — what could go wrong that isn't priced in?
+- **Historical context** — similar situations in the past and how they resolved?
+- **Your expertise domain** — {role}-specific angles others might miss
+- **Verification** — cross-check claims you might have seen elsewhere
+
+Your task: plan your NEXT research query. You MUST do at least 3 queries,
+aim for 5-7. Only stop after {max_iterations} queries or when you've genuinely
+covered 5+ distinct angles.
 
 Respond with ONLY valid JSON (no markdown fences):
 {{
   "need_more_research": true,
-  "reasoning": "Short 1-sentence explanation of what information gap you're trying to fill",
-  "next_query": "A specific, targeted web search query (as a professional analyst would search)",
+  "reasoning": "What information gap you're filling — be specific about what angle you haven't covered yet",
+  "next_query": "A specific, targeted web search query that a real {role} would run",
   "tool": "web_search"
 }}
 
-OR, if you have enough information already:
+OR, only if you have done AT LEAST 3 queries AND covered 5+ distinct angles:
 {{
   "need_more_research": false,
-  "reasoning": "Short 1-sentence explanation of why you're satisfied",
+  "reasoning": "Explain which angles you covered",
   "next_query": null,
   "tool": null
 }}
 
-Rules:
-- Each query must be DIFFERENT from previous ones (no repeats)
-- Query should reflect YOUR expertise — a geopolitical analyst asks about wars/sanctions, a macro analyst asks about Fed policy, a journalist asks about specific events/scandals
-- After 3-5 queries you should usually have enough — don't research indefinitely
-- Pick `tool` from: web_search, fetch_news, fetch_policy, fetch_url (most common: web_search)
+CRITICAL RULES:
+- Each query MUST be about a DIFFERENT angle/topic than previous ones
+- Do NOT repeat query topics — expand the investigation
+- Each query should be a real Google-able search phrase
+- Try different keywords and phrasings across queries — broader, narrower,
+  from different perspectives (bull/bear, technical/fundamental, retail/institutional)
+- Pick `tool` from: web_search (default), fetch_news (for recent news only), fetch_policy (for regulatory)
+- If a previous query returned nothing useful, your next query must try VERY different keywords
+- Never stop before iteration 3. After iteration 3, only stop if truly done.
 """
 
 
@@ -1171,7 +1186,11 @@ class IterativeResearcher:
     works: "I searched for X, found Y, now I need more on Z..."
     """
 
-    MAX_ITERATIONS = 4  # Hard cap — each agent's research must finish in <= 4 queries
+    # Agents must research thoroughly like real analysts.
+    # MIN: at least 3 queries (no early exit before this).
+    # MAX: 8 queries (hard cap to prevent infinite loops).
+    MIN_ITERATIONS = 3
+    MAX_ITERATIONS = 8
 
     def research(
         self,
@@ -1230,27 +1249,43 @@ class IterativeResearcher:
                 asset_class=asset_class,
                 prior_findings=prior_text,
                 market_summary=market_summary[:1000],
+                current_iteration=iteration,
+                max_iterations=self.MAX_ITERATIONS,
             )
 
             try:
                 plan = chat_completion_json(
                     system_prompt=prompt,
-                    user_message="Plan your next research step.",
-                    temperature=0.5,
-                    max_tokens=300,
+                    user_message=(
+                        f"This is iteration {iteration}/{self.MAX_ITERATIONS}. "
+                        f"You have done {len(findings)} queries so far. "
+                        f"You MUST do at least {self.MIN_ITERATIONS} queries total. "
+                        f"Plan your next research step now."
+                    ),
+                    temperature=0.6,
+                    max_tokens=400,
                 )
-            except Exception as e:
-                # LLM call failed — stop research
-                break
+            except Exception:
+                # LLM call failed — stop research only if we've done min iterations
+                if len(findings) >= self.MIN_ITERATIONS:
+                    break
+                continue  # Retry next iteration
 
-            if not plan.get("need_more_research", False):
-                # Agent decided they have enough
+            # ENFORCE minimum iterations — ignore early stop signals
+            wants_to_stop = not plan.get("need_more_research", False)
+            if wants_to_stop and len(findings) >= self.MIN_ITERATIONS:
                 break
 
             query = plan.get("next_query", "").strip()
-            if not query or query in prior_queries:
-                # Duplicate or empty — stop
-                break
+            if not query:
+                if len(findings) >= self.MIN_ITERATIONS:
+                    break
+                continue  # Force retry if under min
+            if query in prior_queries:
+                # Duplicate — skip but don't stop (force the agent to try something new)
+                if len(findings) >= self.MIN_ITERATIONS:
+                    break
+                continue
 
             tool = plan.get("tool", "web_search")
             reasoning = plan.get("reasoning", "")
