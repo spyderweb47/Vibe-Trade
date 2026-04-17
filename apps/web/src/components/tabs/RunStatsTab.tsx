@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState } from "react";
 import { useStore } from "@/store/useStore";
 
 /**
@@ -36,115 +36,519 @@ export function RunStatsTab() {
   const totalResearchQueries = Object.values(agentResearch).reduce((acc, arr) => acc + arr.length, 0);
 
   const [exporting, setExporting] = useState(false);
-  const reportRef = useRef<HTMLDivElement>(null);
 
   const handleExportPDF = async () => {
-    if (!reportRef.current || exporting) return;
+    if (exporting) return;
     setExporting(true);
     try {
-      // Lazy-load to keep initial bundle small
-      const [{ default: jsPDF }, { default: html2canvas }] = await Promise.all([
-        import("jspdf"),
-        import("html2canvas"),
-      ]);
+      // Lazy-load jsPDF so it stays out of the initial bundle
+      const { default: jsPDF } = await import("jspdf");
 
-      const element = reportRef.current;
+      const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+      const pageW = pdf.internal.pageSize.getWidth();
+      const pageH = pdf.internal.pageSize.getHeight();
+      const margin = 15;
+      const contentW = pageW - margin * 2;
+      let y = margin;
 
-      // Expand all <details> elements so nothing is hidden in the PDF
-      const detailsEls = Array.from(element.querySelectorAll("details"));
-      const originalStates = detailsEls.map((d) => d.open);
-      detailsEls.forEach((d) => { d.open = true; });
+      // Colors (printable light theme — dark text on white)
+      const TEXT: [number, number, number] = [30, 30, 35];
+      const MUTED: [number, number, number] = [110, 110, 120];
+      const ACCENT: [number, number, number] = [230, 85, 0];
+      const BULL: [number, number, number] = [22, 140, 74];
+      const BEAR: [number, number, number] = [200, 40, 40];
+      const BORDER: [number, number, number] = [215, 215, 220];
 
-      // Force the container and ALL its scrollable ancestors to show full
-      // content. html2canvas only captures visible content — with overflow:auto
-      // + fixed height, it only gets the viewport. We temporarily override
-      // these styles, clone-less via direct mutation, then restore.
-      const restoreFns: Array<() => void> = [];
-      let el: HTMLElement | null = element;
-      while (el && el !== document.body) {
-        const styles: Partial<CSSStyleDeclaration> = {
-          height: el.style.height,
-          maxHeight: el.style.maxHeight,
-          overflow: el.style.overflow,
-          overflowY: el.style.overflowY,
-          overflowX: el.style.overflowX,
-        };
-        const elRef = el;
-        restoreFns.push(() => {
-          elRef.style.height = styles.height || "";
-          elRef.style.maxHeight = styles.maxHeight || "";
-          elRef.style.overflow = styles.overflow || "";
-          elRef.style.overflowY = styles.overflowY || "";
-          elRef.style.overflowX = styles.overflowX || "";
-        });
-        el.style.height = "auto";
-        el.style.maxHeight = "none";
-        el.style.overflow = "visible";
-        el.style.overflowY = "visible";
-        el.style.overflowX = "visible";
-        el = el.parentElement;
+      const setText = (rgb: [number, number, number]) => pdf.setTextColor(rgb[0], rgb[1], rgb[2]);
+      const setFill = (rgb: [number, number, number]) => pdf.setFillColor(rgb[0], rgb[1], rgb[2]);
+
+      const ensureSpace = (needed: number) => {
+        if (y + needed > pageH - margin) {
+          pdf.addPage();
+          y = margin;
+        }
+      };
+
+      const addTitle = (text: string, subtitle?: string) => {
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(22);
+        setText(ACCENT);
+        pdf.text(text, margin, y + 8);
+        y += 10;
+        if (subtitle) {
+          pdf.setFont("helvetica", "normal");
+          pdf.setFontSize(11);
+          setText(TEXT);
+          pdf.text(subtitle, margin, y + 5);
+          y += 7;
+        }
+      };
+
+      const addHeading = (text: string) => {
+        ensureSpace(14);
+        y += 4;
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(13);
+        setText(TEXT);
+        pdf.text(text, margin, y + 5);
+        y += 7;
+        setFill(ACCENT);
+        pdf.rect(margin, y, 18, 0.6, "F");
+        setFill(BORDER);
+        pdf.rect(margin + 18, y, contentW - 18, 0.3, "F");
+        y += 3;
+      };
+
+      const addSubheading = (text: string) => {
+        ensureSpace(7);
+        y += 2;
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(9);
+        setText(MUTED);
+        pdf.text(text.toUpperCase(), margin, y + 3);
+        y += 5;
+      };
+
+      const addParagraph = (text: string, indent = 0) => {
+        if (!text) return;
+        pdf.setFont("helvetica", "normal");
+        pdf.setFontSize(9.5);
+        setText(TEXT);
+        const lines = pdf.splitTextToSize(text, contentW - indent) as string[];
+        const lineH = 4.5;
+        for (const line of lines) {
+          ensureSpace(lineH);
+          pdf.text(line, margin + indent, y + 3);
+          y += lineH;
+        }
+        y += 1;
+      };
+
+      const addBullet = (text: string) => {
+        if (!text) return;
+        const indent = 5;
+        pdf.setFont("helvetica", "normal");
+        pdf.setFontSize(9.5);
+        const lines = pdf.splitTextToSize(text, contentW - indent - 3) as string[];
+        const lineH = 4.5;
+        ensureSpace(lineH);
+        setText(ACCENT);
+        pdf.text("•", margin + 1, y + 3);
+        setText(TEXT);
+        for (let i = 0; i < lines.length; i++) {
+          if (i > 0) ensureSpace(lineH);
+          pdf.text(lines[i], margin + indent, y + 3);
+          y += lineH;
+        }
+        y += 0.5;
+      };
+
+      const addKV = (key: string, value: string, valueColor?: [number, number, number]) => {
+        if (!value) return;
+        const keyW = 50;
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(9);
+        setText(MUTED);
+        const keyLines = pdf.splitTextToSize(key, keyW - 2) as string[];
+        pdf.setFont("helvetica", "normal");
+        const valueLines = pdf.splitTextToSize(value, contentW - keyW) as string[];
+        const lineH = 4.2;
+        const blockH = Math.max(keyLines.length, valueLines.length) * lineH;
+        ensureSpace(blockH + 1);
+        pdf.setFont("helvetica", "bold");
+        setText(MUTED);
+        pdf.text(keyLines, margin, y + 3);
+        pdf.setFont("helvetica", "normal");
+        setText(valueColor || TEXT);
+        pdf.text(valueLines, margin + keyW, y + 3);
+        y += blockH + 1;
+      };
+
+      const addDivider = () => {
+        ensureSpace(3);
+        setFill(BORDER);
+        pdf.rect(margin, y + 1, contentW, 0.2, "F");
+        y += 3;
+      };
+
+      // ─── Cover ────────────────────────────────────────────────
+      addTitle("Swarm Debate Report", `${debate.assetName || debate.symbol}${debate.symbol && debate.assetName !== debate.symbol ? ` (${debate.symbol})` : ""}`);
+      pdf.setFont("helvetica", "normal");
+      pdf.setFontSize(9);
+      setText(MUTED);
+      pdf.text(
+        `${debate.assetClass} · ${debate.entities.length} personas · ${debate.totalRounds} rounds · ${debate.thread.length} messages`,
+        margin, y + 4,
+      );
+      y += 5;
+      pdf.text(`Generated ${new Date().toLocaleString()}`, margin, y + 4);
+      y += 8;
+
+      // Consensus banner
+      const dirRgb = summary.consensusDirection === "BULLISH" ? BULL : summary.consensusDirection === "BEARISH" ? BEAR : ACCENT;
+      setFill(dirRgb);
+      pdf.rect(margin, y, contentW, 22, "F");
+      pdf.setFont("helvetica", "bold");
+      pdf.setFontSize(20);
+      pdf.setTextColor(255, 255, 255);
+      pdf.text(`CONSENSUS: ${summary.consensusDirection}`, margin + 5, y + 10);
+      pdf.setFontSize(12);
+      pdf.text(`${summary.confidence.toFixed(0)}% confidence`, margin + 5, y + 18);
+      y += 26;
+
+      // ─── Trade Recommendation ──────────────────────────────────
+      if (rec.action || summary.priceTargets) {
+        addHeading("Trade Recommendation");
+        if (rec.action) addKV("Action", String(rec.action).toUpperCase(), dirRgb);
+        if (rec.entry != null) addKV("Entry", `$${Number(rec.entry).toLocaleString()}`);
+        if (rec.stop != null) addKV("Stop Loss", `$${Number(rec.stop).toLocaleString()}`, BEAR);
+        if (rec.target != null) addKV("Target", `$${Number(rec.target).toLocaleString()}`, BULL);
+        if (rec.position_size_pct != null) addKV("Position Size", `${String(rec.position_size_pct)}%`);
+
+        if (summary.priceTargets) {
+          addSubheading("Price Targets");
+          addKV("Low", `$${Number(summary.priceTargets.low).toLocaleString()}`, BEAR);
+          addKV("Mid", `$${Number(summary.priceTargets.mid).toLocaleString()}`);
+          addKV("High", `$${Number(summary.priceTargets.high).toLocaleString()}`, BULL);
+        }
       }
 
-      // Let the DOM reflow so we get the full scroll height
-      await new Promise((r) => setTimeout(r, 150));
+      // ─── Key Arguments ────────────────────────────────────────
+      if (summary.keyArguments?.length) {
+        addHeading("Key Arguments (Debate)");
+        summary.keyArguments.forEach((a) => addBullet(a));
+      }
 
-      // Now capture — html2canvas will see the entire report
-      const canvas = await html2canvas(element, {
-        scale: 2,
-        backgroundColor: "#0d0d10",
-        useCORS: true,
-        allowTaint: true,
-        logging: false,
-        scrollX: 0,
-        scrollY: 0,
-        windowWidth: element.scrollWidth,
-        windowHeight: element.scrollHeight,
-        width: element.scrollWidth,
-        height: element.scrollHeight,
-      });
+      // ─── Dissenting Views ─────────────────────────────────────
+      if (summary.dissentingViews?.length) {
+        addHeading("Dissenting Views");
+        summary.dissentingViews.forEach((v) => addBullet(v));
+      }
 
-      // Restore original styles + details states
-      restoreFns.forEach((fn) => fn());
-      detailsEls.forEach((d, i) => { d.open = originalStates[i]; });
+      // ─── Risk Factors ─────────────────────────────────────────
+      if (summary.riskFactors?.length) {
+        addHeading("Risk Factors");
+        summary.riskFactors.forEach((r) => addBullet(r));
+      }
 
-      // Build multi-page PDF: slice the canvas into A4-sized chunks
-      const pdf = new jsPDF({
-        orientation: "portrait",
-        unit: "mm",
-        format: "a4",
-      });
-      const pdfWidth = pdf.internal.pageSize.getWidth();
-      const pdfHeight = pdf.internal.pageSize.getHeight();
-      const margin = 5;
-      const contentWidth = pdfWidth - margin * 2;
-      const contentHeight = pdfHeight - margin * 2;
+      // ─── Conviction Shifts ────────────────────────────────────
+      if (convictionShifts.length) {
+        addHeading("Conviction Shifts During Debate");
+        convictionShifts.forEach((s) => addBullet(s));
+      }
 
-      // Scale factor from canvas px → mm on page
-      const scale = contentWidth / canvas.width;
+      // ─── Intelligence Briefing ────────────────────────────────
+      if (brief && (brief.executiveSummary || brief.bullCase?.length || brief.bearCase?.length)) {
+        addHeading("Intelligence Briefing (Stage 1.5)");
 
-      // How much canvas height fits on one page (in canvas px)?
-      const pagePxHeight = contentHeight / scale;
-
-      let offsetY = 0;
-      let pageNum = 0;
-      while (offsetY < canvas.height) {
-        if (pageNum > 0) pdf.addPage();
-        const sliceHeight = Math.min(pagePxHeight, canvas.height - offsetY);
-        // Create a temporary canvas for this slice
-        const sliceCanvas = document.createElement("canvas");
-        sliceCanvas.width = canvas.width;
-        sliceCanvas.height = sliceHeight;
-        const ctx = sliceCanvas.getContext("2d");
-        if (ctx) {
-          // Fill with dark background so the slice is consistent
-          ctx.fillStyle = "#0d0d10";
-          ctx.fillRect(0, 0, sliceCanvas.width, sliceCanvas.height);
-          ctx.drawImage(canvas, 0, offsetY, canvas.width, sliceHeight, 0, 0, canvas.width, sliceHeight);
+        if (brief.executiveSummary) {
+          addSubheading("Executive Summary");
+          addParagraph(brief.executiveSummary);
         }
-        const sliceData = sliceCanvas.toDataURL("image/png");
-        pdf.addImage(sliceData, "PNG", margin, margin, contentWidth, sliceHeight * scale);
-        offsetY += sliceHeight;
-        pageNum++;
+        if (brief.sentimentReading) {
+          addKV("Market Sentiment", brief.sentimentReading, dirRgb);
+        }
+        if (brief.bullCase?.length) {
+          addSubheading("Bull Case");
+          brief.bullCase.forEach((b) => addBullet(b));
+        }
+        if (brief.bearCase?.length) {
+          addSubheading("Bear Case");
+          brief.bearCase.forEach((b) => addBullet(b));
+        }
+        if (brief.keyEvents?.length) {
+          addSubheading("Upcoming Key Events");
+          brief.keyEvents.forEach((e) => addBullet(e));
+        }
+        if (brief.dataPoints?.length) {
+          addSubheading("Key Data Points");
+          brief.dataPoints.forEach((d) => addBullet(d));
+        }
+      }
+
+      // ─── Market Context ───────────────────────────────────────
+      if (marketContext) {
+        addHeading("Market Context (Stage 1)");
+        if (marketContext.marketRegime) addKV("Market Regime", marketContext.marketRegime, dirRgb);
+        if (marketContext.volumeAnalysis) addKV("Volume Analysis", marketContext.volumeAnalysis);
+        if (marketContext.keyPriceLevels) {
+          const kpl = marketContext.keyPriceLevels;
+          if (kpl.strongResistance?.length) {
+            addKV("Strong Resistance", kpl.strongResistance.map((n) => `$${Number(n).toLocaleString()}`).join(", "), BEAR);
+          }
+          if (kpl.strongSupport?.length) {
+            addKV("Strong Support", kpl.strongSupport.map((n) => `$${Number(n).toLocaleString()}`).join(", "), BULL);
+          }
+          if (kpl.recentPivot != null) addKV("Recent Pivot", String(kpl.recentPivot));
+        }
+        if (marketContext.technicalSignals?.length) {
+          addSubheading("Technical Signals");
+          marketContext.technicalSignals.forEach((s) => addBullet(s));
+        }
+        if (marketContext.keyThemes?.length) {
+          addSubheading("Key Themes");
+          marketContext.keyThemes.forEach((t) => addBullet(t));
+        }
+        if (marketContext.riskEvents?.length) {
+          addSubheading("Risk Events");
+          marketContext.riskEvents.forEach((r) => addBullet(r));
+        }
+      }
+
+      // ─── Data Feeds ───────────────────────────────────────────
+      const feedEntries = Object.entries(dataFeeds).filter(([, v]) => !!v);
+      if (feedEntries.length) {
+        addHeading("Data Feeds");
+        feedEntries.forEach(([key, value]) => {
+          addSubheading(key.replace(/_/g, " "));
+          addParagraph(String(value));
+        });
+      }
+
+      // ─── Raw Research Findings ────────────────────────────────
+      if (brief?.rawFindings) {
+        const rf = brief.rawFindings;
+        const any = rf.recentNews || rf.marketAnalysis || rf.regulatory || rf.technicalIndicators || rf.keyLevels;
+        if (any) {
+          addHeading("Raw Research Findings");
+          if (rf.recentNews) {
+            addSubheading("Recent News");
+            addParagraph(rf.recentNews);
+          }
+          if (rf.technicalIndicators) {
+            addSubheading("Technical Indicators");
+            addParagraph(rf.technicalIndicators);
+          }
+          if (rf.keyLevels) {
+            addSubheading("Key Price Levels");
+            addParagraph(rf.keyLevels);
+          }
+          if (rf.marketAnalysis) {
+            addSubheading("Market Analysis");
+            addParagraph(rf.marketAnalysis);
+          }
+          if (rf.regulatory) {
+            addSubheading("Regulatory");
+            addParagraph(rf.regulatory);
+          }
+        }
+      }
+
+      // ─── Cross-Examination ────────────────────────────────────
+      if (crossExam.length) {
+        addHeading(`Cross-Examination (${crossExam.length} agents)`);
+        crossExam.forEach((ex, i) => {
+          if (i > 0) addDivider();
+          ensureSpace(8);
+          pdf.setFont("helvetica", "bold");
+          pdf.setFontSize(10.5);
+          setText(TEXT);
+          pdf.text(ex.entityName || "(unknown)", margin, y + 3);
+          pdf.setFont("helvetica", "normal");
+          pdf.setFontSize(8.5);
+          setText(ACCENT);
+          if (ex.entityRole) pdf.text(ex.entityRole, margin + 65, y + 3);
+
+          const convColor =
+            ex.convictionChange === "reversed" ? BEAR :
+            ex.convictionChange === "weakened" ? BEAR :
+            ex.convictionChange === "strengthened" ? BULL :
+            MUTED;
+          pdf.setFont("helvetica", "bold");
+          pdf.setFontSize(8);
+          setText(convColor);
+          pdf.text(String(ex.convictionChange || "unchanged").toUpperCase(), pageW - margin - 30, y + 3);
+          y += 6;
+
+          if (ex.question) {
+            addSubheading("Question");
+            addParagraph(ex.question);
+          }
+          if (ex.response) {
+            addSubheading("Response");
+            addParagraph(ex.response);
+          }
+          if (ex.newSentiment != null) {
+            const sc = ex.newSentiment > 0.2 ? BULL : ex.newSentiment < -0.2 ? BEAR : MUTED;
+            addKV("New Sentiment", `${(ex.newSentiment * 100).toFixed(0)}%`, sc);
+          }
+        });
+      }
+
+      // ─── Convergence Timeline ─────────────────────────────────
+      if (timeline.length) {
+        addHeading("Sentiment Convergence Timeline");
+        addParagraph("Weighted average sentiment at the end of each round (positive = bullish, negative = bearish):");
+        timeline.forEach((pt) => {
+          const sc = pt.sentiment > 0.2 ? BULL : pt.sentiment < -0.2 ? BEAR : MUTED;
+          const label = pt.sentiment > 0 ? `+${(pt.sentiment * 100).toFixed(1)}%` : `${(pt.sentiment * 100).toFixed(1)}%`;
+          addKV(`Round ${pt.round}`, label, sc);
+        });
+      }
+
+      // ─── Agent Research Trail ─────────────────────────────────
+      if (totalResearchQueries > 0) {
+        addHeading(`Agent Research Trail (${totalResearchQueries} queries)`);
+        addParagraph(`${Object.keys(agentResearch).length} agents performed iterative research, averaging ${(totalResearchQueries / Object.keys(agentResearch).length).toFixed(1)} queries each.`);
+
+        Object.entries(agentResearch).forEach(([entityId, findings]) => {
+          if (!findings?.length) return;
+          const entity = debate.entities.find((e) => e.id === entityId);
+          const entityName = entity?.name || entityId;
+
+          ensureSpace(8);
+          y += 2;
+          pdf.setFont("helvetica", "bold");
+          pdf.setFontSize(10);
+          setText(TEXT);
+          pdf.text(`${entityName}`, margin, y + 3);
+          pdf.setFont("helvetica", "normal");
+          pdf.setFontSize(8.5);
+          setText(MUTED);
+          pdf.text(`${findings.length} queries`, pageW - margin - 25, y + 3);
+          y += 5;
+
+          findings.forEach((f, idx) => {
+            const header = `#${f.iteration || idx + 1}  [${f.tool}]  "${f.query}"`;
+            pdf.setFont("helvetica", "bold");
+            pdf.setFontSize(8.5);
+            setText(ACCENT);
+            const hLines = pdf.splitTextToSize(header, contentW - 4) as string[];
+            for (const hl of hLines) {
+              ensureSpace(3.8);
+              pdf.text(hl, margin + 3, y + 2.5);
+              y += 3.8;
+            }
+            if (f.reasoning) {
+              pdf.setFont("helvetica", "italic");
+              setText(MUTED);
+              const rLines = pdf.splitTextToSize(`Reasoning: ${f.reasoning}`, contentW - 6) as string[];
+              for (const rl of rLines) {
+                ensureSpace(3.5);
+                pdf.text(rl, margin + 5, y + 2.5);
+                y += 3.5;
+              }
+            }
+            if (f.result) {
+              pdf.setFont("helvetica", "normal");
+              setText(TEXT);
+              const rLines = pdf.splitTextToSize(f.result.slice(0, 600), contentW - 6) as string[];
+              for (const rl of rLines) {
+                ensureSpace(3.8);
+                pdf.text(rl, margin + 5, y + 2.5);
+                y += 3.8;
+              }
+            }
+            y += 1;
+          });
+        });
+      }
+
+      // ─── Personas ─────────────────────────────────────────────
+      if (debate.entities?.length) {
+        addHeading(`Personas (${debate.entities.length})`);
+        debate.entities.forEach((ent, i) => {
+          if (i > 0) addDivider();
+          ensureSpace(8);
+          pdf.setFont("helvetica", "bold");
+          pdf.setFontSize(10.5);
+          setText(TEXT);
+          pdf.text(ent.name, margin, y + 3);
+          pdf.setFont("helvetica", "normal");
+          pdf.setFontSize(8.5);
+          setText(ACCENT);
+          pdf.text(ent.role, margin + 55, y + 3);
+          if (ent.stance) {
+            const sc = ent.stance === "bull" ? BULL : ent.stance === "bear" ? BEAR : MUTED;
+            pdf.setFont("helvetica", "bold");
+            pdf.setFontSize(8);
+            setText(sc);
+            pdf.text(ent.stance.toUpperCase(), pageW - margin - 20, y + 3);
+          }
+          y += 5;
+
+          if (ent.specialization) addKV("Specialization", ent.specialization);
+          if (ent.influence != null) addKV("Influence", `${ent.influence.toFixed(2)}x`);
+          if (ent.tools?.length) addKV("Tools", ent.tools.join(", "));
+          if (ent.background) addParagraph(ent.background, 2);
+          if (ent.personality) {
+            pdf.setFont("helvetica", "italic");
+            pdf.setFontSize(9);
+            setText(MUTED);
+            const lines = pdf.splitTextToSize(`Personality: ${ent.personality}`, contentW - 2) as string[];
+            for (const line of lines) {
+              ensureSpace(4.2);
+              pdf.text(line, margin + 2, y + 3);
+              y += 4.2;
+            }
+          }
+          if (ent.bias) {
+            pdf.setFont("helvetica", "italic");
+            pdf.setFontSize(9);
+            setText(MUTED);
+            const lines = pdf.splitTextToSize(`Bias: ${ent.bias}`, contentW - 2) as string[];
+            for (const line of lines) {
+              ensureSpace(4.2);
+              pdf.text(line, margin + 2, y + 3);
+              y += 4.2;
+            }
+          }
+          y += 1;
+        });
+      }
+
+      // ─── Full Debate Thread ──────────────────────────────────
+      if (debate.thread?.length) {
+        addHeading(`Full Debate Thread (${debate.thread.length} messages)`);
+        debate.thread.forEach((msg, i) => {
+          if (i > 0) y += 1.5;
+          ensureSpace(8);
+          pdf.setFont("helvetica", "bold");
+          pdf.setFontSize(9.5);
+          setText(TEXT);
+          pdf.text(`R${msg.round}  ${msg.entityName}`, margin, y + 3);
+          pdf.setFont("helvetica", "normal");
+          pdf.setFontSize(8);
+          setText(ACCENT);
+          pdf.text(msg.entityRole, margin + 65, y + 3);
+          const sc = msg.sentiment > 0.2 ? BULL : msg.sentiment < -0.2 ? BEAR : MUTED;
+          const sentTxt = msg.sentiment > 0 ? `+${(msg.sentiment * 100).toFixed(0)}%` : `${(msg.sentiment * 100).toFixed(0)}%`;
+          pdf.setFont("helvetica", "bold");
+          setText(sc);
+          pdf.text(sentTxt, pageW - margin - 15, y + 3);
+          y += 5;
+
+          addParagraph(msg.content);
+
+          const footer: string[] = [];
+          if (msg.pricePrediction != null) footer.push(`Target $${Number(msg.pricePrediction).toLocaleString()}`);
+          if (msg.agreedWith?.length) footer.push(`Agrees: ${msg.agreedWith.join(", ")}`);
+          if (msg.disagreedWith?.length) footer.push(`Disagrees: ${msg.disagreedWith.join(", ")}`);
+          if (msg.toolsUsed?.length) footer.push(`Tools: ${msg.toolsUsed.join(", ")}`);
+          if (msg.isChartSupport) footer.push("[chart data injected]");
+          if (footer.length) {
+            pdf.setFont("helvetica", "italic");
+            pdf.setFontSize(7.5);
+            setText(MUTED);
+            const lines = pdf.splitTextToSize(footer.join(" · "), contentW) as string[];
+            for (const line of lines) {
+              ensureSpace(3.3);
+              pdf.text(line, margin, y + 2.2);
+              y += 3.3;
+            }
+          }
+        });
+      }
+
+      // ─── Page numbers + footer ────────────────────────────────
+      const pageCount = pdf.getNumberOfPages();
+      for (let p = 1; p <= pageCount; p++) {
+        pdf.setPage(p);
+        pdf.setFont("helvetica", "normal");
+        pdf.setFontSize(8);
+        setText(MUTED);
+        pdf.text(`Swarm Debate · ${debate.assetName || debate.symbol}`, margin, pageH - 8);
+        pdf.text(`Page ${p} of ${pageCount}`, pageW - margin - 24, pageH - 8);
       }
 
       const assetName = (debate.assetName || debate.symbol || "asset").replace(/[^a-zA-Z0-9_-]/g, "_");
@@ -159,7 +563,7 @@ export function RunStatsTab() {
   };
 
   return (
-    <div className="h-full overflow-y-auto p-3 space-y-3" ref={reportRef}>
+    <div className="h-full overflow-y-auto p-3 space-y-3">
       {/* Export header */}
       <div className="flex items-center gap-2 -mb-1">
         <div className="text-[9px] font-bold uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
@@ -175,7 +579,6 @@ export function RunStatsTab() {
             border: "1px solid rgba(255, 107, 0, 0.3)",
           }}
           title="Export full report as PDF"
-          data-html2canvas-ignore="true"
         >
           <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
