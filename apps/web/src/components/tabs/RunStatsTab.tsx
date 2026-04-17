@@ -36,6 +36,7 @@ export function RunStatsTab() {
   const totalResearchQueries = Object.values(agentResearch).reduce((acc, arr) => acc + arr.length, 0);
 
   const [exporting, setExporting] = useState(false);
+  const [includeThread, setIncludeThread] = useState(false);
 
   const handleExportPDF = async () => {
     if (exporting) return;
@@ -182,6 +183,15 @@ export function RunStatsTab() {
       );
       y += 5;
       pdf.text(`Generated ${new Date().toLocaleString()}`, margin, y + 4);
+      y += 5;
+      pdf.setFont("helvetica", "italic");
+      setText(includeThread ? ACCENT : MUTED);
+      pdf.text(
+        includeThread
+          ? "Report type: FULL — includes complete debate thread"
+          : "Report type: SUMMARY — debate thread omitted",
+        margin, y + 4,
+      );
       y += 8;
 
       // Consensus banner
@@ -497,8 +507,8 @@ export function RunStatsTab() {
         });
       }
 
-      // ─── Full Debate Thread ──────────────────────────────────
-      if (debate.thread?.length) {
+      // ─── Full Debate Thread (opt-in: huge section) ────────────
+      if (includeThread && debate.thread?.length) {
         addHeading(`Full Debate Thread (${debate.thread.length} messages)`);
         debate.thread.forEach((msg, i) => {
           if (i > 0) y += 1.5;
@@ -553,7 +563,8 @@ export function RunStatsTab() {
 
       const assetName = (debate.assetName || debate.symbol || "asset").replace(/[^a-zA-Z0-9_-]/g, "_");
       const date = new Date().toISOString().slice(0, 10);
-      pdf.save(`swarm_debate_${assetName}_${date}.pdf`);
+      const variant = includeThread ? "full" : "summary";
+      pdf.save(`swarm_debate_${assetName}_${variant}_${date}.pdf`);
     } catch (err) {
       console.error("PDF export failed:", err);
       alert("PDF export failed: " + (err instanceof Error ? err.message : String(err)));
@@ -565,25 +576,50 @@ export function RunStatsTab() {
   return (
     <div className="h-full overflow-y-auto p-3 space-y-3">
       {/* Export header */}
-      <div className="flex items-center gap-2 -mb-1">
+      <div className="flex items-center gap-2 -mb-1 flex-wrap">
         <div className="text-[9px] font-bold uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
           {debate.assetName} · {debate.entities.length} personas · {debate.totalRounds} rounds
         </div>
+        <label
+          className="ml-auto flex items-center gap-1.5 cursor-pointer text-[10px] select-none rounded px-2 py-1"
+          style={{
+            color: "var(--text-secondary)",
+            background: "var(--surface-2)",
+            border: "1px solid var(--border)",
+          }}
+          title={`Include the full ${debate.thread?.length ?? 0}-message debate thread in the PDF (makes it significantly longer)`}
+        >
+          <input
+            type="checkbox"
+            checked={includeThread}
+            onChange={(e) => setIncludeThread(e.target.checked)}
+            className="h-3 w-3 cursor-pointer accent-orange-500"
+            style={{ accentColor: "var(--accent)" }}
+          />
+          <span>
+            Full debate thread
+            {debate.thread?.length ? (
+              <span className="ml-1" style={{ color: "var(--text-muted)" }}>
+                ({debate.thread.length})
+              </span>
+            ) : null}
+          </span>
+        </label>
         <button
           onClick={handleExportPDF}
           disabled={exporting}
-          className="ml-auto flex items-center gap-1.5 rounded px-2.5 py-1 text-[10px] font-semibold transition-colors disabled:opacity-40"
+          className="flex items-center gap-1.5 rounded px-2.5 py-1 text-[10px] font-semibold transition-colors disabled:opacity-40"
           style={{
             background: exporting ? "var(--surface-2)" : "rgba(255, 107, 0, 0.12)",
             color: "var(--accent)",
             border: "1px solid rgba(255, 107, 0, 0.3)",
           }}
-          title="Export full report as PDF"
+          title={includeThread ? "Export full report including debate thread" : "Export summary report (no debate thread)"}
         >
           <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
           </svg>
-          {exporting ? "Generating..." : "Export PDF"}
+          {exporting ? "Generating..." : includeThread ? "Export Full PDF" : "Export Summary PDF"}
         </button>
       </div>
 
