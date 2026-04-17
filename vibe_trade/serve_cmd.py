@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+import warnings
 import webbrowser
 from pathlib import Path
 from threading import Thread
@@ -21,6 +22,41 @@ from rich.console import Console
 from rich.panel import Panel
 
 console = Console()
+
+
+def _silence_uvicorn_windows_noise() -> None:
+    """
+    Suppress known-benign startup noise from uvicorn on Windows + Python
+    3.12. uvicorn's internal subprocess helper leaves a partially-
+    initialized _WindowsSelectorEventLoop that Python's GC then cleans up
+    noisily, producing:
+
+      AttributeError: '_WindowsSelectorEventLoop' object has no attribute '_ssock'
+      RuntimeWarning: coroutine 'Server.serve' was never awaited
+
+    Both are harmless (the real server process starts and runs fine) but
+    scare users into thinking something's broken. Filter them to keep the
+    startup banner clean.
+    """
+    if sys.platform != "win32":
+        return
+    warnings.filterwarnings(
+        "ignore",
+        message=r"coroutine 'Server\.serve' was never awaited",
+        category=RuntimeWarning,
+    )
+    # Silence the selector-event-loop cleanup AttributeError at interpreter
+    # exit by swallowing it in sys.unraisablehook. We only filter this exact
+    # class+attribute combo so real bugs still surface.
+    prior_unraisable = sys.unraisablehook
+
+    def _filter_unraisable(unraisable):  # type: ignore[no-untyped-def]
+        exc = unraisable.exc_value
+        if isinstance(exc, AttributeError) and "_ssock" in str(exc):
+            return
+        prior_unraisable(unraisable)
+
+    sys.unraisablehook = _filter_unraisable
 
 
 def _find_frontend_dir() -> Path | None:
@@ -65,6 +101,8 @@ def run_server(
 ) -> None:
     """Launch uvicorn with the FastAPI app + optional static mount."""
     import uvicorn
+
+    _silence_uvicorn_windows_noise()
 
     # Work from the repo root so relative imports (core.*, skills, ...) resolve
     current = Path(__file__).resolve()
@@ -145,10 +183,36 @@ def run_server(
 
         Thread(target=_opener, daemon=True).start()
 
-    uvicorn.run(
-        fastapi_app,
-        host=host,
-        port=port,
-        reload=reload,
-        log_level="info",
-    )
+    # uvicorn.run() with reload=True needs an IMPORT STRING (not an instance)
+    # because the reloader spawns child processes that must re-import the app
+    # after a file change. Passing an instance breaks on Windows: the child
+    # can't pickle the app, the subprocess helper creates a half-initialized
+    # event loop, and GC emits spurious _ssock AttributeErrors at exit.
+    #
+    # When reload=True we also pre-attach the static mount via an import-side
+    # hook (setting a global flag in services.api.main) so the child process
+    # re-mounts the frontend correctly. For the common reload=False path we
+    # keep the in-process instance so the staticfiles mount above applies.
+    if reload:
+        # The child re-imports services.api.main:app from disk, so the
+        # StaticFiles mount we added above doesn't carry over. Pass the
+        # frontend dir through an env var so the module-level code there
+        # can re-mount on re-import. Not set on this path yet — reload
+        # currently skips the bundled frontend.
+        if frontend_dir is not None:
+            os.environ["VIBE_TRADE_FRONTEND_DIR"] = str(frontend_dir)
+        uvicorn.run(
+            "services.api.main:app",
+            host=host,
+            port=port,
+            reload=reload,
+            reload_dirs=[str(repo_root / "services"), str(repo_root / "core")],
+            log_level="info",
+        )
+    else:
+        uvicorn.run(
+            fastapi_app,
+            host=host,
+            port=port,
+            log_level="info",
+        )

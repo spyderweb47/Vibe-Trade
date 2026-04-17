@@ -86,6 +86,26 @@ app.include_router(chat.router)
 
 
 # ---------------------------------------------------------------------------
+# Optional static frontend mount — used by `vibe-trade serve --reload`.
+#
+# The non-reload path in serve_cmd.py adds this mount directly on the app
+# instance before calling uvicorn.run(app_instance, ...). The reload path
+# can't do that because uvicorn re-imports the app from this module, so the
+# in-process mount is lost. We bridge the gap with VIBE_TRADE_FRONTEND_DIR:
+# serve_cmd sets it before invoking uvicorn.run("services.api.main:app"),
+# and the re-imported module picks it up here.
+# ---------------------------------------------------------------------------
+import os as _os  # noqa: E402 — kept local so it doesn't leak into the public API
+_frontend_dir = _os.environ.get("VIBE_TRADE_FRONTEND_DIR", "").strip()
+if _frontend_dir:
+    from pathlib import Path as _Path  # noqa: E402
+    _fd = _Path(_frontend_dir)
+    if _fd.is_dir() and (_fd / "index.html").exists():
+        from fastapi.staticfiles import StaticFiles  # noqa: E402
+        app.mount("/", StaticFiles(directory=str(_fd), html=True), name="web-ui")
+
+
+# ---------------------------------------------------------------------------
 # Startup event
 # ---------------------------------------------------------------------------
 @app.on_event("startup")
