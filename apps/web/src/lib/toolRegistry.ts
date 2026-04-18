@@ -260,13 +260,30 @@ const executors: Record<string, ToolExecutor> = {
 
   "simulation.set_debate": (debate, ctx) => {
     if (!debate || typeof debate !== "object") {
-      console.warn(`[skill:${ctx.skillId}] simulation.set_debate expected a debate object`);
+      console.warn(`[skill:${ctx.skillId}] simulation.set_debate expected a debate object, got:`, debate);
       return;
     }
     // The backend returns the debate in the API format. The store's
     // setCurrentDebate expects the frontend SimulationDebate shape, so we
     // need to map it. If it's already in the right shape, pass through.
     const d = debate as Record<string, unknown>;
+
+    // Diagnostic log — helps catch cases where the backend returns a
+    // malformed payload (missing entities/thread/summary) and the UI
+    // would otherwise silently render empty tabs. If any of these are
+    // empty/missing, the warning surfaces the actual payload for the
+    // user to report.
+    const entitiesCount = Array.isArray(d.entities) ? d.entities.length : 0;
+    const threadCount = Array.isArray(d.thread) ? d.thread.length : 0;
+    const hasSummary = d.summary != null && typeof d.summary === "object";
+    if (entitiesCount === 0 || threadCount === 0 || !hasSummary) {
+      console.warn(
+        `[skill:${ctx.skillId}] simulation.set_debate received a thin payload — ` +
+        `entities=${entitiesCount}, thread=${threadCount}, summary=${hasSummary}. ` +
+        `Top-level keys: ${Object.keys(d).join(", ")}`,
+        d,
+      );
+    }
 
     // Build the SimulationDebate shape from the backend response
     const entities = ((d.entities || []) as Array<Record<string, unknown>>).map((e) => ({

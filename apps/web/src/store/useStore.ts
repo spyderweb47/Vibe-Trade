@@ -920,96 +920,32 @@ export const useStore = create<AppState>((set, get) => ({
       const { runSimulationDebate } = await import("@/lib/api");
       const report = useStore.getState().simulationReport;
 
-      // The entire pipeline (classify → generate entities → 8 rounds of debate → summary)
-      // runs as one API call and takes ~60-120 seconds. Show a progress message.
+      // The entire pipeline (classify → intelligence → entities → research →
+      // debate → cross-exam → report) runs as one API call and takes 60-120s
+      // on a normal preset, up to ~30min on the full 50×30 preset. Show
+      // progress text while we wait.
       set((s) => ({ currentDebate: s.currentDebate ? { ...s.currentDebate, status: "discussing" as const } : null }));
 
       const resp = await runSimulationDebate(activeId, 500, report);
 
-      // Update: show entities
-      const assetInfo = resp.asset_info || {};
-      set((s) => ({
-        currentDebate: s.currentDebate ? {
-          ...s.currentDebate,
-          status: "generating_entities" as const,
-          assetClass: assetInfo.asset_class || "",
-          assetName: assetInfo.asset_name || symbol,
-          entities: resp.entities.map((e) => ({
-            id: e.id, name: e.name, role: e.role,
-            background: e.background, bias: e.bias, personality: e.personality,
-          })),
-        } : null,
-      }));
-      await new Promise((r) => setTimeout(r, 400));
-
-      // Stream thread messages round by round
-      const totalRounds = resp.total_rounds || 5;
-      for (let round = 1; round <= totalRounds; round++) {
-        const roundMsgs = resp.thread.filter((m) => m.round === round);
-        if (roundMsgs.length === 0) continue;
-
-        set((s) => ({
-          currentDebate: s.currentDebate ? { ...s.currentDebate, status: "discussing" as const, currentRound: round } : null,
-        }));
-
-        // Reveal each message in the round with a small delay
-        for (const msg of roundMsgs) {
-          set((s) => ({
-            currentDebate: s.currentDebate ? {
-              ...s.currentDebate,
-              thread: [...s.currentDebate.thread, {
-                id: msg.id,
-                round: msg.round,
-                entityId: msg.entity_id,
-                entityName: msg.entity_name,
-                entityRole: msg.entity_role,
-                content: msg.content,
-                sentiment: msg.sentiment,
-                pricePrediction: msg.price_prediction,
-                agreedWith: msg.agreed_with || [],
-                disagreedWith: msg.disagreed_with || [],
-                isChartSupport: msg.is_chart_support || false,
-              }],
-            } : null,
-          }));
-          await new Promise((r) => setTimeout(r, 150));
-        }
-      }
-
-      // Summarizing
-      set((s) => ({
-        currentDebate: s.currentDebate ? { ...s.currentDebate, status: "summarizing" as const } : null,
-      }));
-      await new Promise((r) => setTimeout(r, 300));
-
-      // Final state
-      const sum = resp.summary;
-      set((s) => ({
-        currentDebate: s.currentDebate ? {
-          ...s.currentDebate,
-          status: "complete" as const,
-          summary: {
-            consensusDirection: (sum.consensus_direction || "NEUTRAL") as import("@/types").SimulationSummary["consensusDirection"],
-            confidence: sum.confidence || 0.5,
-            keyArguments: sum.key_arguments || [],
-            dissentingViews: sum.dissenting_views || [],
-            priceTargets: sum.price_targets || { low: 0, mid: 0, high: 0 },
-            riskFactors: sum.risk_factors || [],
-            recommendation: {
-              action: (sum.recommendation as any)?.action || "HOLD",
-              entry: (sum.recommendation as any)?.entry,
-              stop: (sum.recommendation as any)?.stop,
-              target: (sum.recommendation as any)?.target,
-              position_size_pct: (sum.recommendation as any)?.position_size_pct,
-            },
-          },
-          totalRounds: resp.total_rounds,
-        } : null,
-        debateHistory: s.currentDebate
-          ? [{ ...s.currentDebate, status: "complete" as const }, ...s.debateHistory].slice(0, 20)
-          : s.debateHistory,
-        simulationLoading: false,
-      }));
+      // Route the response through the shared toolRegistry mapper so EVERY
+      // field the backend returns (intel_briefing, cross_exam_results,
+      // market_context, data_feeds, agent_research, convergence_timeline,
+      // events) is mapped into the store — not just entities/thread/summary.
+      // Previously this path hand-rolled a partial mapping that silently
+      // dropped six of the most important response fields, leaving the
+      // Run Stats / Personalities / Debate Thread tabs empty even after a
+      // successful run.
+      const { runToolCalls } = await import("@/lib/toolRegistry");
+      // Preserve the dataset id we set on the initial placeholder so the
+      // mapper doesn't zero it out.
+      const fullPayload = { ...resp, dataset_id: activeId };
+      runToolCalls(
+        [{ tool: "simulation.set_debate", value: fullPayload }],
+        "simulation",
+        ["simulation.set_debate"],
+      );
+      set({ simulationLoading: false });
     } catch (err) {
       set((s) => ({
         currentDebate: s.currentDebate ? { ...s.currentDebate, status: "error", error: String(err) } : null,

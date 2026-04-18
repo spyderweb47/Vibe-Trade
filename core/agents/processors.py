@@ -253,12 +253,33 @@ async def _swarm_intelligence_processor(
             report_text=report,
         )
     except Exception as exc:  # noqa: BLE001
+        import traceback
+        traceback.print_exc()
+        # Surface accumulated events so the UI can show what happened up to
+        # the crash even on total-failure paths.
+        partial_events = list(orchestrator.run_events) if 'orchestrator' in locals() else []
         return SkillResponse(
             reply=f"Swarm debate failed: {exc}",
             tool_calls=[
                 {"tool": "notify.toast", "value": {"level": "error", "message": f"Debate error: {exc}"}},
             ],
+            data={"error": str(exc), "events": partial_events},
         )
+
+    # Wrap the orchestrator's raw dict with the top-level identity fields
+    # the frontend toolRegistry's `simulation.set_debate` expects. Without
+    # these, the UI falls back to a timestamp-based id and an empty symbol
+    # string — which in turn breaks the RunStatsTab header, the PDF export
+    # filename, and the snapshotting that preserves the debate across
+    # conversation switches. This matches the shape the /debate endpoint
+    # produces via its Pydantic DebateResponse projection.
+    import uuid as _uuid
+    debate_payload = {
+        "debate_id": str(_uuid.uuid4()),
+        "symbol": symbol,
+        "bars_analyzed": len(bars),
+        **result,
+    }
 
     # Build summary text for the chat reply
     summary = result.get("summary", {})
@@ -290,9 +311,9 @@ async def _swarm_intelligence_processor(
 
     return SkillResponse(
         reply="\n".join(reply_parts),
-        data={"debate": result},
+        data={"debate": debate_payload},
         tool_calls=[
-            {"tool": "simulation.set_debate", "value": result},
+            {"tool": "simulation.set_debate", "value": debate_payload},
             {"tool": "bottom_panel.activate_tab", "value": "dag_graph"},
             {"tool": "notify.toast", "value": {"level": "info", "message": f"Swarm: {direction} ({confidence:.0f}%)"}},
         ],
