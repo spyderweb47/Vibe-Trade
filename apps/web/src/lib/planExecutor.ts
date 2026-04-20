@@ -34,8 +34,11 @@ import type { StrategyConfig, TraceStep, TraceSubStep, TraceData } from "@/types
  * through these stages on a timer. When the backend call returns, all
  * sub-steps snap to done.
  */
+// `predict_analysis` is the new id for what used to be `swarm_intelligence`.
+// We register the sub-plan under BOTH keys so any saved plans that still
+// reference the old skill id keep rendering the progress ticker correctly.
 const SKILL_SUB_PLANS: Record<string, { label: string; durationMs: number }[]> = {
-  swarm_intelligence: [
+  predict_analysis: [
     // Stage 1: Context
     { label: "Stage 1: Classifying asset + analyzing market context...", durationMs: 4000 },
     { label: "Stage 1: Building specialization data feeds (6 feeds)...", durationMs: 2000 },
@@ -76,6 +79,10 @@ const SKILL_SUB_PLANS: Record<string, { label: string; durationMs: number }[]> =
     { label: "Stage 5: ReACT analysis — VERIFY tool (fact check vs data)...", durationMs: 5000 },
     { label: "Stage 5: Synthesizing final research note...", durationMs: 15000 },
   ],
+  // Backward-compat alias — old skill id keeps its sub-plan so saved
+  // plans still render the progress ticker. Both keys point at the
+  // same array so updates to one affect the other.
+  get swarm_intelligence() { return this.predict_analysis; },
   data_fetcher: [
     { label: "Parsing request (extracting symbol, interval, limit)...", durationMs: 3000 },
     { label: "Fetching historical bars from data provider...", durationMs: 5000 },
@@ -365,7 +372,7 @@ export async function executePlanInBrowser({ steps }: ExecutePlanArgs): Promise<
       }
 
       // Swarm intelligence summary
-      if (!resultSummary && step.skill === "swarm_intelligence") {
+      if (!resultSummary && (step.skill === "predict_analysis" || step.skill === "swarm_intelligence")) {
         const debate = result.data?.debate as Record<string, unknown> | undefined;
         if (debate) {
           const entities = (debate.entities as unknown[])?.length || 0;

@@ -234,8 +234,14 @@ _FALLBACK_RULES: List[Dict[str, Any]] = [
         ),
     },
     {
-        "skill": "swarm_intelligence",
+        # Renamed from swarm_intelligence. Keep BOTH skill ids as valid
+        # targets; the backend processor registry aliases them. The
+        # planner prefers the new name, the keyword fallback resolves to
+        # whichever id is in the valid_ids set (new wins if both are
+        # registered, which they are).
+        "skill": "predict_analysis",
         "keywords": (
+            "predict", "prediction", "predict direction", "forecast direction",
             "swarm", "committee", "debate", "multi-agent", "multi agent",
             "run agents", "analyze with agents", "panel debate",
         ),

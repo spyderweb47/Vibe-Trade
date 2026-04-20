@@ -469,12 +469,22 @@ async def _swarm_intelligence_processor(
 
 
 # ─── Registry ────────────────────────────────────────────────────────────
+#
+# The predict_analysis skill is the renamed swarm_intelligence — it's
+# one skill among others that uses the shared Agent Swarm Service (with
+# the largest team). The old id is kept as an alias so saved plans,
+# frontend code, and existing conversations keep routing.
+
+# Primary (new) name
+_predict_analysis_processor = _swarm_intelligence_processor
 
 PROCESSORS: Dict[str, ProcessorFn] = {
     "pattern": _pattern_processor,
     "strategy": _strategy_processor,
     "data_fetcher": _data_fetcher_processor,
-    "swarm_intelligence": _swarm_intelligence_processor,
+    "predict_analysis": _predict_analysis_processor,
+    # Backward-compat alias — old skill id routes to the new processor
+    "swarm_intelligence": _predict_analysis_processor,
 }
 
 

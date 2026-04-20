@@ -1,312 +1,252 @@
-# Skills, Planner, Tools — how the 3-layer system actually routes
+# Skills — how they plug into the Canvas
 
-> **Baseline**: commit `653a51d`.
->
-> This doc covers: how a user's chat message turns into one or more
-> skill invocations, how skills communicate back to the UI via tool
-> calls, and how to add a new skill.
+> **Companion docs**:
+> - [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the 3-layer model
+> - [`AGENT_SWARM.md`](./AGENT_SWARM.md) for the shared agent service
+> - [`PREDICT_ANALYSIS.md`](./PREDICT_ANALYSIS.md) for the multi-persona debate skill
 
-## 1. The 3 layers, concretely
+## 1. What a skill is, precisely
 
-| Layer | Files | Responsibility |
-|---|---|---|
-| **Canvas** | `apps/web/src/components/canvas/` + `Chart.tsx` | Renders what the user sees — multiple chart windows, drawings, indicators, bottom-panel tabs |
-| **Tools** | `apps/web/src/lib/toolRegistry.ts` | Registered handlers for **UI mutations** that skills can request. Each has a `(value, ctx) => void` signature. |
-| **Skills** | `core/agents/processors.py` + `skills/<id>/` | Backend handlers for **capabilities**. Each takes `(message, context, tools) → SkillResponse` |
+A **skill** is a backend-registered capability that the Planner can
+dispatch. Each skill:
+1. Is declared in `skills/<id>/skill.yaml` + documented in `skills/<id>/SKILL.md`
+2. Has a Python processor in `core/agents/processors.py`
+3. Receives `(message, context, tools)` and returns a `SkillResponse`
+4. Can emit `tool_calls` that mutate the Canvas
+5. **Optionally** uses the Agent Swarm Service to spawn its team of LLM agents
 
-Skills produce `tool_calls`; the frontend tool registry executes them
-against Canvas state. The planner decides which skill(s) to invoke and
-in what order. The loop is entirely one-way: skill runs → tool_calls
-land → UI updates.
+A skill is a composition — it's the thin wrapper that says *"for
+capability X, the team I need is [A, B, C]"* and delegates everything
+else to the Canvas-level orchestration.
 
-## 2. The four registered skills
+## 2. Registered skills
 
-| Skill ID | Purpose | Processor | Backend output |
+| id | Purpose | Agent team | QA loop |
 |---|---|---|---|
-| `data_fetcher` | Pull bars from yfinance/ccxt | `_data_fetcher_processor` | Bars + dataset_id (persisted in store) |
-| `pattern` | Generate pattern-detection JS script | `_pattern_processor` | Script + tool_call to load it |
-| `strategy` | Generate strategy JS script | `_strategy_processor` | Script + strategy_config |
-| `swarm_intelligence` | Multi-agent debate | `_swarm_intelligence_processor` | Full debate result |
+| `data_fetcher` | Pull bars from yfinance/ccxt | None (no LLM) | N/A |
+| `pattern` | Generate pattern-detection script | Researcher + Writer + QA | Yes (script runs → verifies matches) |
+| `strategy` | Generate strategy script + backtest | Risk + Portfolio + Writer + QA | Yes (script runs → verifies trade quality) |
+| `predict_analysis` | Multi-persona trading debate | 50 personas + CrossExaminer + Reporter | Partial (cross-exam as adversarial QA) |
 
-Each has:
-- `skills/<id>/SKILL.md` — human-readable description
-- `skills/<id>/skill.yaml` — metadata (id, name, description, version,
-  allowed tools)
-- A Python processor in `core/agents/processors.py`
+`predict_analysis` is the renamed `swarm_intelligence` — it's now one
+skill among others that uses the shared AgentSwarm service (just with
+the biggest team).
 
-Skills are loaded into `skill_registry` at backend startup (from
-`core/skill_registry.py`).
+## 3. The Planner
 
-## 3. The planner
-
-Every chat submission goes through `/plan` before the skill actually
-runs. The planner returns an ordered list of skill invocations.
+Every chat request goes through `POST /plan` first. The planner
+returns an ordered list of skill invocations.
 
 ### Flow
-
 ```
-User typed message
-      │
-      ▼
-POST /plan { message, context, available_skills }
-      │
-      ▼
-core/agents/planner.py :: plan()
-      │
- ┌────┴─────────────────────────────────────┐
- ▼                                          ▼
-LLM call via chat_completion                Keyword fallback
-(temperature 0.2, max 900 tokens)           (if LLM returns nothing)
-      │                                          │
- Returns JSON: {"steps": [...]}           Scans message for trigger
-                                          phrases — "fetch"/"load"/…
-                                          → data_fetcher
-                                          "swarm"/"debate"/…
-                                          → swarm_intelligence
-                                          (etc.)
-      │                                          │
-      └──────────────┬───────────────────────────┘
-                     ▼
-        Validated steps, each:
-        {skill, message, rationale, context}
+Message → planner.plan(message, available_skills=full_registry)
+         ├─ LLM call (temperature 0.2, max 900 tokens)
+         │    Returns {"steps": [...]} or empty
+         └─ Keyword fallback if LLM returns empty
+             Scans message for trigger phrases:
+               • "fetch" / "load" / "download"    → data_fetcher
+               • "swarm" / "debate" / "predict"   → predict_analysis
+               • "detect pattern" / "engulfing"   → pattern
+               • "backtest" / "strategy"          → strategy
+         │
+         └─ Returns validated [{skill, message, rationale, context}]
 ```
 
-### The LLM prompt
-Lives in `core/agents/planner.py::PLAN_SYSTEM_PROMPT`. Key rules:
-- Use ONLY skill ids from the provided registry
-- Each step's `message` is SELF-CONTAINED (downstream skill won't see
-  the original user message — so the ticker must be spelled out
-  explicitly in every step that references it)
-- `strategy` skill MUST include a structured `context.strategy_config`
-- Return `{"steps": []}` if out of scope (routes to plain chat)
+### Prompt rules (`core/agents/planner.py::PLAN_SYSTEM_PROMPT`)
+- Use ONLY skill ids from the registered list
+- Each step's `message` is self-contained (downstream skill won't see original user message)
+- `strategy` skill MUST include `context.strategy_config`
+- Return `{"steps": []}` for out-of-scope requests
 
-### Keyword fallback rules (`_keyword_fallback`)
-Only fires when the LLM returns zero valid steps. Maps clear intents
-to a single skill:
+### Design choice: no chip restriction
+The frontend passes `available_skills = undefined` — planner always
+sees the full registry. Chip selection (active skill tabs) is UI
+organisation only, not a plan restriction. Typed intent always wins.
 
-| Phrase contains | → Skill |
-|---|---|
-| `fetch`, `load`, `download`, `pull`, `get data`, `show chart` | `data_fetcher` |
-| `swarm`, `committee`, `debate`, `multi-agent`, `panel debate` | `swarm_intelligence` |
-| `detect pattern`, `engulfing`, `find pattern`, `scan for` | `pattern` |
-| `backtest`, `build a strategy`, `profit factor`, `sharpe` | `strategy` |
+## 4. SkillResponse shape
 
-Intentionally conservative — only clear matches. Trivial messages
-("hi") get no fallback → empty plan → frontend falls through to plain chat.
-
-### Skill restriction behavior (important design choice)
-
-The frontend `/plan` caller passes `available_skills: undefined`
-always — the planner sees the **full registered skill set** regardless
-of which chips the user has toggled. Previous versions restricted by
-`activeSkillIds`, which made typed intent ("run swarm") get squeezed
-into whichever skill happened to be active. Typed intent always wins;
-chip selection is UI-only (determines which bottom-panel tabs show).
-
-## 4. The tool registry
-
-Tools are the *verbs* a skill can request. Registered in
-`apps/web/src/lib/toolRegistry.ts` as a `Record<toolName, handler>`.
-
-### Current tool vocabulary
-
-| Tool | Payload | Effect |
-|---|---|---|
-| `data.dataset.add` | `{dataset_id, bars, metadata, symbol, source, interval}` | `store.addDataset` + mark synced if backend already has it |
-| `data.fetch_market` | no-op (logged) | — |
-| `script_editor.load` | script string | Loads script into the code editor |
-| `chart.set_timeframe` | `"1h" / "1d" / null` | Resample focused chart's data |
-| `chart.focus_range` | `{startTime, endTime}` | Zoom focused chart to this range |
-| `chart.drawing.activate` | drawing tool name | Switch the drawing toolbar |
-| `bottom_panel.activate_tab` | tab id | Open a specific bottom tab |
-| `bottom_panel.close` | — | Collapse the bottom panel |
-| `simulation.set_debate` | full debate object | Map snake_case → camelCase + call `setCurrentDebate` |
-| `simulation.run_debate` | — | Triggers `runDebate()` (direct REST fallback path) |
-| `simulation.reset` | — | Clears `currentDebate` |
-| `notify.toast` | `{level, message}` | Transient toast UI |
-
-### Tool executor signature
-```typescript
-type ToolHandler = (value: unknown, ctx: { skillId: string }) => void;
-```
-
-No async (fire-and-forget); no result returned to the skill. This is
-intentional — the skill's job finishes when it returns; tool_calls are
-UI updates.
-
-### Allowed-tools validation
-Each skill's `skill.yaml` lists the tools it's allowed to emit. The
-frontend's `runToolCalls(tool_calls, skillId, allowedTools)` silently
-skips any tool_call outside the allowed list and logs a warning. This
-prevents a misbehaving skill from e.g. opening random panels.
-
-## 5. plan executor
-
-**`apps/web/src/lib/planExecutor.ts :: executePlanInBrowser({steps})`**
-
-What it does:
-1. Posts a trace message to the chat (the "Planning..." card users see)
-2. Seeds `accumulatedContext = {}` (state that flows between steps)
-3. Before each step, updates `accumulatedContext.dataset_ids` to
-   include every canvas window's dataset id — so every step sees the
-   full workspace
-4. For each step:
-   - Merge `{...accumulatedContext, ...step.context}` into `stepContext`
-   - If the skill has a known sub-plan (`SKILL_SUB_PLANS`), start the
-     timer-driven sub-step ticker in the trace
-   - `sendChat(step.message, step.skill, stepContext)` → backend
-   - Run `runToolCalls(result.tool_calls, step.skill, allowedTools)`
-   - Post-step: if `data_fetcher`, wait up to 5s for the dataset to
-     appear in `syncedDatasets` (belt-and-braces; after the Phase 3
-     fix the dataset is already in the backend store)
-   - If `result.script` returned, auto-run it:
-     - `pattern` → iterate over every canvas window with bars and call
-       `executePatternScript(script, bars)` per-dataset; populate
-       `patternMatchesByDataset`
-     - `strategy` → `executeStrategy(script, chartData, config)`
-       against the focused chart's data (multi-chart is Phase 3.5)
-   - Carry forward: any `result.data` fields, `activeDataset`,
-     `dataset_ids`
-
-### Sub-plans (`SKILL_SUB_PLANS`)
-
-For skills with known long-running phases, the executor ticks through
-fake progress labels on a timer. This is **approximate** — not synced
-to actual backend progress — but gives the user feedback during
-multi-minute runs.
-
-Example for `swarm_intelligence`:
-```
-Stage 1: Classifying asset...                    (4s)
-Stage 1.5: Searching web for recent news...      (8s)
-Stage 1.5: Computing indicators...               (2s)
-Stage 2: Generating personas batch 1...          (8s)
-... (5 batches)
-Stage 2.5: Agents planning research queries...   (30s)
-Stage 2.5: Executing web searches...             (60s)
-Stage 3: Debate starting...                      (45s)
-... (6 timeline markers)
-Stage 4: Cross-examining extreme positions...    (20s)
-Stage 5: ReACT analysis...                       (15s)
-Stage 5: Synthesising final research note...     (15s)
-```
-
-If the real pipeline runs longer, the UI sticks on the last marker
-(with a "check server logs for true progress" hint) until the step
-actually returns.
-
-## 6. Message flow between layers
-
-### Frontend → Backend
-```typescript
-// apps/web/src/lib/api.ts
-sendChat(text, mode, context)
-  └─ POST /chat { message: text, mode, context }
-      context = {
-        dataset_id: focusedDatasetId,
-        dataset_ids: allCanvasDatasetIds,
-        pattern_script: currentScript,
-        strategy_config: strategyConfig,
-        pending_fingerprint: ...,
-        // plus planner-supplied step.context
-      }
-```
-
-### Backend dispatch (`services/api/routers/chat.py`)
-```python
-@router.post("/chat")
-async def chat(req: ChatRequest):
-    processor = get_processor(req.mode)
-    if processor:
-        response = await processor(req.message, req.context, tools_ctx)
-        return ChatResponse(**response.model_dump())
-    # Fallback: plain-chat LLM
-    return await _plain_chat(req.message)
-```
-
-### Skill → SkillResponse (`core/skill_types.py`)
 ```python
 @dataclass
 class SkillResponse:
     reply: str                               # shown in chat
     data: Dict[str, Any] = None              # carried forward to next step
     script: str = None                       # auto-run if pattern/strategy
-    script_type: str = "pattern"             # "pattern"|"strategy"|"indicator"
+    script_type: str = "pattern"             # pattern | strategy | indicator
     tool_calls: List[Dict[str, Any]] = []    # [{tool, value}, ...]
 ```
 
-### Backend → Frontend
-```typescript
-// on the frontend after await sendChat(...)
-addMsg({ role: "agent", content: result.reply });
-runToolCalls(result.tool_calls, step.skill, allowedTools);
-if (result.script) { auto-run via Web Worker }
-if (result.data) { carry forward into accumulatedContext }
+`tool_calls` are the only way a skill affects the frontend. Each is
+routed through the tool registry in `apps/web/src/lib/toolRegistry.ts`.
+
+## 5. Skill processors — the two shapes
+
+### Shape A: simple (no agents)
+For skills that are just a backend operation + UI update. Example:
+`data_fetcher`.
+
+```python
+async def _data_fetcher_processor(message, context, tools):
+    parsed = parse_query(message)
+    result = fetch_market_data(parsed["symbol"], parsed["interval"], parsed["limit"])
+    # Save to backend store so next skill can use it
+    dataset_id = uuid.uuid4()
+    store.save_dataset(dataset_id, pd.DataFrame(result["bars"]), metadata)
+    return SkillResponse(
+        reply=f"Loaded {result['metadata']['rows']} bars of {result['symbol']}",
+        tool_calls=[{"tool": "data.dataset.add", "value": {**result, "dataset_id": dataset_id}}],
+    )
 ```
 
-## 7. Adding a new skill
+### Shape B: team-based (uses AgentSwarm)
+For skills that benefit from multi-agent reasoning. Example: `pattern`.
+
+```python
+async def _pattern_processor(message, context, tools):
+    swarm = AgentSwarm()
+    team = swarm.assemble([
+        AgentSpec(role="researcher", persona={...}, tools=["search_web"]),
+        AgentSpec(role="writer", persona={...}, tools=[]),
+        AgentSpec(role="qa", persona={...}, tools=["run_indicator"]),
+    ])
+
+    # Phase 1: research what the pattern means
+    research = await team.agents["researcher"].speak(
+        context=f"Pattern request: {message}",
+        task="Research the mathematical/visual signature of this pattern",
+    )
+
+    # Phase 2: write + verify in a loop
+    result = await team.run_with_qa_loop(
+        task=message,
+        context=research.content,
+        producer_role="writer",
+        verifier_role="qa",
+        max_iterations=3,
+        spec=QASpec(
+            acceptance_criteria=f"Script detects at least 5 {message} instances...",
+            test_fn=run_pattern_script,
+            test_data=context.get("bars"),
+        ),
+    )
+
+    return SkillResponse(
+        reply=f"{result.final_artifact.content}\n_{result.iterations} QA iterations_",
+        script=result.final_artifact.structured["script"],
+        script_type="pattern",
+        tool_calls=[{"tool": "script_editor.load", "value": ...}],
+        data={"events": swarm.events()},
+    )
+```
+
+All the parallelism, timeouts, retries, event recording are done by
+`AgentSwarm` — the skill just declares the team.
+
+## 6. Tool registry (unchanged from v0.4.2)
+
+Tools are **UI mutations** a skill can request. Each has a handler in
+`apps/web/src/lib/toolRegistry.ts`.
+
+| Tool | Payload | Effect |
+|---|---|---|
+| `data.dataset.add` | `{dataset_id, bars, metadata, ...}` | `addDataset` + mark synced |
+| `script_editor.load` | script string | Loads into code editor |
+| `chart.set_timeframe` | `"1h" \| "1d" \| null` | Resample focused chart |
+| `chart.focus_range` | `{startTime, endTime}` | Zoom focused chart |
+| `chart.drawing.activate` | drawing tool name | Switch drawing toolbar |
+| `bottom_panel.activate_tab` | tab id | Open specific bottom tab |
+| `bottom_panel.close` | — | Collapse bottom panel |
+| `simulation.set_debate` | full debate dict | Map to SimulationDebate + store |
+| `simulation.run_debate` | — | Trigger direct-REST debate fallback |
+| `simulation.reset` | — | Clear currentDebate |
+| `notify.toast` | `{level, message}` | Transient toast |
+
+### Tool vs Swarm Tool
+Don't confuse:
+- **UI tools** (above) — frontend verbs, used by skills via `tool_calls`
+- **Swarm tools** (`search_web`, `run_indicator`, ...) — agent
+  capabilities, used by AgentSwarm agents via `Agent.use_tool(...)`
+
+See [`AGENT_SWARM.md`](./AGENT_SWARM.md) § 8 for the swarm-tool catalog.
+
+## 7. Allowed-tools validation
+Each skill's `skill.yaml` lists the UI tools it's allowed to emit:
+
+```yaml
+id: pattern
+tools:
+  - script_editor.load
+  - bottom_panel.activate_tab
+  - notify.toast
+```
+
+The frontend's `runToolCalls(tool_calls, skillId, allowedTools)` drops
+any `tool_call` outside the allowed list. Prevents misbehaving skills
+from opening random panels.
+
+## 8. Adding a new skill
 
 1. **Create folder**: `skills/<my_skill>/`
 2. **`skill.yaml`**:
    ```yaml
    id: my_skill
    name: "My New Skill"
-   description: "What it does in one sentence"
+   description: "What it does"
    version: "0.1.0"
    tools:
      - script_editor.load
      - notify.toast
-     # list only what this skill needs
    ```
-3. **`SKILL.md`** — human description (shown in Skills modal)
-4. **Add processor** to `core/agents/processors.py`:
+3. **`SKILL.md`** — human description shown in the Skills modal
+4. **Describe the agent team** (if needed) as AgentSpecs
+5. **Add processor** to `core/agents/processors.py`:
    ```python
-   async def _my_skill_processor(
-       message: str, context: Dict[str, Any], tools: ToolContext,
-   ) -> SkillResponse:
-       # ... LLM calls, business logic ...
-       return SkillResponse(
-           reply="Did the thing.",
-           tool_calls=[
-               {"tool": "notify.toast", "value": {"level": "info", "message": "Done"}},
-           ],
-       )
+   async def _my_skill_processor(message, context, tools):
+       swarm = AgentSwarm()
+       team = swarm.assemble([...])
+       result = await team.run_with_qa_loop(...)
+       return SkillResponse(reply=..., tool_calls=[...])
 
    PROCESSORS["my_skill"] = _my_skill_processor
    ```
-5. **(Optional) Update planner prompt** if the skill has a specific
-   invocation pattern the LLM should know about
-6. **(Optional) Add keyword fallback rule** in `_FALLBACK_RULES` if
-   there are clear trigger phrases
+6. **(Optional) Add keyword fallback rule** in `_FALLBACK_RULES`
 7. **(Optional) Add sub-plan** in `SKILL_SUB_PLANS` for trace progress
-8. **Restart backend** — skill is auto-discovered via
-   `core/skill_registry.py`
+8. **Restart backend** — skill auto-discovered via `core/skill_registry.py`
 
-### Adding a new tool
+## 9. Plain-chat fallback
 
-1. Register in `apps/web/src/lib/toolRegistry.ts`:
-   ```typescript
-   "my.new.tool": (value, ctx) => {
-     // Mutate store
-     useStore.getState().doSomething(value);
-   },
-   ```
-2. Whitelist in the skill's `skill.yaml` under `tools:`
-3. Skill emits `{tool: "my.new.tool", value: ...}` in its
-   `SkillResponse.tool_calls`
+When the planner returns `{"steps": []}` (trivial messages like "hi"),
+the frontend falls through to plain `/chat` call. `get_processor(mode)`
+returns `None` for unknown modes → `_plain_chat(message)` runs —
+single LLM call, no tool_calls.
 
-No backend knowledge needed for new tools — tools are pure frontend.
+## 10. Backward compatibility shim
 
-## 8. Plain-chat fallback
-
-When the planner returns `{steps: []}` (e.g. user said "hi"), the
-frontend falls through to:
-```typescript
-const result = await sendChat(text, activeMode, stepContext);
+The `swarm_intelligence` skill id is now an **alias** for
+`predict_analysis`. The processor registry maps both:
+```python
+PROCESSORS["predict_analysis"] = _predict_analysis_processor
+PROCESSORS["swarm_intelligence"] = _predict_analysis_processor   # alias
 ```
+So existing frontend code / saved conversations that reference
+`swarm_intelligence` keep working. The Planner's keyword fallback and
+default emissions use the new name.
 
-which still hits `/chat`. The backend's `get_processor(mode)` returns
-None for unknown modes → routes to `_plain_chat(message)` which is a
-simple LLM call with no tool_calls.
+## 11. Skill vs AgentSwarm — where does logic go?
 
-This is the path for free-form questions that don't match any skill.
+Rule of thumb:
+
+| Logic | Lives in |
+|---|---|
+| Parsing user intent to task | Skill processor |
+| Choosing what agents to hire | Skill processor (via AgentSpec list) |
+| Running agents in parallel | AgentSwarm |
+| Per-agent prompt building | AgentSwarm / base_agent |
+| LLM retry + timeout policy | AgentSwarm / llm_client |
+| QA loop mechanics | AgentSwarm (`team.run_with_qa_loop`) |
+| Consensus math on agent outputs | Skill processor (if skill-specific) OR AgentSwarm helper (if generic) |
+| Assembling `SkillResponse.tool_calls` | Skill processor |
+| Event recording | AgentSwarm (skill reads via `swarm.events()`) |
+
+If you're writing the same orchestration code in two skills, it
+belongs in AgentSwarm. If it's truly skill-specific (e.g. "which
+bottom panel tab to open"), it stays in the processor.
