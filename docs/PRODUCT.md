@@ -140,23 +140,198 @@ persistence — layouts survive thread switches and browser reloads.
 
 ### 3.3 Canvas-level capabilities (shared across skills)
 
-Three services embedded in the Canvas that every skill can invoke:
+Canvas isn't just the visual UI — it embeds three orchestration
+services every skill leverages. These are the product's "native
+intelligence" that skills compose with, not re-invent.
 
-- **Planner** (`core/agents/planner.py`) — decides which SKILLS run
-  for a given user request
-- **AgentSwarm Service** (`core/engine/agent_swarm.py`) — spawn,
-  orchestrate, verify teams of LLM agents. See
-  [AGENT_SWARM.md](./AGENT_SWARM.md)
-- **Swarm Tools registry** (`core/agents/swarm_tools.py`) — shared
-  tools any agent can call (web search, indicator math, etc.)
+#### 3.3.1 Planner (Level 1 — skill routing)
 
-Also three specialised agent patterns available to every skill:
+**File**: `core/agents/planner.py` · **Endpoint**: `POST /plan`
 
-| Agent pattern | File | When it runs |
+Decides **which SKILLS** run for a given user request. Takes the
+user's chat message and returns an ordered list of skill
+invocations that the frontend plan-executor then walks through.
+
+**How it works**:
+
+```
+User message
+  ↓
+POST /plan { message }
+  ↓
+planner.plan(message)
+  ├─ LLM call with PLAN_SYSTEM_PROMPT (temp 0.2, max 900 tokens)
+  │   Returns {"steps": [{skill, message, rationale, context}, ...]}
+  │
+  └─ Keyword fallback (if LLM returns empty):
+      "fetch"  / "load"           → data_fetcher
+      "swarm" / "predict" / "debate" → predict_analysis
+      "detect pattern" / "engulfing" → pattern
+      "backtest" / "strategy"     → strategy
+  ↓
+Validated steps passed to frontend
+  ↓
+planExecutor walks steps, calls /chat per skill, updates trace UI
+```
+
+**Key design choices**:
+- Planner always sees the **full skill registry** (not filtered by
+  which chips the user has activated). Chip selection is UI
+  organisation only — typed intent always wins.
+- Each step's `message` is self-contained. Downstream skills
+  don't see the original user message, so the ticker / subject has
+  to be spelled out per step.
+- Returns `{"steps": []}` for out-of-scope requests → frontend
+  falls through to plain chat.
+
+**Why a planner at all**: lets users express multi-skill requests
+naturally ("fetch AAPL and detect engulfing") without having to
+remember command syntax. The planner decomposes into ordered
+`[data_fetcher, pattern]` and the executor walks them.
+
+#### 3.3.2 Team Planner (Level 2 — agent selection)
+
+**File**: `core/agents/team_planner.py`
+
+For each invoked skill, decides **which AGENTS** the team needs.
+This is the second-level planner. Skills register "role templates"
+(mandatory + optional, each with allowed tools + default task); the
+Team Planner's LLM picks which optional roles to actually include
+and what each agent's specific task is for this request.
+
+**Shape of the output (`TeamPlan`)**:
+
+```python
+TeamPlan(
+  skill_id="pattern",
+  reasoning="Classic pattern, no research needed",
+  execution_mode="qa_loop",   # or parallel / sequential / discussion
+  agents=[
+    PlannedAgent(role="writer", task="Draft an engulfing detector...",
+                 tools=[], is_mandatory=True),
+    PlannedAgent(role="qa", task="Verify static + API compliance",
+                 tools=[], is_mandatory=True),
+    # No researcher this time — planner judged it unnecessary
+  ],
+  qa_producer="writer",
+  qa_verifier="qa",
+  qa_max_iterations=3,
+)
+```
+
+**Plan emitted to UI before execution** via the `swarm.team_plan.set`
+tool_call — frontend renders the plan in the trace box so the user
+sees who's being assembled and why, BEFORE any LLM calls fire:
+
+> **pattern team assembled: writer + qa**
+> Team plan · qa_loop · writer → qa (up to 3x)
+>
+> **[WRITER]** Draft a JavaScript pattern-detection script
+> **[QA]** Verify the script meets acceptance criteria
+
+For an unusual request ("find Wyckoff accumulation with
+volume-price divergence") the planner would ADD a researcher:
+
+> **pattern team assembled: writer + qa + researcher**
+>
+> **[RESEARCHER]** Research Wyckoff's schematic... 🔧 search_web 🔧 fetch_url
+> **[WRITER]** Draft script informed by researcher's findings
+> **[QA]** Verify...
+
+**Fallback**: if the planner LLM is unavailable or returns
+unparseable output, the Team Planner returns a mandatory-only plan
+with default tasks. Guaranteed executable, no silent failures.
+
+#### 3.3.3 Agent Swarm Service
+
+**File**: `core/engine/agent_swarm.py` · Full API:
+[AGENT_SWARM.md](./AGENT_SWARM.md)
+
+The orchestration primitive. Skills describe WHAT team they need;
+this service does HOW — parallelism, timeouts, retries, event
+recording.
+
+**API shape**:
+
+```python
+swarm = AgentSwarm()
+
+# Spawn a team from AgentSpecs
+team = swarm.assemble([
+    AgentSpec(role="risk_manager",   persona={...}, tools=["run_indicator"]),
+    AgentSpec(role="script_writer",  persona={...}, tools=[]),
+    AgentSpec(role="qa_verifier",    persona={...}, tools=["run_indicator"]),
+])
+
+# Four execution primitives:
+results = await team.run_parallel(task, context, timeout_s=180)
+results = await team.run_sequential(task, context, order=["analyst", "writer"])
+qa_result = await team.run_with_qa_loop(
+    task, context,
+    producer_role="writer",
+    verifier_role="qa",
+    max_iterations=3,
+    spec=QASpec(acceptance_criteria=..., test_fn=..., test_data=...),
+)
+debate = await team.discussion(rounds=30, speakers_per_round=15, ...)
+
+# Events surface to the UI
+events = swarm.events()   # [RunEvent, ...]
+```
+
+**What the service gives you for free**:
+
+| Guarantee | How |
+|---|---|
+| Per-agent timeouts (default 180s) | Each `speak()` wrapped in `asyncio.wait_for` |
+| LLM retry with backoff | `chat_completion` retries 2× with 1.5s / 3s / 6s + jitter |
+| Stuck agents don't freeze the team | Timeout → agent marked no-show, team continues |
+| Every failure visible to user | Recorded as `RunEvent{timestamp, level, stage, message}` → Run Warnings banner |
+| Tool access validated | `SwarmAgent.use_tool()` clamps to `spec.tools` whitelist |
+| QA loops bounded | `max_iterations` prevents infinite fix attempts |
+
+**Four orchestration modes**:
+
+| Mode | Use case | Example |
 |---|---|---|
-| **QA Agent** | `core/agents/qa_agent.py` | BEFORE script leaves backend — static + reasoning verification |
-| **Error Handler** | `core/agents/error_handler_agent.py` | AFTER runtime crash — LLM diagnoses + fixes the script |
-| **Team Planner** | `core/agents/team_planner.py` | Before team assembly — LLM picks which agents to spawn |
+| **parallel** | Independent analysis agents | Risk + Portfolio Manager analysing config at same time |
+| **sequential** | Each agent builds on priors | Researcher → Writer → Editor (like a pipeline) |
+| **qa_loop** | Closed-loop producer/verifier | Writer drafts → QA verifies → iterate |
+| **discussion** | Round-based multi-speaker debate | Predict-analysis Stage 3 (30 rounds × 15 speakers) |
+
+**Current users**: Pattern skill, Strategy skill, and (progressively)
+Predict Analysis all use this service. New skills plug in by
+writing a processor that assembles the team and calls one of the
+four primitives.
+
+#### 3.3.4 Swarm Tools registry
+
+**File**: `core/agents/swarm_tools.py`
+
+Shared tools any agent can call mid-execution. Full catalog is in
+§4.2 (Tooling section) — here's the one-line summary: web research
+(`search_web`, `fetch_url`, `fetch_pdf`, `fetch_news`,
+`fetch_policy`) plus on-chart analysis (`run_indicator`,
+`compute_levels`).
+
+Global rate limiter (0.5s min interval) serialises all DuckDuckGo
+calls to avoid IP blocks. Role-based tool assignment via
+`ROLE_TOOL_MAP` (can be overridden per-request by the Team Planner).
+
+#### 3.3.5 Specialised agent patterns
+
+Three reusable agent archetypes built on top of the service:
+
+| Pattern | File | When it runs | What it catches |
+|---|---|---|---|
+| **QA Agent** | `core/agents/qa_agent.py` | BEFORE script leaves backend | Proactive: forbidden APIs, over-strict thresholds, hardcoded confidence, missing return statements |
+| **Error Handler** | `core/agents/error_handler_agent.py` | AFTER Web Worker crash | Reactive: syntax errors, missing `let/const/var`, undefined variables, out-of-bounds access |
+| **Team Planner** | `core/agents/team_planner.py` | Before team assembly | Agent selection + task assignment (already covered in §3.3.2) |
+
+The three layers compose: a script can be QA-verified at generation
+time (static), executed in the browser, then if it crashes at
+runtime get fixed by the Error Handler and re-run. Three safety
+nets.
 
 ### 3.4 Conversation persistence
 
@@ -407,70 +582,46 @@ surfaced to the UI. See [PREDICT_ANALYSIS.md](./PREDICT_ANALYSIS.md)
 
 ---
 
-## 6. Cross-cutting features
+## 6. Other product features
 
-### 6.1 Planner (Level 1)
+Canvas-level orchestration (Planner, Team Planner, Agent Swarm
+Service, QA Agent, Error Handler) is documented in §3.3 — they're
+treated as first-class Canvas capabilities, not cross-cutting
+afterthoughts. A few other user-facing features worth naming:
 
-`core/agents/planner.py` — picks which SKILLS run per user message.
-LLM-driven with a keyword-fallback safety net for common intents.
+### 6.1 Clear Chart button
 
-Prompts always see the full skill registry (not filtered by chip
-selection) so typed intent always wins.
+Script-editor toolbar in the right sidebar has two action buttons:
 
-### 6.2 Team Planner (Level 2)
-
-`core/agents/team_planner.py` — for each invoked skill, picks which
-AGENTS the team needs. LLM reads role templates (mandatory + optional,
-with allowed tools) and decides which optional roles to add based on
-the specific request.
-
-Plan is always emitted as `swarm.team_plan.set` tool_call so the UI
-renders the team BEFORE execution starts. Users see who's being
-assembled and what each agent will do.
-
-Fallback: if the planner LLM is unavailable, mandatory-only plan with
-default tasks — guaranteed executable.
-
-### 6.3 Agent Swarm Service
-
-`core/engine/agent_swarm.py` — the orchestration primitive. Exposes:
-
-```python
-swarm = AgentSwarm()
-team = swarm.assemble([AgentSpec(role=..., persona=..., tools=...)])
-
-await team.run_parallel(task, context)
-await team.run_sequential(task, context, order)
-await team.run_with_qa_loop(task, context, producer, verifier, max_iters)
-await team.discussion(rounds, speakers_per_round, ...)
-```
-
-Handles all reliability (per-agent timeouts, retries, event
-recording) so every skill using the service inherits the same
-guarantees.
-
-### 6.4 QA Agent pattern
-
-`core/agents/qa_agent.py` — closed-loop verification. Producer drafts
-→ verifier checks (static + reasoning) → producer reflects on
-feedback → iterate up to N times. Used by Pattern + Strategy skills.
-
-### 6.5 Error Handler Agent
-
-`core/agents/error_handler_agent.py` — post-runtime-crash recovery.
-When a pattern or strategy script throws in the Web Worker, the
-frontend POSTs `/fix-script` with `{script, error, intent, script_type}`;
-the LLM diagnoses + returns a fixed version; the harness re-runs once.
-Bounded to one fix attempt per run.
-
-### 6.6 Clear Chart button
-
-Script-editor toolbar has two actions:
 - **Clear Chart** — wipes visual output on all chart windows
   (pattern matches, chart focus, plotted trades, pine drawings) but
-  keeps the script + backtest results + user-drawn drawings
+  keeps the script + backtest results + user-drawn drawings intact.
+  Use when you want to re-run a fresh pattern detection without
+  losing your script or manual trend-lines.
 - **Reset** — wipes everything (script, backtest, matches) and
-  switches to chat view
+  switches back to chat view. "Start over" button.
+
+### 6.2 PDF export of Run Stats
+
+Bottom-panel **Run Stats** tab (populated after a predict_analysis
+run) has a Summary/Full dropdown export to native-text PDF via
+jsPDF. Summary PDF is the analysis without the full agent profiles
+and debate thread; Full PDF includes all 50 personas + every
+message.
+
+### 6.3 Multi-LLM provider support
+
+Configured via `vibe-trade setup`. Supported providers: OpenAI,
+Anthropic (Claude), DeepSeek, Groq, Gemini, OpenRouter, Together AI,
+Fireworks AI, Ollama (local). Pick one, paste an API key; switch
+any time with another `setup` run.
+
+### 6.4 CLI-only mode
+
+`vibe-trade simulate --symbol BTC/USDT --interval 1d --bars 500`
+runs the full predict_analysis pipeline in the terminal with Rich
+panels — same orchestrator, same events, same output as the web
+UI. Useful for scripted/scheduled runs.
 
 ---
 
