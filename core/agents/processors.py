@@ -244,11 +244,19 @@ async def _swarm_intelligence_processor(
     report = context.get("report", "") or message
 
     # Normalize dataset_ids: accept list, fall back to the single
-    # dataset_id, deduplicate preserving order.
+    # dataset_id. ALWAYS put the focused dataset (dataset_id /
+    # activeDataset) at index 0 — it's the "primary" asset whose
+    # technicals drive Stage 1 / Stage 3. Without this the processor
+    # was running the full pipeline on whichever chart happened to be
+    # fetched first instead of whichever chart the user had selected,
+    # which made the output feel like it ignored the other chart.
     dataset_ids: List[str] = []
     if isinstance(dataset_ids_ctx, list):
         dataset_ids = [str(i) for i in dataset_ids_ctx if isinstance(i, str) and i]
-    if dataset_id and dataset_id not in dataset_ids:
+    if dataset_id:
+        # Remove any existing occurrence and prepend — so the focused
+        # chart is always the primary regardless of fetch order.
+        dataset_ids = [i for i in dataset_ids if i != dataset_id]
         dataset_ids.insert(0, dataset_id)
 
     # Helper: load (bars, symbol) for one dataset id. Returns (None, fallback)
@@ -398,8 +406,14 @@ async def _swarm_intelligence_processor(
     total_rounds = result.get("total_rounds", 0)
     price_targets = summary.get("price_targets", {})
 
-    # Multi-chart reply annotation — tell the user the debate considered
-    # all assets on their canvas, not just the primary ticker.
+    # Multi-chart reply annotation. Three cases:
+    #   a) len(loaded) > 1 → portfolio mode ran on N assets
+    #   b) len(loaded) == 1 but len(dataset_ids) > 1 → we were ASKED to
+    #      include multiple but only 1 made it into the store. Say so
+    #      loudly in the reply body so the user doesn't wonder why only
+    #      one asset is mentioned.
+    #   c) len(loaded) == 1 and len(dataset_ids) == 1 → plain single-
+    #      chart debate, no annotation.
     portfolio_note = ""
     if len(loaded) > 1:
         others = ", ".join(s for (_, _, s) in loaded[1:])
@@ -408,11 +422,28 @@ async def _swarm_intelligence_processor(
             f"sibling asset{'s' if len(loaded) - 1 != 1 else ''}: {others})"
         )
 
-    reply_parts = [
-        f"**Swarm debate complete** — {len(entities)} personas, {total_rounds} rounds, {len(thread)} messages{portfolio_note}.",
-        f"",
-        f"**Consensus: {direction}** with {confidence:.0f}% confidence.",
-    ]
+    # Header line (first in reply_parts)
+    reply_header = (
+        f"**Swarm debate complete** — {len(entities)} personas, "
+        f"{total_rounds} rounds, {len(thread)} messages{portfolio_note}."
+    )
+
+    reply_parts = [reply_header, ""]
+
+    # Case (b): requested multi-chart but only primary loaded — print a
+    # prominent note at the TOP of the reply body so it's unmissable.
+    if len(loaded) == 1 and len(dataset_ids) > 1:
+        missed_count = len(dataset_ids) - 1
+        reply_parts.append(
+            f"> ⚠️ Ran on **{symbol}** only. {missed_count} other chart"
+            f"{'s' if missed_count != 1 else ''} on the canvas were skipped "
+            f"because they weren't available in the backend store yet "
+            f"(likely a sync race). Re-run and they should be included; if "
+            f"it persists, check the Run Warnings tab."
+        )
+        reply_parts.append("")
+
+    reply_parts.append(f"**Consensus: {direction}** with {confidence:.0f}% confidence.")
     if price_targets:
         low = price_targets.get("low", "?")
         mid = price_targets.get("mid", "?")
