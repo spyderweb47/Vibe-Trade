@@ -706,3 +706,133 @@ def _strip_code_fences(text: str) -> str:
         if text.endswith("```"):
             text = text[:-3]
     return text.strip()
+
+
+# ─── Static analyser for the QA loop ────────────────────────────────────────
+#
+# Used by `_pattern_processor` in `processors.py` via `QASpec.test_fn`. The
+# QA verifier agent reads this function's output alongside the script and
+# reasons about whether the draft is acceptable.
+#
+# Deliberately static (no JS execution) — the frontend Web Worker runs the
+# script for real once the skill response lands. This is defence-in-depth
+# against common LLM mistakes (forgotten `return results`, hardcoded
+# confidence=1.0, forbidden APIs, over-strict thresholds) that would cause
+# silent "0 matches" failures on the frontend.
+
+_FORBIDDEN_APIS = (
+    "import ", "require(", "fetch(", "XMLHttpRequest", "eval(",
+    " Function(", "async ", "await ", "Promise", "document.",
+    "window.", "localStorage", "sessionStorage",
+)
+
+_REQUIRED_PATTERNS = {
+    "results_init": r"(const|let|var)\s+results\s*=\s*\[\s*\]",
+    # Any for-loop iterating `data` — start index can be 0 or any other
+    # value (scripts often start at a minBars offset for the pattern).
+    "data_loop": r"for\s*\([^)]*;\s*\w+\s*<\s*data\.length",
+    "return_results": r"return\s+results\s*;?",
+}
+
+
+def static_analyse_pattern_script(artifact: Any, _test_data: Any = None) -> Dict[str, Any]:
+    """
+    Static checks on a generated pattern script. Returns a dict the QA
+    verifier agent can reason over; `passed_all` is a quick gate for the
+    agent's first read. Verifier reasons beyond this as well (things like
+    "is the confidence formula actually varying" are hard to detect
+    syntactically).
+
+    Accepts either a str (raw script) or a dict (if the writer returned
+    structured output with a "script" key).
+    """
+    if isinstance(artifact, dict):
+        script = str(artifact.get("script") or artifact.get("content") or "")
+    else:
+        script = str(artifact)
+    script = _strip_code_fences(script)
+
+    report: Dict[str, Any] = {
+        "script_length_lines": script.count("\n") + 1,
+        "script_length_chars": len(script),
+    }
+
+    # Forbidden APIs — these are fatal (browser sandbox blocks them)
+    forbidden_found = [kw for kw in _FORBIDDEN_APIS if kw in script]
+    report["forbidden_apis_found"] = forbidden_found
+
+    # Required structural elements
+    structure: Dict[str, bool] = {}
+    for name, pat in _REQUIRED_PATTERNS.items():
+        structure[name] = bool(re.search(pat, script))
+    report["structure"] = structure
+
+    # Confidence sanity — must not be hardcoded to 1.0
+    hardcoded_conf_hits = list(re.finditer(
+        r"confidence\s*:\s*1(?:\.0+)?\s*[,}]", script,
+    ))
+    report["hardcoded_confidence_1"] = len(hardcoded_conf_hits)
+
+    # Threshold sanity — flag over-strict correlation thresholds
+    overstrict: List[str] = []
+    for m in re.finditer(r"(correlation|corr|similarity)\s*>\s*0\.(\d+)", script, re.I):
+        thresh = float("0." + m.group(2))
+        if thresh >= 0.75:
+            overstrict.append(f"{m.group(0)} (>={thresh} is too strict; use 0.50)")
+    report["over_strict_thresholds"] = overstrict
+
+    # Pattern detection: populates required keys?
+    fills_schema = all(
+        k in script
+        for k in ("start_idx", "end_idx", "confidence", "pattern_type")
+    )
+    report["populates_result_schema"] = fills_schema
+
+    # Summary pass/fail
+    report["passed_structure"] = all(structure.values())
+    report["passed_all"] = (
+        report["passed_structure"]
+        and not forbidden_found
+        and report["hardcoded_confidence_1"] == 0
+        and fills_schema
+        and report["script_length_lines"] < 120  # sanity cap
+    )
+    return report
+
+
+# Natural-language version of the acceptance criteria that gets fed into the
+# QA verifier agent. Defines WHAT the verifier should judge beyond the static
+# checks (things that need LLM reasoning, not regex).
+
+PATTERN_QA_CRITERIA = """\
+The producer has drafted a JavaScript pattern-detection script to run in
+a Web Worker. Judge the draft against these requirements:
+
+1. Runs in a sandbox — no imports, no fetch, no async/await, no DOM APIs
+2. Structural shape — `const results = []` at top; `for (let i = 0; ...; ...) { ... }`
+   iterating `data`; ends with `return results`
+3. Each results entry has {start_idx, end_idx, confidence, pattern_type}
+4. Confidence is a VARIABLE quality signal (e.g. correlation value,
+   body-ratio score) — NOT hardcoded to 1.0
+5. Thresholds are FORGIVING — real market data is noisy:
+   - correlation-based: threshold around 0.50 (NOT > 0.75)
+   - price-tolerance: 3-5% (NOT 1%)
+   A script with overly strict thresholds will find zero matches on real
+   data — this is a fatal UX bug even though the code "runs"
+6. Handles edge cases — checks `data.length >= N` before indexing
+7. Logic is concise (under ~60 lines) and readable
+
+The programmatic static analysis report accompanying this script lists
+concrete issues it could detect (forbidden APIs found, missing
+structural elements, over-strict thresholds, hardcoded confidence).
+Weight those heavily when judging — they're factual, not stylistic.
+
+Return STRICT JSON:
+{
+  "passed": bool,
+  "severity": "ok" | "minor" | "major" | "critical",
+  "issues": [...],
+  "suggested_fix": "specific changes the producer should make",
+  "confidence": 0-1
+}
+"""

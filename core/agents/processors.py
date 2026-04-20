@@ -41,11 +41,48 @@ async def _pattern_processor(
     context: Dict[str, Any],
     tools: ToolContext,
 ) -> SkillResponse:
-    """Generate a pattern / indicator / pine-convert script from the message."""
+    """
+    Generate a pattern / indicator / pine-convert script.
+
+    Path A (team + QA loop) — used for standard pattern requests:
+      Writer agent drafts a JS pattern-detection script using the
+      existing battle-tested PATTERN_SYSTEM_PROMPT, then a QA agent
+      statically analyses it for common LLM mistakes (forbidden APIs,
+      missing return, hardcoded confidence, over-strict thresholds).
+      If the QA verdict is "fail", the writer reflects and iterates,
+      up to 3 times.
+
+    Legacy path — used for `indicator` and `pine_convert` requests:
+      Single LLM call via PatternAgent.generate(). No QA loop — the
+      indicator-generation prompt is stable enough that the extra
+      verification round doesn't improve quality and would delay the
+      response unnecessarily.
+
+    Opt-out: set `context.pattern_use_qa_team = False` to force the
+    legacy single-call path for a specific request.
+    """
+    # Decide path
+    script_type = _pattern._detect_type(message)
+    use_team = context.get("pattern_use_qa_team", True) and script_type == "pattern"
+
+    if not use_team:
+        return await _pattern_processor_legacy(message, script_type, context, tools)
+
+    return await _pattern_processor_with_team(message, context, tools)
+
+
+async def _pattern_processor_legacy(
+    message: str,
+    script_type: str,
+    context: Dict[str, Any],
+    tools: ToolContext,
+) -> SkillResponse:
+    """Original single-call path — kept for indicator/pine_convert and
+    explicit opt-out via `context.pattern_use_qa_team = False`."""
     result = _pattern.generate(message)
 
     script = result.get("script")
-    script_type = result.get("script_type", "pattern")
+    script_type = result.get("script_type", script_type)
     explanation = result.get("explanation", "")
 
     data: Dict[str, Any] = {
@@ -58,9 +95,6 @@ async def _pattern_processor(
 
     tool_calls = []
     if script:
-        # script_editor.load loads the JS into the editor. View-switching is
-        # handled by RightSidebar based on first-time-vs-edit — the tool
-        # executor intentionally does NOT force view="code".
         tool_calls.append({"tool": "script_editor.load", "value": script})
         tool_calls.append({"tool": "bottom_panel.activate_tab", "value": "pattern_analysis"})
 
@@ -70,6 +104,141 @@ async def _pattern_processor(
         script_type=script_type,
         data=data,
         tool_calls=tool_calls,
+    )
+
+
+async def _pattern_processor_with_team(
+    message: str,
+    context: Dict[str, Any],
+    tools: ToolContext,
+) -> SkillResponse:
+    """
+    Team-based pattern generation:
+      Writer (uses PATTERN_SYSTEM_PROMPT) → QA (static + reasoning) → loop.
+
+    Phase 2 of the Canvas-as-Platform refactor: the first skill to use
+    the shared AgentSwarm service for a team + QA loop pattern.
+    """
+    # Late import so agent_swarm stays a leaf dependency of processors
+    from core.engine.agent_swarm import AgentSwarm
+    from core.agents.base_agent import AgentSpec
+    from core.agents.qa_agent import QASpec
+    from core.agents.pattern_agent import (
+        PATTERN_SYSTEM_PROMPT,
+        PATTERN_QA_CRITERIA,
+        static_analyse_pattern_script,
+        _strip_code_fences,
+    )
+
+    swarm = AgentSwarm()
+    team = swarm.assemble([
+        AgentSpec(
+            role="writer",
+            persona={
+                "name": "Pattern Writer",
+                "background": "Quant pattern-detection engineer, 10 years writing"
+                              " JS scripts for chart anomaly detection",
+                "style": "Precise, concise, follows forgiving-threshold conventions",
+            },
+            # Reuse the existing battle-tested prompt. The writer IS the
+            # old PatternAgent._generate_with_llm pipeline, just with a
+            # verifier sitting in front of it.
+            system_prompt=PATTERN_SYSTEM_PROMPT,
+            tools=[],   # no tool access needed for script writing
+            temperature=0.3,
+            max_tokens=1800,
+        ),
+        AgentSpec(
+            role="qa",
+            persona={
+                "name": "Script QA Reviewer",
+                "background": "Senior code reviewer, skeptical about edge cases"
+                              " and silent-failure conditions",
+                "style": "Adversarial — tries to catch bugs the writer would miss",
+            },
+            tools=[],   # static analysis only in this phase
+            temperature=0.2,
+            max_tokens=1200,
+        ),
+    ])
+
+    qa_result = await team.run_with_qa_loop(
+        task=message,
+        context="",  # writer prompt includes everything it needs
+        producer_role="writer",
+        verifier_role="qa",
+        max_iterations=3,
+        spec=QASpec(
+            acceptance_criteria=PATTERN_QA_CRITERIA,
+            test_fn=static_analyse_pattern_script,
+            test_data=None,
+        ),
+    )
+
+    script = _strip_code_fences(qa_result.final_artifact.content or "")
+
+    # If the writer actually errored out (LLM unavailable, etc.), fall
+    # back to the legacy path so the user still gets SOMETHING.
+    if not script or qa_result.final_reason in ("producer_failed", "producer_reflect_failed"):
+        print(
+            f"[pattern.team] writer failed ({qa_result.final_reason}) — "
+            f"falling back to legacy path",
+            flush=True,
+        )
+        return await _pattern_processor_legacy(message, "pattern", context, tools)
+
+    # Build an explanation — one more small LLM call so the chat reply
+    # reads as the final finished artefact, not a QA dump.
+    try:
+        from core.agents.llm_client import chat_completion
+        explanation = chat_completion(
+            system_prompt=(
+                "You are a trading analyst. Explain the following JavaScript "
+                "pattern-detection script in 2-3 sentences. What does it "
+                "compute and how?"
+            ),
+            user_message=script,
+            temperature=0.3,
+            max_tokens=300,
+        ).strip()
+    except Exception:  # noqa: BLE001
+        explanation = "Pattern detection script generated and QA'd."
+
+    data: Dict[str, Any] = {
+        "parameters": _pattern._extract_parameters(script),
+        "indicators_used": _pattern._extract_indicators(script),
+        # Surface the QA trail so the UI / CLI can show "verified in 2 iterations"
+        "qa_passed": qa_result.passed,
+        "qa_iterations": qa_result.iterations,
+        "qa_final_reason": qa_result.final_reason,
+        "events": [
+            {"timestamp": e.timestamp, "level": e.level, "stage": e.stage,
+             "message": e.message, "agent_role": e.agent_role}
+            for e in swarm.events()
+        ],
+    }
+
+    # QA status note in the reply so the user knows what happened behind
+    # the scenes without having to open a diagnostics tab.
+    qa_note = (
+        f"\n\n_✓ QA-verified in {qa_result.iterations} iteration(s)._"
+        if qa_result.passed
+        else (
+            f"\n\n_⚠ QA review ran but didn't fully pass after "
+            f"{qa_result.iterations} iteration(s) — using best attempt. "
+            f"Reason: {qa_result.final_reason}._"
+        )
+    )
+
+    return SkillResponse(
+        reply=explanation + qa_note,
+        script=script,
+        script_type="pattern",
+        data=data,
+        tool_calls=[
+            {"tool": "script_editor.load", "value": script},
+            {"tool": "bottom_panel.activate_tab", "value": "pattern_analysis"},
+        ],
     )
 
 

@@ -24,9 +24,14 @@ else to the Canvas-level orchestration.
 | id | Purpose | Agent team | QA loop |
 |---|---|---|---|
 | `data_fetcher` | Pull bars from yfinance/ccxt | None (no LLM) | N/A |
-| `pattern` | Generate pattern-detection script | Researcher + Writer + QA | Yes (script runs → verifies matches) |
-| `strategy` | Generate strategy script + backtest | Risk + Portfolio + Writer + QA | Yes (script runs → verifies trade quality) |
+| `pattern` | Generate pattern-detection script | Writer + QA (migrated) | Yes — static analysis of generated script |
+| `strategy` | Generate strategy script + backtest | Risk + Portfolio + Writer + QA (planned) | Planned — script runs → verifies trade quality |
 | `predict_analysis` | Multi-persona trading debate | 50 personas + CrossExaminer + Reporter | Partial (cross-exam as adversarial QA) |
+
+**Migration status** (as of the current commit):
+- ✅ `pattern` — uses `AgentSwarm` Writer + QA team with static-analysis QA loop, up to 3 iterations, graceful fallback to legacy path on writer failure
+- ⏳ `strategy` — still on legacy single-call path; planned migration to Risk + Portfolio + Writer + QA team
+- ⏳ `predict_analysis` — `DebateOrchestrator` still uses its own parallelism; progressive migration to `Team.discussion()` planned
 
 `predict_analysis` is the renamed `swarm_intelligence` — it's now one
 skill among others that uses the shared AgentSwarm service (just with

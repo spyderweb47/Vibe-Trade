@@ -1,11 +1,9 @@
 # Agent Swarm Service — the Canvas's shared orchestration layer
 
-> **Status**: this doc describes the intended design and the
-> foundation scaffolding (interfaces, base classes). Full migration
-> of `predict_analysis` onto the service is ongoing; existing
-> behaviour is preserved via a shim in `core/engine/dag_orchestrator.py`
-> that still runs the current 5-stage code but exposes it through the
-> new API.
+> **Status**: service is live (`core/engine/agent_swarm.py`).
+> - ✅ Pattern skill migrated to Writer + QA team (`_pattern_processor_with_team`)
+> - ⏳ Strategy skill migration planned (Risk + Portfolio + Writer + QA)
+> - ⏳ `predict_analysis` progressive migration planned (Stage 3 → `Team.discussion()`, etc.)
 
 ## 1. What it is
 
