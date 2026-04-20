@@ -76,6 +76,32 @@ function makeNewConversation(): Conversation {
 }
 
 /**
+ * Rename-migration map for skill ids. Historical saved conversations
+ * (+ any other legacy persisted state) may contain retired skill ids
+ * that no longer resolve to a loaded skill. When these land in
+ * `activeSkillIds`, the BottomPanel's `computeSkillTabs` finds no
+ * matching skill and renders zero tabs for the affected conversation
+ * — which looks to the user like "the feature is broken" even though
+ * the backend processed everything correctly.
+ *
+ * Keep this map minimal. Only add entries for actual renames; don't
+ * use it as a generic id-normalisation system.
+ */
+const _SKILL_ID_RENAMES: Record<string, string> = {
+  swarm_intelligence: 'predict_analysis',
+};
+
+/** Apply rename migrations to any skill-id collection. */
+function _normaliseSkillIds(ids: Iterable<string>): string[] {
+  const out: string[] = [];
+  for (const id of ids) {
+    const mapped = _SKILL_ID_RENAMES[id] ?? id;
+    if (!out.includes(mapped)) out.push(mapped);
+  }
+  return out;
+}
+
+/**
  * Snapshot the current live store state into the active conversation entry.
  * Returns the updated conversations array, or null if there's no active id.
  * Side effect: persists the result to localStorage.
@@ -424,7 +450,7 @@ export const useStore = create<AppState>((set, get) => ({
       backtestResults: active.backtestResults,
       patternMatches: active.patternMatches || [],
       activeDataset: active.activeDataset,
-      activeSkillIds: new Set(active.activeSkillIds || []),
+      activeSkillIds: new Set(_normaliseSkillIds(active.activeSkillIds || [])),
       activeMode: active.activeSkillIds?.[0] || 'general',
       // Canvas — restore the workspace the user left this conversation
       // with. Includes each window's dataset id, position, and size.
@@ -500,7 +526,7 @@ export const useStore = create<AppState>((set, get) => ({
       strategyConfig: target.strategyConfig,
       backtestResults: target.backtestResults,
       activeDataset: target.activeDataset,
-      activeSkillIds: new Set(target.activeSkillIds || []),
+      activeSkillIds: new Set(_normaliseSkillIds(target.activeSkillIds || [])),
       activeMode: target.activeSkillIds?.[0] || 'general',
       appMode: target.appMode,
       // Session isolation — restore chart, datasets, debate, drawings
@@ -571,7 +597,7 @@ export const useStore = create<AppState>((set, get) => ({
         strategyConfig: next.strategyConfig,
         backtestResults: next.backtestResults,
         activeDataset: next.activeDataset,
-        activeSkillIds: new Set(next.activeSkillIds || ['pattern']),
+        activeSkillIds: new Set(_normaliseSkillIds(next.activeSkillIds || ['pattern'])),
         activeMode: next.activeSkillIds?.[0] || 'pattern',
         appMode: next.appMode,
         // Session isolation — same restore list as switchConversation
@@ -632,9 +658,12 @@ export const useStore = create<AppState>((set, get) => ({
   setActiveSkills: (ids) => set((state) => {
     // Empty set is allowed: the chat falls through to the backend's general
     // handler (no skill dispatch, no tool_calls, just free-form LLM chat).
-    const primary = Array.from(ids)[0] || 'general';
+    // Normalise in case the caller passed a retired skill id (legacy
+    // UI code, old saved state, external callers).
+    const normalised = new Set(_normaliseSkillIds(ids));
+    const primary = Array.from(normalised)[0] || 'general';
     return {
-      activeSkillIds: ids,
+      activeSkillIds: normalised,
       activeMode: primary,
       messages: primary === 'strategy' ? state.strategyMessages : state.patternMessages,
     };

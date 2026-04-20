@@ -230,21 +230,38 @@ async def _pattern_processor_with_team(
     team = swarm.assemble(specs)
 
     # Pre-execution: let the researcher run first if it was included so
-    # the writer gets its findings as additional context
+    # the writer gets its findings as additional context.
+    #
+    # NOTE: we deliberately DON'T call team.run_parallel here — that
+    # would fire EVERY agent in the team (writer + qa + researcher) on
+    # the researcher's task, wasting 2 unnecessary LLM calls. Instead
+    # we invoke just the researcher's speak() directly via a bounded
+    # asyncio.wait_for.
     writer_context = ""
-    if "researcher" in team.agents:
+    researcher_agent = team.agents.get("researcher")
+    if researcher_agent is not None:
         researcher_task = next(
             (a.task for a in plan.agents if a.role == "researcher"),
             "Research this pattern",
         )
-        r_result = await team.run_parallel(
-            task=researcher_task,
-            context=f"User request: {message}",
-            timeout_s=90.0,
-        )
-        researcher_out = r_result.get("researcher")
-        if researcher_out and researcher_out.content:
-            writer_context = f"## Prior research\n{researcher_out.content}\n\n"
+        import asyncio
+        try:
+            r_resp = await asyncio.wait_for(
+                asyncio.to_thread(
+                    researcher_agent.speak,
+                    f"User request: {message}",
+                    researcher_task,
+                ),
+                timeout=90.0,
+            )
+            if r_resp.content and not r_resp.error:
+                writer_context = f"## Prior research\n{r_resp.content}\n\n"
+        except asyncio.TimeoutError:
+            swarm._event(
+                "warn", "pattern_pre_exec",
+                "researcher timed out — writer will proceed without its input",
+                "researcher",
+            )
 
     # QA loop driven by the plan's chosen producer/verifier
     producer = plan.qa_producer or "writer"
