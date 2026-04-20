@@ -340,7 +340,31 @@ async def _strategy_processor(
     context: Dict[str, Any],
     tools: ToolContext,
 ) -> SkillResponse:
-    """Generate a strategy script from config, or analyze backtest results."""
+    """
+    Dispatcher for strategy requests:
+      mode == "analyze"  → analyse pre-computed backtest metrics (legacy)
+      mode == "generate" → plan-first team flow (Risk + Portfolio + Writer + QA)
+      opt-out            → context.strategy_use_qa_team = False forces the
+                           original single-call path even for generate mode
+    """
+    mode = context.get("mode", "generate")
+
+    if mode == "analyze":
+        return await _strategy_processor_legacy(message, context, tools)
+
+    use_team = context.get("strategy_use_qa_team", True)
+    if not use_team:
+        return await _strategy_processor_legacy(message, context, tools)
+
+    return await _strategy_processor_with_team(message, context, tools)
+
+
+async def _strategy_processor_legacy(
+    message: str,
+    context: Dict[str, Any],
+    tools: ToolContext,
+) -> SkillResponse:
+    """Original single-call path. Kept for analyze mode and explicit opt-out."""
     mode = context.get("mode", "generate")
     strategy_config = context.get("strategy_config") or {}
 
@@ -369,6 +393,293 @@ async def _strategy_processor(
         script_type="strategy",
         data={"config": strategy_config},
         tool_calls=tool_calls,
+    )
+
+
+async def _strategy_processor_with_team(
+    message: str,
+    context: Dict[str, Any],
+    tools: ToolContext,
+) -> SkillResponse:
+    """
+    Plan-first team-based strategy generation:
+      TeamPlanner picks the team (Writer + QA mandatory; Risk Manager and
+      Portfolio Manager optional) → plan rendered in trace UI → Risk and
+      PM run first if included, feeding their analyses into the Writer's
+      context → Writer drafts the strategy script (uses
+      STRATEGY_GENERATE_PROMPT) → QA verifies via static analysis + LLM
+      reasoning → loop up to 3 iterations.
+
+    On LLM/fixer failure, gracefully falls back to the legacy single-call
+    path so the user always gets a script.
+    """
+    # Late imports — keep agent_swarm a leaf dependency of processors
+    import json as _json
+    from core.engine.agent_swarm import AgentSwarm
+    from core.agents.base_agent import AgentSpec
+    from core.agents.qa_agent import QASpec
+    from core.agents.team_planner import TeamPlanner, RoleTemplate
+    from core.agents.strategy_agent import (
+        STRATEGY_GENERATE_PROMPT,
+        STRATEGY_QA_CRITERIA,
+        static_analyse_strategy_script,
+    )
+
+    strategy_config = context.get("strategy_config") or {}
+
+    # The writer's prompt needs the structured config rendered into
+    # STRATEGY_GENERATE_PROMPT's placeholders. We do this once up-front
+    # so the writer's system_prompt is fully baked — matches how the
+    # pattern writer uses PATTERN_SYSTEM_PROMPT directly.
+    tp = strategy_config.get("takeProfit", {}) or {}
+    sl = strategy_config.get("stopLoss", {}) or {}
+    writer_system_prompt = STRATEGY_GENERATE_PROMPT.format(
+        entry_condition=strategy_config.get("entryCondition", ""),
+        exit_condition=strategy_config.get("exitCondition", ""),
+        tp_type=tp.get("type", "percentage"),
+        tp_value=tp.get("value", 5),
+        sl_type=sl.get("type", "percentage"),
+        sl_value=sl.get("value", 2),
+        max_drawdown=strategy_config.get("maxDrawdown", 20),
+        seed_amount=strategy_config.get("seedAmount", 10000),
+        special=strategy_config.get("specialInstructions", "None"),
+    )
+
+    # ─── Phase 1: plan the team ──────────────────────────────────────
+    planner = TeamPlanner()
+    plan = planner.plan(
+        skill_id="strategy",
+        user_message=message or _json.dumps(strategy_config),
+        templates=[
+            RoleTemplate(
+                role="writer",
+                description=(
+                    "Drafts the JavaScript strategy/backtest script using "
+                    "the Vibe Trade strategy API (trades[] + equity[] + "
+                    "return). MANDATORY."
+                ),
+                persona_defaults={
+                    "name": "Strategy Writer",
+                    "background": "Quant developer, specialises in concise backtest scripts",
+                    "style": "Precise, defines all indicators inline, bounds-checks every array access",
+                },
+                allowed_tools=[],
+                mandatory=True,
+                default_task=(
+                    "Draft a JavaScript backtest script that implements the "
+                    "user's strategy config with proper equity tracking and "
+                    "bounds-checked indicator helpers"
+                ),
+            ),
+            RoleTemplate(
+                role="qa",
+                description=(
+                    "Reviews the writer's script for sandbox compliance, "
+                    "equity-updated-every-bar, config respected, trade "
+                    "shape, and achievable entry conditions. Blocks "
+                    "promotion until acceptance criteria are met. MANDATORY."
+                ),
+                persona_defaults={
+                    "name": "Backtest QA Reviewer",
+                    "background": "Senior quant, tears backtests apart looking for silent bugs",
+                    "style": "Adversarial — flags scripts that will produce 0 trades on real data",
+                },
+                allowed_tools=[],
+                mandatory=True,
+                default_task="Verify the strategy script meets the acceptance criteria",
+            ),
+            RoleTemplate(
+                role="risk_manager",
+                description=(
+                    "OPTIONAL. Add when the user's request has non-trivial "
+                    "risk parameters (leverage, aggressive DD limits, short "
+                    "selling) or asks for a risk-aware strategy. Analyses "
+                    "the config's TP/SL/DD ratios for soundness and suggests "
+                    "adjustments if the risk-reward is poor."
+                ),
+                persona_defaults={
+                    "name": "Risk Manager",
+                    "background": "Prop-trading risk desk, 10+ years, obsessed with drawdown",
+                    "style": "Conservative, cites R-multiples and expected value",
+                },
+                allowed_tools=["run_indicator", "compute_levels"],
+                mandatory=False,
+                default_task=(
+                    "Analyse the strategy config's risk profile (TP/SL ratio, "
+                    "max drawdown, implied win-rate needed for profitability) "
+                    "and recommend adjustments if the risk is mis-calibrated"
+                ),
+            ),
+            RoleTemplate(
+                role="portfolio_mgr",
+                description=(
+                    "OPTIONAL. Add when the user's request references market "
+                    "conditions, regime, or asset-specific context ('work on "
+                    "crypto bear markets', 'only in trending regimes'). "
+                    "Considers whether the strategy makes sense for the "
+                    "asset class and current environment."
+                ),
+                persona_defaults={
+                    "name": "Portfolio Manager",
+                    "background": "Multi-asset PM, considers correlation + regime",
+                    "style": "Top-down, connects asset behaviour to strategy choice",
+                },
+                allowed_tools=["search_web"],
+                mandatory=False,
+                default_task=(
+                    "Consider whether the proposed strategy suits the current "
+                    "asset / regime, and flag mis-matches"
+                ),
+            ),
+        ],
+        default_execution_mode="qa_loop",
+    )
+
+    # ─── Phase 2: emit plan as trace tool_call ───────────────────────
+    plan_tool_calls = [
+        {"tool": "swarm.team_plan.set", "value": plan.to_trace_payload()},
+    ]
+
+    # ─── Phase 3: assemble + execute ─────────────────────────────────
+    swarm = AgentSwarm()
+    specs = []
+    for pa in plan.agents:
+        system_prompt = writer_system_prompt if pa.role == "writer" else None
+        specs.append(AgentSpec(
+            role=pa.role,
+            persona=pa.persona,
+            system_prompt=system_prompt,
+            tools=pa.tools,
+            temperature=0.3 if pa.role == "writer" else 0.2,
+            max_tokens=2500 if pa.role == "writer" else 1200,
+        ))
+    team = swarm.assemble(specs)
+
+    # Pre-execution: risk + portfolio managers run first if planned,
+    # feed their analyses into the writer's context. Run in parallel
+    # since they're independent.
+    pre_agents = [a.role for a in plan.agents if a.role in ("risk_manager", "portfolio_mgr")]
+    pre_agent_tasks: Dict[str, str] = {
+        a.role: a.task for a in plan.agents if a.role in pre_agents
+    }
+    writer_context_parts: List[str] = []
+    if pre_agents:
+        # Create a small sub-team just for the pre-run so run_parallel
+        # only runs these agents (not the writer/qa that come later).
+        sub_specs = [s for s in specs if s.role in pre_agents]
+        sub_team = swarm.assemble(sub_specs)
+        # run_parallel uses the same task for all — but we want each
+        # agent's own task. Run them individually and gather.
+        pre_results: Dict[str, Any] = {}
+        for role in pre_agents:
+            agent = sub_team.agents.get(role)
+            if agent is None:
+                continue
+            import asyncio
+            try:
+                resp = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        agent.speak,
+                        f"User request: {message}\n\nConfig: {_json.dumps(strategy_config)}",
+                        pre_agent_tasks.get(role, "Analyse this strategy"),
+                    ),
+                    timeout=120.0,
+                )
+                pre_results[role] = resp
+            except asyncio.TimeoutError:
+                swarm._event(
+                    "warn", "strategy_pre_exec",
+                    f"{role} timed out — writer will proceed without its input",
+                    role,
+                )
+        for role, resp in pre_results.items():
+            if resp.content:
+                label = {
+                    "risk_manager": "Risk analysis",
+                    "portfolio_mgr": "Portfolio context",
+                }.get(role, role)
+                writer_context_parts.append(f"## {label}\n{resp.content}")
+
+    writer_context = (
+        "\n\n".join(writer_context_parts)
+        + (f"\n\n## Config\n{_json.dumps(strategy_config, indent=2)}" if writer_context_parts
+           else f"## Config\n{_json.dumps(strategy_config, indent=2)}")
+    )
+
+    producer = plan.qa_producer or "writer"
+    verifier = plan.qa_verifier or "qa"
+
+    qa_result = await team.run_with_qa_loop(
+        task="Generate the strategy script now. Include all indicator functions inline.",
+        context=writer_context,
+        producer_role=producer,
+        verifier_role=verifier,
+        max_iterations=plan.qa_max_iterations,
+        spec=QASpec(
+            acceptance_criteria=STRATEGY_QA_CRITERIA,
+            test_fn=static_analyse_strategy_script,
+            test_data=None,
+        ),
+    )
+
+    # Strip code fences from writer output
+    script = (qa_result.final_artifact.content or "").strip()
+    if script.startswith("```"):
+        nl = script.index("\n") if "\n" in script else len(script)
+        script = script[nl + 1:]
+        if script.endswith("```"):
+            script = script[:-3]
+        script = script.strip()
+
+    # Graceful fallback: if the writer totally failed, fall through to
+    # the legacy single-call path so the user still gets SOMETHING.
+    if not script or qa_result.final_reason in ("producer_failed", "producer_reflect_failed"):
+        print(
+            f"[strategy.team] writer failed ({qa_result.final_reason}) — "
+            f"falling back to legacy path",
+            flush=True,
+        )
+        return await _strategy_processor_legacy(message, context, tools)
+
+    qa_note = (
+        f"\n\n_✓ QA-verified in {qa_result.iterations} iteration(s)._"
+        if qa_result.passed
+        else (
+            f"\n\n_⚠ QA review didn't fully pass after "
+            f"{qa_result.iterations} iteration(s) — using best attempt. "
+            f"Reason: {qa_result.final_reason}._"
+        )
+    )
+
+    data: Dict[str, Any] = {
+        "config": strategy_config,
+        "qa_passed": qa_result.passed,
+        "qa_iterations": qa_result.iterations,
+        "qa_final_reason": qa_result.final_reason,
+        "events": [
+            {"timestamp": e.timestamp, "level": e.level, "stage": e.stage,
+             "message": e.message, "agent_role": e.agent_role}
+            for e in swarm.events()
+        ],
+    }
+
+    reply = (
+        "Strategy script generated from your configuration via a "
+        f"{len(plan.agents)}-agent team."
+        + qa_note
+    )
+
+    return SkillResponse(
+        reply=reply,
+        script=script,
+        script_type="strategy",
+        data=data,
+        tool_calls=[
+            # Plan first → UI renders it before execution artefacts
+            *plan_tool_calls,
+            {"tool": "script_editor.load", "value": script},
+            {"tool": "bottom_panel.activate_tab", "value": "portfolio"},
+        ],
     )
 
 

@@ -2,10 +2,10 @@
 
 > **Status**: service is live (`core/engine/agent_swarm.py`).
 > - ✅ Pattern skill migrated to **plan-first** Writer + QA + optional Researcher flow
+> - ✅ Strategy skill migrated to **plan-first** Writer + QA + optional Risk Manager + Portfolio Manager flow
 > - ✅ TeamPlanner (`core/agents/team_planner.py`) decides team composition per-request
 > - ✅ Team plan rendered in trace UI BEFORE execution starts
 > - ✅ **ErrorHandlerAgent** (`core/agents/error_handler_agent.py`) — auto-fixes pattern/strategy scripts that crash at runtime
-> - ⏳ Strategy skill migration planned (Risk + Portfolio + Writer + QA)
 > - ⏳ `predict_analysis` progressive migration planned (Stage 3 → `Team.discussion()`, etc.)
 
 ## Three specialised agent patterns

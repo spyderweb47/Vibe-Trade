@@ -282,3 +282,161 @@ for (let i = 21; i < data.length; i++) {
     : (position.ep - data[i].close) / position.ep)) : 0));
 }
 return { trades, equity };"""
+
+
+# ─── Static analyser for QA loop ────────────────────────────────────────────
+#
+# Mirrors `core.agents.pattern_agent.static_analyse_pattern_script` but for
+# strategy scripts. The QA agent in `processors._strategy_processor_with_team`
+# consults this alongside its own reasoning to decide if a draft script
+# is acceptable.
+
+import re  # noqa: E402 — late import to keep the module header clean
+
+
+_FORBIDDEN_APIS = (
+    "import ", "require(", "fetch(", "XMLHttpRequest", "eval(",
+    " Function(", "async ", "await ", "Promise", "document.",
+    "window.", "localStorage", "sessionStorage",
+)
+
+_REQUIRED_STRATEGY_PATTERNS = {
+    # top-level: must init trades[] and equity[]
+    "trades_init": r"(const|let|var)\s+trades\s*=\s*\[\s*\]",
+    "equity_init": r"(const|let|var)\s+equity\s*=\s*\[\s*\]",
+    # iterates bars
+    "data_loop": r"for\s*\([^)]*;\s*\w+\s*<\s*data\.length",
+    # returns both arrays (the worker has a fallback but only if
+    # `trades` and `equity` names exist in scope — this check catches
+    # the common "forgot to return" bug before runtime)
+    "return_shape": r"return\s*\{\s*trades\s*[,:]",
+}
+
+
+def static_analyse_strategy_script(artifact: Any, _test_data: Any = None) -> Dict[str, Any]:
+    """
+    Static checks on a generated strategy script. Returns a structured
+    report the QA verifier agent can reason over; `passed_all` is a
+    quick gate for the agent's first read.
+
+    Deliberately static — no backtest execution. The frontend Web Worker
+    runs the script for real once the skill response lands, and the
+    Error Handler Agent takes over if THAT crashes. Static checks here
+    catch the most common write-time mistakes that would either make
+    the script unrunnable or produce silently-empty backtests.
+    """
+    if isinstance(artifact, dict):
+        script = str(artifact.get("script") or artifact.get("content") or "")
+    else:
+        script = str(artifact)
+    script = script.strip()
+    if script.startswith("```"):
+        nl = script.index("\n") if "\n" in script else len(script)
+        script = script[nl + 1:]
+        if script.endswith("```"):
+            script = script[:-3]
+        script = script.strip()
+
+    report: Dict[str, Any] = {
+        "script_length_lines": script.count("\n") + 1,
+        "script_length_chars": len(script),
+    }
+
+    # Forbidden APIs — fatal (browser sandbox blocks them)
+    forbidden_found = [kw for kw in _FORBIDDEN_APIS if kw in script]
+    report["forbidden_apis_found"] = forbidden_found
+
+    # Required structural elements
+    structure: Dict[str, bool] = {}
+    for name, pat in _REQUIRED_STRATEGY_PATTERNS.items():
+        structure[name] = bool(re.search(pat, script))
+    report["structure"] = structure
+
+    # Does the script push to equity INSIDE the loop? (Forgetting this is
+    # the most common silent-bug — backtest runs, no error, equity stays
+    # flat at seedAmount, metrics look weirdly zero.)
+    # Heuristic: look for `equity.push` somewhere after the loop opens.
+    loop_match = re.search(r"for\s*\([^)]*;\s*\w+\s*<\s*data\.length[^)]*\)\s*\{", script)
+    report["equity_pushed_in_loop"] = bool(
+        loop_match
+        and re.search(r"equity\.push\s*\(", script[loop_match.end():])
+    )
+
+    # Does it pay attention to config? (The API contract passes a config
+    # object with seedAmount, stopLoss, takeProfit, maxDrawdown — scripts
+    # that hardcode these ignore user intent.)
+    report["uses_config"] = "config." in script
+
+    # Does it have ANY bounds-check on data access? (Full check is hard
+    # to regex; this is a rough proxy — scripts that never mention
+    # data.length past the loop header often crash on edge cases.)
+    report["has_data_length_guard"] = script.count("data.length") >= 2
+
+    # Trades have the required fields? The executor tolerates missing
+    # fields (falls back to close prices), but trades missing entryIdx /
+    # exitIdx / type produce broken trade lists.
+    required_trade_fields = ("entryIdx", "exitIdx")  # type often inferred
+    fills_trade_shape = all(f in script for f in required_trade_fields)
+    report["populates_trade_shape"] = fills_trade_shape
+
+    # Confidence sanity — trades shouldn't be pushed with pnl = 0 literal
+    report["hardcoded_zero_pnl"] = bool(re.search(r"pnl\s*:\s*0\s*[,}]", script))
+
+    report["passed_structure"] = all(structure.values())
+    report["passed_all"] = (
+        report["passed_structure"]
+        and not forbidden_found
+        and report["script_length_lines"] < 200  # strategies can be longer than patterns
+        and fills_trade_shape
+        and report["equity_pushed_in_loop"]
+    )
+    return report
+
+
+# Natural-language acceptance criteria the QA verifier agent reasons over
+# (in addition to the programmatic static report above).
+
+STRATEGY_QA_CRITERIA = """\
+The producer has drafted a JavaScript strategy/backtest script to run
+in a Web Worker. Judge the draft against these requirements:
+
+1. SANDBOX — no imports, no fetch, no async/await, no DOM APIs.
+2. STRUCTURE — top-level `const trades = []` and `const equity = []`;
+   a for-loop iterating `data`; ends with `return { trades, equity }`.
+3. EQUITY UPDATED EVERY BAR — `equity.push(...)` MUST be called inside
+   the main loop, not just on trade open/close. A strategy that only
+   pushes when entering/exiting leaves equity flat during holding
+   periods and breaks metric calculations.
+4. CONFIG RESPECTED — the script should read from `config.stopLoss`,
+   `config.takeProfit`, `config.maxDrawdown`, `config.seedAmount`.
+   Hardcoding these values ignores the user's intent.
+5. TRADE SHAPE — each pushed trade should have `entryIdx`, `exitIdx`,
+   `type: 'long' | 'short'`, and optionally `entryPrice`, `exitPrice`,
+   `pnl`, `reason`. Missing entry/exit indices produce broken trades.
+6. BOUNDS CHECKED — `data[i+1]` or similar forward-looking access
+   must be guarded by `i + 1 < data.length`. Indicator lookbacks must
+   guard against `i < period`.
+7. INDICATOR CORRECTNESS — if the script computes RSI / EMA / SMA /
+   ATR, the helper functions must be defined within the script (the
+   sandbox has no runtime indicator library) and must return null /
+   the appropriate default for bars before enough lookback.
+8. PRODUCES TRADES — the entry conditions must be achievable on
+   typical market data. Conditions like "price breaks all-time high
+   AND volume is 10x average" will produce zero trades — this is a
+   fatal UX bug even if the code runs cleanly.
+
+The programmatic static analysis report accompanying this script lists
+concrete issues detected (forbidden APIs, missing structural elements,
+trade shape, equity-push-in-loop, config usage). Weight those heavily
+when judging — they're factual, not stylistic.
+
+Return STRICT JSON:
+{
+  "passed": bool,
+  "severity": "ok" | "minor" | "major" | "critical",
+  "issues": [...],
+  "suggested_fix": "specific changes the producer should make",
+  "confidence": 0-1
+}
+"""
+

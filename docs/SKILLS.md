@@ -24,13 +24,13 @@ else to the Canvas-level orchestration.
 | id | Purpose | Agent team | QA loop |
 |---|---|---|---|
 | `data_fetcher` | Pull bars from yfinance/ccxt | None (no LLM) | N/A |
-| `pattern` | Generate pattern-detection script | Writer + QA (migrated) | Yes — static analysis of generated script |
-| `strategy` | Generate strategy script + backtest | Risk + Portfolio + Writer + QA (planned) | Planned — script runs → verifies trade quality |
+| `pattern` | Generate pattern-detection script | Writer + QA + optional Researcher (migrated) | Yes — static analysis of generated script |
+| `strategy` | Generate strategy script + backtest | Writer + QA + optional Risk Manager + Portfolio Manager (migrated) | Yes — static analysis of generated script + ErrorHandler on runtime crashes |
 | `predict_analysis` | Multi-persona trading debate | 50 personas + CrossExaminer + Reporter | Partial (cross-exam as adversarial QA) |
 
 **Migration status** (as of the current commit):
-- ✅ `pattern` — uses `AgentSwarm` Writer + QA team with static-analysis QA loop, up to 3 iterations, graceful fallback to legacy path on writer failure
-- ⏳ `strategy` — still on legacy single-call path; planned migration to Risk + Portfolio + Writer + QA team
+- ✅ `pattern` — uses `AgentSwarm` Writer + QA team with optional Researcher (added by planner when the pattern is unusual). Static-analysis QA loop, up to 3 iterations, graceful fallback to legacy path on writer failure.
+- ✅ `strategy` — uses `AgentSwarm` Writer + QA team with optional Risk Manager + Portfolio Manager (added by planner when the config has non-trivial risk params or the request references market conditions). Pre-execution phase runs Risk + PM in parallel before the writer, feeding their analyses into the writer's context. Static-analysis QA loop + graceful fallback.
 - ⏳ `predict_analysis` — `DebateOrchestrator` still uses its own parallelism; progressive migration to `Team.discussion()` planned
 
 `predict_analysis` is the renamed `swarm_intelligence` — it's now one
