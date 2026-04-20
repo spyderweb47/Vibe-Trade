@@ -145,18 +145,16 @@ export function RightSidebar() {
         void skillCount; // kept for any future "show-me-a-warning" logic
         const planResult = await getPlan(text, undefined, undefined);
         if (planResult.steps && planResult.steps.length > 0) {
-          // Mark the planning trace done before the per-step executor
-          // renders its own trace messages.
-          updateMessage(planningTraceId, {
-            trace: {
-              status: "done",
-              title: `Plan: ${planResult.steps.map((s: { skill: string }) => s.skill).join(" → ")}`,
-              steps: [
-                { skill: "planner", message: `${planResult.steps.length} step(s) ready`, status: "done" },
-              ],
-            },
+          // Hand the interim planning trace off to the executor — it
+          // will mutate the same trace card in place to show per-step
+          // progress. Previously we used `updateMessage` to mark it
+          // done and then called `executePlanInBrowser` which created
+          // ANOTHER trace card, so users saw two stacked planner
+          // cards for every request. Reusing avoids that.
+          await executePlanInBrowser({
+            steps: planResult.steps,
+            existingTraceId: planningTraceId,
           });
-          await executePlanInBrowser({ steps: planResult.steps });
           return;
         }
         // Empty plan — mark as skipped so the trace card doesn't sit

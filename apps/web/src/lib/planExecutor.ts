@@ -105,6 +105,14 @@ const SKILL_SUB_PLANS: Record<string, { label: string; durationMs: number }[]> =
 
 interface ExecutePlanArgs {
   steps: PlanStep[];
+  /**
+   * When provided, re-use this trace message id instead of creating a
+   * new one. RightSidebar posts an "interim planning" trace message
+   * before calling `/plan` so the user gets instant feedback; once the
+   * plan arrives we reuse that same trace card to show per-step
+   * progress — otherwise users see two stacked planner cards.
+   */
+  existingTraceId?: string;
 }
 
 /**
@@ -112,7 +120,7 @@ interface ExecutePlanArgs {
  * the live store state and feeding real results into the next step. Renders
  * a single trace message that updates in place as steps run.
  */
-export async function executePlanInBrowser({ steps }: ExecutePlanArgs): Promise<void> {
+export async function executePlanInBrowser({ steps, existingTraceId }: ExecutePlanArgs): Promise<void> {
   const { addMessage, updateMessage } = useStore.getState();
 
   // Pre-populate activeSkillIds with EVERY skill the plan will touch. This
@@ -136,16 +144,27 @@ export async function executePlanInBrowser({ steps }: ExecutePlanArgs): Promise<
     status: "pending",
   }));
 
-  // Add ONE trace message at the start — we'll mutate it in place as the run progresses
-  const traceId = addMessage({
-    role: "trace",
-    content: "",
-    trace: {
-      status: "running",
-      steps: initialSteps,
-      title: `Planning ${steps.length} step${steps.length !== 1 ? "s" : ""}`,
-    },
-  });
+  const initialTrace = {
+    status: "running" as const,
+    steps: initialSteps,
+    title: `Planning ${steps.length} step${steps.length !== 1 ? "s" : ""}`,
+  };
+
+  // Reuse the caller's interim trace (from RightSidebar.handleSubmit) if
+  // provided; otherwise create a fresh trace message. Reusing avoids the
+  // "two planner cards in a row" UX bug where the interim "Planning..."
+  // card and the step-by-step card both show up for the same request.
+  let traceId: string;
+  if (existingTraceId) {
+    traceId = existingTraceId;
+    updateMessage(traceId, { trace: initialTrace });
+  } else {
+    traceId = addMessage({
+      role: "trace",
+      content: "",
+      trace: initialTrace,
+    });
+  }
 
   // Helper to patch the trace with new step state
   const patchTrace = (patch: Partial<TraceData>) => {
