@@ -449,6 +449,43 @@ const executors: Record<string, ToolExecutor> = {
     useStore.getState().resetSimulation();
   },
 
+  // ─── swarm.* — Agent Swarm Service tools (plan-first flow) ─────────────
+  "swarm.team_plan.set": (args, ctx) => {
+    // The backend TeamPlanner emits this BEFORE a skill executes so
+    // the trace UI can render the agent team that's about to be
+    // assembled (roles, tasks, tools, mandatory vs optional).
+    //
+    // This tool appends a new trace message dedicated to the team
+    // plan. The skill's actual execution result lands as a separate
+    // agent message via the usual sendChat → addMessage path.
+    if (!args || typeof args !== "object") {
+      console.warn(`[skill:${ctx.skillId}] swarm.team_plan.set expected an object`);
+      return;
+    }
+    const plan = args as import("@/types").TeamPlan;
+    const agentCount = plan.agents?.length ?? 0;
+    const roleList = (plan.agents || [])
+      .map((a) => a.role)
+      .join(" + ") || "none";
+    useStore.getState().addMessage({
+      role: "trace",
+      content: "",
+      trace: {
+        status: "done",
+        title: `${plan.skill_id} team assembled: ${roleList}`,
+        steps: [
+          {
+            skill: plan.skill_id,
+            message: `${agentCount} agent${agentCount === 1 ? "" : "s"} planned (mode: ${plan.execution_mode})`,
+            rationale: plan.reasoning,
+            status: "done",
+            teamPlan: plan,
+          },
+        ],
+      },
+    });
+  },
+
   // ─── notify.* — user notifications ─────────────────────────────────────
   "notify.toast": (args, ctx) => {
     // Stub — no toast system yet. Log as a console message so skills can

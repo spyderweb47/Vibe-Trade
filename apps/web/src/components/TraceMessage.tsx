@@ -246,7 +246,75 @@ function TraceStepRow({ step, index, isCurrentRunning }: { step: TraceStep; inde
             ))}
           </div>
         )}
+        {/* Team plan — rendered when a skill emits a TeamPlanner output
+            as swarm.team_plan.set. Shows the agents being assembled,
+            their tasks, tools, and mandatory-vs-optional status BEFORE
+            the skill's actual execution starts. */}
+        {step.teamPlan && <TeamPlanBlock plan={step.teamPlan} />}
       </div>
     </li>
+  );
+}
+
+function TeamPlanBlock({ plan }: { plan: import("@/types").TeamPlan }) {
+  return (
+    <div
+      className="mt-2 ml-1 rounded p-2"
+      style={{
+        borderLeft: "2px solid var(--accent)",
+        background: "rgba(255, 107, 0, 0.05)",
+        paddingLeft: 8,
+      }}
+    >
+      <div
+        className="text-[9px] font-bold uppercase tracking-wider mb-1"
+        style={{ color: "var(--accent)" }}
+      >
+        Team plan · {plan.execution_mode}
+        {plan.qa?.producer && (
+          <span className="ml-2" style={{ color: "var(--text-muted)", fontWeight: 500 }}>
+            {plan.qa.producer} → {plan.qa.verifier} (up to {plan.qa.max_iterations}x)
+          </span>
+        )}
+      </div>
+      <div className="space-y-1.5">
+        {plan.agents.map((a, i) => (
+          <div key={i} className="flex items-start gap-2">
+            <span
+              className="rounded px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider shrink-0"
+              style={{
+                background: a.mandatory ? "rgba(255, 107, 0, 0.18)" : "var(--surface-2)",
+                color: a.mandatory ? "var(--accent)" : "var(--text-secondary)",
+                border: `1px solid ${a.mandatory ? "rgba(255, 107, 0, 0.4)" : "var(--border)"}`,
+              }}
+              title={a.mandatory ? "Mandatory role" : "Optional role added by planner"}
+            >
+              {a.role}
+            </span>
+            <div className="flex-1 min-w-0">
+              <div className="text-[10px]" style={{ color: "var(--text-primary)" }}>
+                {a.task}
+              </div>
+              {a.tools.length > 0 && (
+                <div className="mt-0.5 flex gap-1 flex-wrap">
+                  {a.tools.map((t) => (
+                    <span
+                      key={t}
+                      className="rounded px-1 py-0.5 text-[8px] font-mono"
+                      style={{
+                        background: "rgba(59, 130, 246, 0.12)",
+                        color: "#3b82f6",
+                      }}
+                    >
+                      🔧 {t}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }

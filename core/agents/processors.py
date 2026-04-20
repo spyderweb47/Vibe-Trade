@@ -113,16 +113,25 @@ async def _pattern_processor_with_team(
     tools: ToolContext,
 ) -> SkillResponse:
     """
-    Team-based pattern generation:
-      Writer (uses PATTERN_SYSTEM_PROMPT) → QA (static + reasoning) → loop.
+    Plan-first team-based pattern generation:
 
-    Phase 2 of the Canvas-as-Platform refactor: the first skill to use
-    the shared AgentSwarm service for a team + QA loop pattern.
+      1. TeamPlanner decides which agents to spawn (Writer + QA are
+         mandatory; Researcher is added if the user's request needs
+         domain research).
+      2. Plan is emitted as a `swarm.team_plan.set` tool_call so the
+         frontend trace UI can render it BEFORE execution starts.
+      3. AgentSwarm assembles the team from the plan.
+      4. Team runs via Team.run_with_qa_loop with the producer/verifier
+         roles the planner picked.
+
+    This is the first skill to use the plan-first flow — the pattern
+    for every other skill to follow.
     """
-    # Late import so agent_swarm stays a leaf dependency of processors
+    # Late imports so agent_swarm stays a leaf dependency
     from core.engine.agent_swarm import AgentSwarm
     from core.agents.base_agent import AgentSpec
     from core.agents.qa_agent import QASpec
+    from core.agents.team_planner import TeamPlanner, RoleTemplate
     from core.agents.pattern_agent import (
         PATTERN_SYSTEM_PROMPT,
         PATTERN_QA_CRITERIA,
@@ -130,44 +139,123 @@ async def _pattern_processor_with_team(
         _strip_code_fences,
     )
 
+    # ─── Phase 1: plan the team ──────────────────────────────────────
+    planner = TeamPlanner()
+    plan = planner.plan(
+        skill_id="pattern",
+        user_message=message,
+        templates=[
+            RoleTemplate(
+                role="writer",
+                description=(
+                    "Drafts the JavaScript pattern-detection script using the "
+                    "standard Vibe Trade pattern API (results array, for loop, "
+                    "return results). MANDATORY."
+                ),
+                persona_defaults={
+                    "name": "Pattern Writer",
+                    "background": "Quant pattern-detection engineer, 10 years writing"
+                                  " JS scripts for chart anomaly detection",
+                    "style": "Precise, concise, follows forgiving-threshold conventions",
+                },
+                allowed_tools=[],
+                mandatory=True,
+                default_task="Draft a JavaScript pattern-detection script for the user's request",
+            ),
+            RoleTemplate(
+                role="qa",
+                description=(
+                    "Reviews the writer's script for correctness, adherence to "
+                    "the sandbox API, forgiving thresholds, and no hardcoded "
+                    "confidence=1.0. Blocks promotion until acceptance criteria "
+                    "are met. MANDATORY."
+                ),
+                persona_defaults={
+                    "name": "Script QA Reviewer",
+                    "background": "Senior code reviewer, skeptical about edge cases"
+                                  " and silent-failure conditions",
+                    "style": "Adversarial — tries to catch bugs the writer would miss",
+                },
+                allowed_tools=[],
+                mandatory=True,
+                default_task="Verify the writer's script meets the pattern-skill acceptance criteria",
+            ),
+            RoleTemplate(
+                role="researcher",
+                description=(
+                    "OPTIONAL. Add this when the user's pattern request is unusual "
+                    "(academic patterns, rare harmonics, niche wyckoff phases) "
+                    "and would benefit from looking up the pattern's definition or "
+                    "visual signature. Has `search_web` and `fetch_url` to pull "
+                    "from trading literature. Skip for classic well-known patterns."
+                ),
+                persona_defaults={
+                    "name": "Pattern Researcher",
+                    "background": "Technical-analysis historian, references pattern studies",
+                    "style": "Rigorous, cites sources, explains mathematical signatures",
+                },
+                allowed_tools=["search_web", "fetch_url"],
+                mandatory=False,
+                default_task="Research the pattern's definition and mathematical signature",
+            ),
+        ],
+        default_execution_mode="qa_loop",
+    )
+
+    # ─── Phase 2: emit plan as a trace tool_call ─────────────────────
+    # The frontend tool 'swarm.team_plan.set' (to be wired in the
+    # toolRegistry) renders this as a dedicated trace sub-message so the
+    # user sees the team BEFORE the run starts. Having it as a tool_call
+    # means it flows through the same channel as other UI updates.
+    plan_tool_calls = [
+        {"tool": "swarm.team_plan.set", "value": plan.to_trace_payload()},
+    ]
+
+    # ─── Phase 3: assemble + execute ─────────────────────────────────
     swarm = AgentSwarm()
-    team = swarm.assemble([
-        AgentSpec(
-            role="writer",
-            persona={
-                "name": "Pattern Writer",
-                "background": "Quant pattern-detection engineer, 10 years writing"
-                              " JS scripts for chart anomaly detection",
-                "style": "Precise, concise, follows forgiving-threshold conventions",
-            },
-            # Reuse the existing battle-tested prompt. The writer IS the
-            # old PatternAgent._generate_with_llm pipeline, just with a
-            # verifier sitting in front of it.
-            system_prompt=PATTERN_SYSTEM_PROMPT,
-            tools=[],   # no tool access needed for script writing
-            temperature=0.3,
-            max_tokens=1800,
-        ),
-        AgentSpec(
-            role="qa",
-            persona={
-                "name": "Script QA Reviewer",
-                "background": "Senior code reviewer, skeptical about edge cases"
-                              " and silent-failure conditions",
-                "style": "Adversarial — tries to catch bugs the writer would miss",
-            },
-            tools=[],   # static analysis only in this phase
-            temperature=0.2,
-            max_tokens=1200,
-        ),
-    ])
+    specs = []
+    for pa in plan.agents:
+        # Writer gets the PATTERN_SYSTEM_PROMPT override so it uses our
+        # battle-tested prompt. Other roles use the base_agent default
+        # (persona-derived) prompt.
+        system_prompt = PATTERN_SYSTEM_PROMPT if pa.role == "writer" else None
+        specs.append(AgentSpec(
+            role=pa.role,
+            persona=pa.persona,
+            system_prompt=system_prompt,
+            tools=pa.tools,
+            temperature=0.3 if pa.role == "writer" else 0.2,
+            max_tokens=1800 if pa.role == "writer" else 1200,
+        ))
+    team = swarm.assemble(specs)
+
+    # Pre-execution: let the researcher run first if it was included so
+    # the writer gets its findings as additional context
+    writer_context = ""
+    if "researcher" in team.agents:
+        researcher_task = next(
+            (a.task for a in plan.agents if a.role == "researcher"),
+            "Research this pattern",
+        )
+        r_result = await team.run_parallel(
+            task=researcher_task,
+            context=f"User request: {message}",
+            timeout_s=90.0,
+        )
+        researcher_out = r_result.get("researcher")
+        if researcher_out and researcher_out.content:
+            writer_context = f"## Prior research\n{researcher_out.content}\n\n"
+
+    # QA loop driven by the plan's chosen producer/verifier
+    producer = plan.qa_producer or "writer"
+    verifier = plan.qa_verifier or "qa"
 
     qa_result = await team.run_with_qa_loop(
         task=message,
-        context="",  # writer prompt includes everything it needs
-        producer_role="writer",
-        verifier_role="qa",
-        max_iterations=3,
+        context=writer_context,
+        producer_role=producer,
+        verifier_role=verifier,
+        max_iterations=plan.qa_max_iterations,
         spec=QASpec(
             acceptance_criteria=PATTERN_QA_CRITERIA,
             test_fn=static_analyse_pattern_script,
@@ -236,6 +324,9 @@ async def _pattern_processor_with_team(
         script_type="pattern",
         data=data,
         tool_calls=[
+            # Plan-first: team plan goes out first so the UI renders
+            # it above the execution artefacts (script, panel switch).
+            *plan_tool_calls,
             {"tool": "script_editor.load", "value": script},
             {"tool": "bottom_panel.activate_tab", "value": "pattern_analysis"},
         ],

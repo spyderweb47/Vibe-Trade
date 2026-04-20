@@ -1,9 +1,61 @@
 # Agent Swarm Service — the Canvas's shared orchestration layer
 
 > **Status**: service is live (`core/engine/agent_swarm.py`).
-> - ✅ Pattern skill migrated to Writer + QA team (`_pattern_processor_with_team`)
+> - ✅ Pattern skill migrated to **plan-first** Writer + QA + optional Researcher flow
+> - ✅ TeamPlanner (`core/agents/team_planner.py`) decides team composition per-request
+> - ✅ Team plan rendered in trace UI BEFORE execution starts
 > - ⏳ Strategy skill migration planned (Risk + Portfolio + Writer + QA)
 > - ⏳ `predict_analysis` progressive migration planned (Stage 3 → `Team.discussion()`, etc.)
+
+## 0. Plan-first flow (the request the user asked for)
+
+The end-to-end pipeline for any skill that uses the service:
+
+```
+1. User submits chat message
+          │
+          ▼
+2. Level-1 Planner (planner.py) picks the SKILL
+   → [{skill: "pattern", message: "detect xabcd harmonic", ...}]
+          │
+          ▼
+3. Skill processor invoked with (message, context, tools)
+          │
+          ▼
+4. Level-2 Planner (team_planner.py) — NEW
+   LLM decides which AGENTS this specific task needs:
+     - Mandatory roles (e.g. writer, qa) always included
+     - Optional roles (e.g. researcher) added when task warrants it
+     - Per-agent task text
+     - Per-agent tool allocation (only from role's allowed list)
+     - Execution mode (qa_loop / parallel / sequential / discussion)
+          │
+          ▼
+5. swarm.team_plan.set tool_call → frontend renders plan in trace UI
+   User sees the team BEFORE execution starts:
+     "pattern team assembled: writer + qa + researcher"
+     + per-agent task + tool chips + mandatory/optional badges
+          │
+          ▼
+6. AgentSwarm.assemble(specs) from the plan
+          │
+          ▼
+7. Execute per plan.execution_mode:
+     - qa_loop: run_with_qa_loop(plan.qa_producer, plan.qa_verifier, ...)
+     - parallel: run_parallel(task, context)
+     - sequential: run_sequential(task, context, order)
+     - discussion: discussion(rounds, speakers_per_round)
+          │
+          ▼
+8. Skill processor wraps result + events into SkillResponse
+   Final tool_calls (script_editor.load, etc.) land in UI
+```
+
+Key insight: the skill author doesn't hardcode the team. They list
+role TEMPLATES (with mandatory/optional + descriptions + allowed
+tools); the LLM picks which optional roles to include based on the
+specific user request. Classic pattern → no researcher. Rare
+harmonic → researcher added with `search_web`.
 
 ## 1. What it is
 

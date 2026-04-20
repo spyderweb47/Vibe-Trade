@@ -134,6 +134,9 @@ export interface TraceStep {
   result?: string;        // short summary like "63 matches found"
   error?: string;         // populated when status === 'failed'
   subSteps?: TraceSubStep[];  // internal progress for long-running skills
+  /** If present, this step is a Plan-First team plan rendered in the
+   *  trace UI. Emitted by the backend before the skill actually runs. */
+  teamPlan?: TeamPlan;
 }
 
 /**
@@ -453,6 +456,30 @@ export interface RunEvent {
   stage: string;
   /** Human-readable description of what happened. */
   message: string;
+}
+
+/**
+ * Team plan emitted by the backend `TeamPlanner` before a skill actually
+ * executes. Rendered in the trace UI so the user sees which agents are
+ * being assembled and why — plan-first flow.
+ */
+export interface TeamPlan {
+  skill_id: string;
+  user_message: string;
+  reasoning: string;
+  execution_mode: 'qa_loop' | 'parallel' | 'sequential' | 'discussion' | string;
+  agents: Array<{
+    role: string;
+    task: string;
+    tools: string[];
+    mandatory: boolean;
+    persona_name: string;
+  }>;
+  qa?: {
+    producer: string | null;
+    verifier: string | null;
+    max_iterations: number;
+  } | null;
 }
 
 export interface SimulationDebate {
