@@ -31,6 +31,13 @@ interface ChartProps {
   data: OHLCBar[];
   patternMatches?: PatternMatch[];
   supportResistance?: { price: number; type: "support" | "resistance" }[];
+  /**
+   * When set, Chart reads focus from `chartFocusByDataset[datasetId]`
+   * instead of the global `chartFocus`. Used by multi-chart Canvas so
+   * clicking a pattern-match row only navigates the chart that owns
+   * the match, not every chart on screen. Omit for single-chart usage
+   * — Chart falls back to the global focus. */
+  datasetId?: string | null;
 }
 
 const INDICATOR_COLORS: Record<string, string> = {
@@ -47,6 +54,7 @@ export function Chart({
   data,
   patternMatches = [],
   supportResistance = [],
+  datasetId = null,
 }: ChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -71,6 +79,15 @@ export function Chart({
   const setCapturedPattern = useStore((s) => s.setCapturedPattern);
   const chartFocus = useStore((s) => s.chartFocus);
   const setChartFocus = useStore((s) => s.setChartFocus);
+  const chartFocusByDataset = useStore((s) => s.chartFocusByDataset);
+  const setChartFocusForDataset = useStore((s) => s.setChartFocusForDataset);
+  // Resolve which focus this Chart instance should listen to. In the
+  // multi-chart Canvas each ChartWindow passes its own datasetId so
+  // navigations only apply to the right chart. When no datasetId is
+  // passed (legacy single-chart mode) we fall back to global focus.
+  const resolvedFocus = datasetId && chartFocusByDataset[datasetId]
+    ? chartFocusByDataset[datasetId]
+    : (!datasetId ? chartFocus : null);
   const activeDrawingTool = useStore((s) => s.activeDrawingTool);
   const setActiveDrawingTool = useStore((s) => s.setActiveDrawingTool);
   const datasets = useStore((s) => s.datasets);
@@ -782,17 +799,22 @@ export function Chart({
     prevDrawingCountRef.current = storeDrawings.length;
   }, [storeDrawings]);
 
-  // Zoom chart to focused time range (from clicking a pattern row)
+  // Zoom chart to focused time range (from clicking a pattern row).
+  // Per-dataset focus wins over global focus — see resolvedFocus above.
   useEffect(() => {
-    if (!chartFocus || !chartRef.current) return;
+    if (!resolvedFocus || !chartRef.current) return;
     const ts = chartRef.current.timeScale();
     ts.setVisibleRange({
-      from: chartFocus.startTime as unknown as Time,
-      to: chartFocus.endTime as unknown as Time,
+      from: resolvedFocus.startTime as unknown as Time,
+      to: resolvedFocus.endTime as unknown as Time,
     });
-    // Clear the focus so clicking the same row again works
-    setChartFocus(null);
-  }, [chartFocus, setChartFocus]);
+    // Clear whichever slot we read from so clicking the same row again works
+    if (datasetId) {
+      setChartFocusForDataset(datasetId, null);
+    } else {
+      setChartFocus(null);
+    }
+  }, [resolvedFocus, setChartFocus, setChartFocusForDataset, datasetId]);
 
   // Render trade position boxes from strategy backtest
   const plottedTrades = useStore((s) => s.plottedTrades);

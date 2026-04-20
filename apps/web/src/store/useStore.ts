@@ -274,9 +274,14 @@ interface AppState {
   highlightedTradeId: string | null;
   setHighlightedTradeId: (id: string | null) => void;
 
-  // Chart focus — zoom to a specific time range
+  // Chart focus — zoom to a specific time range. Global `chartFocus` is
+  // kept for backward compat (applies to every chart that reads it);
+  // `chartFocusByDataset` is the per-chart form used by the multi-chart
+  // pattern panel so clicking a match only zooms the chart that owns it.
   chartFocus: { startTime: number; endTime: number } | null;
+  chartFocusByDataset: Record<string, { startTime: number; endTime: number } | null>;
   setChartFocus: (focus: { startTime: number; endTime: number } | null) => void;
+  setChartFocusForDataset: (datasetId: string, focus: { startTime: number; endTime: number } | null) => void;
 
   // Drawing tools
   activeDrawingTool: DrawingType | null;
@@ -1034,7 +1039,11 @@ export const useStore = create<AppState>((set, get) => ({
 
   // Chart focus
   chartFocus: null,
+  chartFocusByDataset: {},
   setChartFocus: (focus) => set({ chartFocus: focus }),
+  setChartFocusForDataset: (datasetId, focus) => set((state) => ({
+    chartFocusByDataset: { ...state.chartFocusByDataset, [datasetId]: focus },
+  })),
 
   // Drawing tools
   activeDrawingTool: null,

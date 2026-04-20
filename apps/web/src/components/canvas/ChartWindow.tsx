@@ -199,6 +199,7 @@ export function ChartWindow({ window: w, focused, canvasBounds }: Props) {
             <Chart
               data={data}
               patternMatches={appMode === "playground" ? [] : patternMatches}
+              datasetId={w.datasetId}
             />
           ) : (
             <EmptyChartState hasDatasetId={!!w.datasetId} />

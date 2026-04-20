@@ -2,6 +2,7 @@
 
 import React, { useState, useRef, useCallback, useEffect } from "react";
 import { useStore } from "@/store/useStore";
+import type { PatternMatch } from "@/types";
 import { PineScriptPanel } from "./PineScriptPanel";
 import { PortfolioAnalysis } from "./PortfolioAnalysis";
 import { TradeList } from "./TradeList";
@@ -431,10 +432,55 @@ function BacktestContent({
 /* ─── Pattern Analysis ─── */
 
 function PatternContent() {
-  const matches = useStore((s) => s.patternMatches);
+  // Legacy + per-dataset matches are merged into a single flat list,
+  // each row tagged with the asset it belongs to. Matches from
+  // patternMatchesByDataset take precedence for datasets they cover;
+  // legacy `patternMatches` is shown as a fallback when it holds
+  // matches for a dataset the per-dataset map doesn't (happens during
+  // the multi-chart transition when only one chart was scanned).
+  const globalMatches = useStore((s) => s.patternMatches);
+  const matchesByDataset = useStore((s) => s.patternMatchesByDataset);
   const setChartFocus = useStore((s) => s.setChartFocus);
-  const chartData = useStore((s) => s.chartData);
+  const setChartFocusForDataset = useStore((s) => s.setChartFocusForDataset);
+  const datasets = useStore((s) => s.datasets);
+  const datasetChartData = useStore((s) => s.datasetChartData);
+  const chartWindows = useStore((s) => s.chartWindows);
+  const focusedWindowId = useStore((s) => s.focusedWindowId);
   const lastResult = useStore((s) => s.lastScriptResult);
+
+  // Build the flat, dataset-tagged match list. Each entry keeps a
+  // backref to its dataset so the row click can navigate the right
+  // chart window (not all of them).
+  type Tagged = { match: PatternMatch; datasetId: string | null; symbol: string };
+  const byDatasetFlat: Tagged[] = [];
+  for (const [dsid, list] of Object.entries(matchesByDataset)) {
+    if (!list || list.length === 0) continue;
+    const ds = datasets.find((d) => d.id === dsid);
+    const sym = String(ds?.metadata?.symbol || ds?.name || "?");
+    for (const m of list) byDatasetFlat.push({ match: m, datasetId: dsid, symbol: sym });
+  }
+  // Legacy matches: attach to the focused window's dataset if possible,
+  // otherwise to "the first chart" so they still render and navigate.
+  let legacyDatasetId: string | null = null;
+  let legacySymbol = "Focused chart";
+  const focusedWin = chartWindows.find((w) => w.id === focusedWindowId);
+  if (focusedWin?.datasetId) {
+    legacyDatasetId = focusedWin.datasetId;
+    const ds = datasets.find((d) => d.id === focusedWin.datasetId);
+    legacySymbol = String(ds?.metadata?.symbol || ds?.name || "?");
+  } else if (chartWindows[0]?.datasetId) {
+    legacyDatasetId = chartWindows[0].datasetId;
+    const ds = datasets.find((d) => d.id === chartWindows[0].datasetId);
+    legacySymbol = String(ds?.metadata?.symbol || ds?.name || "?");
+  }
+  const haveByDatasetFor = (dsid: string | null) => dsid != null && !!matchesByDataset[dsid]?.length;
+  if (!haveByDatasetFor(legacyDatasetId)) {
+    for (const m of globalMatches) {
+      byDatasetFlat.push({ match: m, datasetId: legacyDatasetId, symbol: legacySymbol });
+    }
+  }
+
+  const matches = byDatasetFlat;
 
   if (matches.length === 0 && !lastResult?.ran) {
     return (
@@ -476,37 +522,42 @@ function PatternContent() {
     );
   }
 
-  const handleRowClick = (m: (typeof matches)[0]) => {
+  // Row click: navigate ONLY the chart that owns this match.
+  const handleRowClick = (tagged: Tagged) => {
+    const { match: m, datasetId: dsid } = tagged;
     const startT = typeof m.startTime === "string" ? Number(m.startTime) : (m.startTime as number);
     const endT = typeof m.endTime === "string" ? Number(m.endTime) : (m.endTime as number);
-    const duration = Math.max(endT - startT, 1); // guard against zero-length matches
+    const duration = Math.max(endT - startT, 1);
 
-    // Padding strategy: derive from the chart's actual bar interval so the
-    // viewport is sane for ANY timeframe (1m, 1h, 1D). A hardcoded 5-day
-    // floor (the previous behaviour) made intraday matches look like the
-    // chart had jumped somewhere completely different.
-    //
-    //   - At least 25 bars of context on each side  (≈ 50-bar window)
-    //   - Or half the pattern duration on each side, whichever is larger
-    //
-    // Result: short patterns get a roomy ~50-bar view; long patterns are
-    // shown at 2× their own duration, never more.
-    const n = chartData.length;
+    // Padding from the target dataset's own bar interval so the zoom
+    // looks sensible regardless of timeframe.
+    const bars = (dsid && datasetChartData[dsid]) || [];
+    const n = bars.length;
     let avgBarInterval = 0;
     if (n >= 2) {
-      const t0 = Number(chartData[0].time);
-      const tN = Number(chartData[n - 1].time);
+      const t0 = Number(bars[0].time);
+      const tN = Number(bars[n - 1].time);
       avgBarInterval = (tN - t0) / (n - 1);
     }
     const minBarsPad = avgBarInterval > 0 ? avgBarInterval * 25 : duration * 0.5;
     const pad = Math.max(duration * 0.5, minBarsPad);
-    setChartFocus({ startTime: startT - pad, endTime: endT + pad });
+    const focus = { startTime: startT - pad, endTime: endT + pad };
+
+    if (dsid) {
+      // Per-dataset focus — only the chart window showing this dataset
+      // will navigate. Every other chart stays put.
+      setChartFocusForDataset(dsid, focus);
+    } else {
+      // Fallback: no dataset id (shouldn't happen in practice) — use
+      // the global focus so at least something navigates.
+      setChartFocus(focus);
+    }
   };
 
-  const bullish = matches.filter((m) => m.direction === "bullish").length;
-  const bearish = matches.filter((m) => m.direction === "bearish").length;
-  const neutral = matches.filter((m) => m.direction === "neutral").length;
-  const avgConfidence = matches.reduce((s, m) => s + m.confidence, 0) / matches.length;
+  const bullish = matches.filter((t) => t.match.direction === "bullish").length;
+  const bearish = matches.filter((t) => t.match.direction === "bearish").length;
+  const neutral = matches.filter((t) => t.match.direction === "neutral").length;
+  const avgConfidence = matches.reduce((s, t) => s + t.match.confidence, 0) / matches.length;
 
   return (
     <div className="p-3">
@@ -530,10 +581,12 @@ function PatternContent() {
         </div>
       </div>
 
-      {/* Match list */}
+      {/* Match list — Asset column added so users know which chart
+          each row belongs to, and row clicks only navigate that chart. */}
       <table className="w-full text-xs">
         <thead>
           <tr className="border-b border-[var(--border)] text-left text-[10px] uppercase text-[var(--text-tertiary)]">
+            <th className="py-1.5 pr-3 font-semibold">Asset</th>
             <th className="py-1.5 pr-3 font-semibold">Pattern</th>
             <th className="py-1.5 pr-3 font-semibold">Direction</th>
             <th className="py-1.5 pr-3 font-semibold">Start</th>
@@ -542,31 +595,46 @@ function PatternContent() {
           </tr>
         </thead>
         <tbody>
-          {matches.map((m) => (
-            <tr
-              key={m.id}
-              onClick={() => handleRowClick(m)}
-              className="border-b border-[var(--border-subtle)] hover:bg-blue-50/50 cursor-pointer transition-colors"
-            >
-              <td className="py-1.5 pr-3 font-medium text-[var(--text-primary)]">{m.name}</td>
-              <td className="py-1.5 pr-3">
-                <span
-                  className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-medium ${
-                    m.direction === "bullish"
-                      ? "bg-emerald-50 text-emerald-600"
-                      : m.direction === "bearish"
-                        ? "bg-red-50 text-red-500"
-                        : "bg-slate-100 text-[var(--text-secondary)]"
-                  }`}
-                >
-                  {m.direction.toUpperCase()}
-                </span>
-              </td>
-              <td className="py-1.5 pr-3 text-[var(--text-secondary)]">{m.startTime}</td>
-              <td className="py-1.5 pr-3 text-[var(--text-secondary)]">{m.endTime}</td>
-              <td className="py-1.5 text-right text-[var(--text-primary)]">{(m.confidence * 100).toFixed(0)}%</td>
-            </tr>
-          ))}
+          {matches.map((t) => {
+            const m = t.match;
+            return (
+              <tr
+                key={`${t.datasetId || "legacy"}::${m.id}`}
+                onClick={() => handleRowClick(t)}
+                className="border-b border-[var(--border-subtle)] hover:bg-blue-50/50 cursor-pointer transition-colors"
+                title={`Click to zoom the ${t.symbol} chart to this match`}
+              >
+                <td className="py-1.5 pr-3">
+                  <span
+                    className="inline-block rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider"
+                    style={{
+                      background: "rgba(255, 107, 0, 0.12)",
+                      color: "var(--accent)",
+                    }}
+                  >
+                    {t.symbol}
+                  </span>
+                </td>
+                <td className="py-1.5 pr-3 font-medium text-[var(--text-primary)]">{m.name}</td>
+                <td className="py-1.5 pr-3">
+                  <span
+                    className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                      m.direction === "bullish"
+                        ? "bg-emerald-50 text-emerald-600"
+                        : m.direction === "bearish"
+                          ? "bg-red-50 text-red-500"
+                          : "bg-slate-100 text-[var(--text-secondary)]"
+                    }`}
+                  >
+                    {m.direction.toUpperCase()}
+                  </span>
+                </td>
+                <td className="py-1.5 pr-3 text-[var(--text-secondary)]">{m.startTime}</td>
+                <td className="py-1.5 pr-3 text-[var(--text-secondary)]">{m.endTime}</td>
+                <td className="py-1.5 text-right text-[var(--text-primary)]">{(m.confidence * 100).toFixed(0)}%</td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
