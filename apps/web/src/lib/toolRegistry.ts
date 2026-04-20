@@ -212,10 +212,18 @@ const executors: Record<string, ToolExecutor> = {
       return;
     }
 
+    // Prefer the backend-supplied dataset_id (the data_fetcher processor
+    // now saves bars into the backend store under this id before returning).
+    // Only fall back to a freshly-generated one when the backend didn't
+    // provide it — e.g. upload-csv flows where the id was already known.
+    const backendId = (ds as Record<string, unknown>).dataset_id;
     const id =
-      typeof crypto !== "undefined" && crypto.randomUUID
-        ? crypto.randomUUID()
-        : `ds_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      typeof backendId === "string" && backendId.length > 0
+        ? backendId
+        : typeof crypto !== "undefined" && crypto.randomUUID
+          ? crypto.randomUUID()
+          : `ds_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const backendAlreadyHasIt = typeof backendId === "string" && backendId.length > 0;
 
     const dataset = {
       id,
@@ -233,21 +241,32 @@ const executors: Record<string, ToolExecutor> = {
     // immediately switches the active dataset to the new one.
     useStore.getState().addDataset(dataset as never, ds.bars as never, ds.bars as never);
 
-    // Mark the dataset as already synced to the backend (it came FROM the
-    // backend), so subsequent chat messages don't try to upload it again.
-    useStore.getState().markSynced(id);
-
-    // ALSO push the dataset to the backend's in-memory store so pattern
-    // detection / backtesting against it can call /run-pattern, /run-backtest etc.
-    // We import lazily to avoid a circular dependency with api.ts.
-    import("@/lib/api").then(({ syncDatasetToBackend }) => {
-      syncDatasetToBackend(id, ds.bars as never, {
-        rows: ds.metadata.rows,
-        startDate: ds.metadata.startDate,
-        endDate: ds.metadata.endDate,
-        filename: dataset.name,
-      }).catch((e) => console.warn(`[skill:${ctx.skillId}] dataset backend sync failed:`, e));
-    });
+    if (backendAlreadyHasIt) {
+      // data_fetcher processor already saved bars into the backend
+      // store before returning — the id match means we can flip
+      // synced on immediately. Subsequent skill calls that read from
+      // store.get_dataframe(id) will succeed with no race.
+      useStore.getState().markSynced(id);
+    } else {
+      // Legacy path: backend doesn't have the data yet. Do the sync
+      // ourselves and only mark synced AFTER the POST completes, so
+      // waiters (planExecutor, RightSidebar handleSubmit) can rely on
+      // syncedDatasets reflecting real backend state. Previously this
+      // called markSynced() BEFORE the POST kicked off, which caused
+      // subsequent skill calls to race the sync and hit
+      // `store.get_dataframe(id) is None` errors (e.g. "I need market
+      // data loaded on the chart").
+      import("@/lib/api").then(({ syncDatasetToBackend }) => {
+        syncDatasetToBackend(id, ds.bars as never, {
+          rows: ds.metadata.rows,
+          startDate: ds.metadata.startDate,
+          endDate: ds.metadata.endDate,
+          filename: dataset.name,
+        })
+          .then(() => useStore.getState().markSynced(id))
+          .catch((e) => console.warn(`[skill:${ctx.skillId}] dataset backend sync failed:`, e));
+      });
+    }
   },
 
   // ─── simulation.* — multi-agent debate / swarm intelligence ────────────

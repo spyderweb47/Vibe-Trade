@@ -160,6 +160,39 @@ async def _data_fetcher_processor(
             ],
         )
 
+    # Persist the fetched bars into the backend's in-memory store
+    # IMMEDIATELY, using a backend-generated dataset_id that's embedded
+    # in the response. This eliminates the race where a subsequent
+    # skill call (e.g. swarm_intelligence) hits `/chat` before the
+    # frontend has finished posting the dataset via /datasets/sync, and
+    # the backend processor can't find the data so it bails with
+    # "I need market data loaded on the chart".
+    #
+    # The frontend's data.dataset.add executor now uses the id from
+    # the payload (falling back to generating one only when absent)
+    # so both sides agree on the dataset id.
+    import uuid as _uuid
+    import pandas as _pd
+    from services.api.store import store
+
+    dataset_id = str(_uuid.uuid4())
+    try:
+        df = _pd.DataFrame(result["bars"])
+        store.save_dataset(dataset_id, df, {
+            "symbol": result.get("symbol"),
+            "source": result.get("source"),
+            "interval": result.get("interval"),
+            **(result.get("metadata") or {}),
+        })
+    except Exception as exc:  # noqa: BLE001
+        # Non-fatal — frontend will still try to sync via the legacy
+        # path; log so we can debug if it recurs.
+        print(f"[data_fetcher] warning: failed to save bars to backend store: {exc}", flush=True)
+
+    # Echo the id back in the result so the frontend's data.dataset.add
+    # executor can use it instead of generating its own.
+    result_with_id = {**result, "dataset_id": dataset_id}
+
     rows = result["metadata"]["rows"]
     src = result["source"]
     iv = result["interval"]
@@ -170,9 +203,9 @@ async def _data_fetcher_processor(
             f"The chart has switched to the new dataset — you can now run pattern "
             f"detection or strategy backtests on it."
         ),
-        data={"dataset": result},
+        data={"dataset": result_with_id},
         tool_calls=[
-            {"tool": "data.dataset.add", "value": result},
+            {"tool": "data.dataset.add", "value": result_with_id},
             {"tool": "chart.set_timeframe", "value": iv},
             {
                 "tool": "notify.toast",
@@ -234,12 +267,17 @@ async def _swarm_intelligence_processor(
                 sym_ = meta.symbol
         return bars_, sym_
 
-    # Load each dataset. Skip any that aren't actually in the store.
+    # Load each dataset. Skip any that aren't actually in the store,
+    # and remember which ones were missing so we can tell the user
+    # clearly rather than silently falling back.
     loaded: List[tuple] = []  # [(dataset_id, bars, symbol), ...]
+    missing: List[str] = []
     for dsid in dataset_ids:
         b, s = _load_dataset(dsid)
         if b:
             loaded.append((dsid, b, s))
+        else:
+            missing.append(dsid)
 
     # Fall back to "most recent dataset in store" when nothing we were
     # asked to load actually exists (e.g. user cleared state).
@@ -250,6 +288,20 @@ async def _swarm_intelligence_processor(
             b, s = _load_dataset(last_id)
             if b:
                 loaded.append((last_id, b, s))
+
+    # If we were asked to include multiple datasets and SOME of them
+    # weren't in the backend store, keep going with what we have but
+    # let the user know exactly what happened — they'll otherwise see
+    # "portfolio debate on BTC with 1 sibling" and wonder why SOL
+    # didn't get included. The event surfaces in the UI's Run Warnings
+    # banner + the CLI Run Warnings panel.
+    missing_warning: str | None = None
+    if missing and loaded:
+        missing_warning = (
+            f"{len(missing)} requested dataset(s) weren't available in the "
+            f"backend store — likely a sync race; those assets were excluded "
+            f"from the portfolio debate."
+        )
 
     # Primary asset drives the main technical analysis.
     if loaded:
@@ -316,11 +368,24 @@ async def _swarm_intelligence_processor(
     # conversation switches. This matches the shape the /debate endpoint
     # produces via its Pydantic DebateResponse projection.
     import uuid as _uuid
+    # Prepend the missing-dataset warning (if any) to the run events so
+    # the UI's Run Warnings banner lists it alongside any events the
+    # orchestrator itself recorded.
+    existing_events = list(result.get("events") or [])
+    if missing_warning:
+        import time as _time
+        existing_events.insert(0, {
+            "timestamp": _time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "level": "warn",
+            "stage": "setup",
+            "message": missing_warning,
+        })
     debate_payload = {
         "debate_id": str(_uuid.uuid4()),
         "symbol": symbol,
         "bars_analyzed": len(bars),
         **result,
+        "events": existing_events,
     }
 
     # Build summary text for the chat reply
