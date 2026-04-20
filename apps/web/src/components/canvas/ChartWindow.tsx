@@ -121,53 +121,57 @@ export function ChartWindow({ window: w, focused, canvasBounds }: Props) {
       }}
     >
       <div
-        className="flex h-full w-full flex-col rounded-lg overflow-hidden"
+        className="flex h-full w-full flex-col overflow-hidden"
         style={{
+          // Square corners (removed `rounded-lg`)
           background: "var(--surface)",
-          border: focused
-            ? "1.5px solid var(--accent)"
-            : "1px solid var(--border)",
+          // Uniform border regardless of focus — the orange-accent
+          // highlight was removed per user request. Focused windows
+          // are still indicated via a slightly stronger box-shadow
+          // (depth-based, not hue-based).
+          border: "1px solid var(--border)",
           boxShadow: focused
-            ? "0 8px 24px rgba(0, 0, 0, 0.35)"
+            ? "0 6px 18px rgba(0, 0, 0, 0.30)"
             : "0 2px 8px rgba(0, 0, 0, 0.15)",
         }}
       >
-        {/* Title bar — drag handle */}
+        {/* Title bar — drag handle. Compact: py-0.5 instead of py-1.5,
+            text reduced one step (9px), dot reduced to 1.5×1.5px. */}
         <div
-          className="chart-window-drag-handle flex items-center gap-2 px-3 py-1.5 shrink-0 select-none cursor-move"
+          className="chart-window-drag-handle flex items-center gap-1.5 px-2 py-0.5 shrink-0 select-none cursor-move"
           style={{
             background: "var(--surface-2)",
             borderBottom: "1px solid var(--border)",
           }}
         >
           <div
-            className="h-2 w-2 rounded-full shrink-0"
+            className="h-1.5 w-1.5 rounded-full shrink-0"
             style={{
-              background: focused ? "var(--accent)" : "var(--text-muted)",
+              background: focused ? "var(--text-secondary)" : "var(--text-muted)",
             }}
           />
           <span
-            className="text-[11px] font-bold uppercase tracking-wider"
+            className="text-[10px] font-bold uppercase tracking-wider"
             style={{ color: "var(--text-primary)" }}
           >
             {title}
           </span>
           {ds?.metadata?.chartTimeframe && (
             <span
-              className="text-[9px] uppercase"
+              className="text-[8px] uppercase"
               style={{ color: "var(--text-muted)" }}
             >
               {ds.metadata.chartTimeframe}
             </span>
           )}
           {data.length > 0 && (
-            <span className="text-[9px]" style={{ color: "var(--text-muted)" }}>
+            <span className="text-[8px]" style={{ color: "var(--text-muted)" }}>
               {data.length} bars
             </span>
           )}
           <button
             onClick={onClose}
-            className="ml-auto flex h-5 w-5 items-center justify-center rounded transition-colors"
+            className="ml-auto flex h-4 w-4 items-center justify-center transition-colors"
             style={{
               color: "var(--text-muted)",
             }}
@@ -182,7 +186,7 @@ export function ChartWindow({ window: w, focused, canvasBounds }: Props) {
             }}
           >
             <svg
-              className="h-3 w-3"
+              className="h-2.5 w-2.5"
               fill="none"
               viewBox="0 0 24 24"
               stroke="currentColor"
