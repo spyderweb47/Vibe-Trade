@@ -427,3 +427,56 @@ async def fetch_market_data(req: FetchDataRequest) -> dict:
         return result
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Failed to fetch {req.symbol}: {exc}") from exc
+
+
+# ─── /fix-script — Error Handler Agent ──────────────────────────────────────
+#
+# Called by the frontend when a generated pattern or strategy script
+# throws in the Web Worker. The ErrorHandlerAgent diagnoses the
+# runtime error + returns a fixed script. Paired with bounded-retry
+# logic on the caller side so one broken script can be auto-fixed
+# up to N times before giving up (preventing infinite fix loops).
+
+class FixScriptRequest(BaseModel):
+    """Request shape for /fix-script."""
+    script: str = Field(..., min_length=1, description="The broken JS source")
+    error: str = Field(..., min_length=1, description="Runtime error message from the Web Worker")
+    intent: str = Field(default="", description="Original user intent — helps the fixer preserve the script's meaning")
+    script_type: str = Field(default="pattern", description="pattern | strategy | indicator")
+
+
+class FixScriptResponse(BaseModel):
+    """Response shape for /fix-script."""
+    fixed_script: str
+    explanation: str
+    confidence: float
+    changes: list[str]
+    error: str | None = None
+
+
+@router.post("/fix-script", response_model=FixScriptResponse)
+async def fix_script_endpoint(req: FixScriptRequest) -> FixScriptResponse:
+    """
+    Diagnose + fix a broken pattern/strategy script.
+
+    Returns the fix inside the response body — the caller (frontend)
+    decides whether to re-run with it or show it to the user for review.
+    On LLM-unavailable / parse-failure, returns 200 with `error` set
+    (not an HTTP error — the caller can handle "no fix available"
+    gracefully by falling back to the original error flow).
+    """
+    from core.agents.error_handler_agent import fix_script
+
+    result = fix_script(
+        script=req.script,
+        error=req.error,
+        intent=req.intent,
+        script_type=req.script_type,
+    )
+    return FixScriptResponse(
+        fixed_script=result.fixed_script,
+        explanation=result.explanation,
+        confidence=result.confidence,
+        changes=result.changes,
+        error=result.error,
+    )

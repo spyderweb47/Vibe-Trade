@@ -4,8 +4,23 @@
 > - ✅ Pattern skill migrated to **plan-first** Writer + QA + optional Researcher flow
 > - ✅ TeamPlanner (`core/agents/team_planner.py`) decides team composition per-request
 > - ✅ Team plan rendered in trace UI BEFORE execution starts
+> - ✅ **ErrorHandlerAgent** (`core/agents/error_handler_agent.py`) — auto-fixes pattern/strategy scripts that crash at runtime
 > - ⏳ Strategy skill migration planned (Risk + Portfolio + Writer + QA)
 > - ⏳ `predict_analysis` progressive migration planned (Stage 3 → `Team.discussion()`, etc.)
+
+## Three specialised agent patterns
+
+The service exposes three reusable patterns that skills compose:
+
+| Pattern | File | When it runs | Input | Output |
+|---|---|---|---|---|
+| **QA Agent** | `qa_agent.py` | BEFORE the script leaves the backend | artifact + acceptance criteria | pass/fail + issues |
+| **Error Handler** | `error_handler_agent.py` | AFTER the script throws in the Web Worker | broken script + runtime error | fixed script + explanation |
+| **Team Planner** | `team_planner.py` | Before team assembly | user message + role templates | concrete agents + tasks + tools |
+
+QA catches mistakes *before* they reach the user. Error Handler catches
+mistakes *after* a runtime failure. Both are bounded (max iterations /
+retries) to avoid infinite fix loops.
 
 ## 0. Plan-first flow (the request the user asked for)
 

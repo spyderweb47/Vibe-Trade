@@ -279,6 +279,42 @@ export async function runSimulationDebate(
   });
 }
 
+// ─── Error Handler Agent — fix a broken pattern/strategy script ──────────
+//
+// Called automatically when the Web Worker throws while running a
+// generated script. The backend ErrorHandlerAgent diagnoses the error
+// + returns a fixed version; the caller re-runs with the fix and
+// shows the outcome in the trace UI.
+//
+// Response shape: `fixed_script` is empty and `error` is non-null
+// when the fixer itself failed (LLM unavailable, parse error, etc.).
+// Callers should check `error` before using `fixed_script`.
+
+export interface FixScriptResponse {
+  fixed_script: string;
+  explanation: string;
+  confidence: number;
+  changes: string[];
+  error: string | null;
+}
+
+export async function fixScript(params: {
+  script: string;
+  error: string;
+  intent?: string;
+  script_type?: 'pattern' | 'strategy' | 'indicator';
+}): Promise<FixScriptResponse> {
+  return request<FixScriptResponse>('/fix-script', {
+    method: 'POST',
+    body: JSON.stringify({
+      script: params.script,
+      error: params.error,
+      intent: params.intent || '',
+      script_type: params.script_type || 'pattern',
+    }),
+  });
+}
+
 // ─── Agent Interview ───────────────────────────────────────────────────
 
 export interface InterviewRequest {

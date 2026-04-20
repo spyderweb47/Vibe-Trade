@@ -5,6 +5,7 @@ import { useStore } from "@/store/useStore";
 import { ScriptEditor } from "./ScriptEditor";
 import { sendChat } from "@/lib/api";
 import { executePatternScript } from "@/lib/scriptExecutor";
+import { runPatternScriptWithAutoFix } from "@/lib/planExecutor";
 import { executeStrategy } from "@/lib/strategyExecutor";
 import { StrategyForm } from "./StrategyForm";
 import { TradingPanel } from "./playground/TradingPanel";
@@ -299,6 +300,12 @@ export function RightSidebar() {
 
     const setPatternMatchesForDataset = state.setPatternMatchesForDataset;
 
+    // Derive the "intent" sent to the Error Handler Agent from the
+    // most recent user message — gives the fixer context about what
+    // the user was trying to detect so it preserves meaning.
+    const recentUserMsg = messages.filter((m) => m.role === "user").slice(-1)[0];
+    const intent = recentUserMsg?.content || "pattern detection";
+
     if (windowsWithData.length === 0) {
       // Legacy single-chart fallback
       const runData = chartData;
@@ -308,17 +315,30 @@ export function RightSidebar() {
       }
       setRunState("running");
       try {
-        const matches = await executePatternScript(script, runData);
-        setPatternMatches(matches);
+        const out = await runPatternScriptWithAutoFix(script, runData, intent);
+        setPatternMatches(out.matches);
         setLastScriptResult({ ran: true });
-        setRunState(matches.length > 0 ? "done" : "idle");
-        addMessage({
-          role: "agent",
-          content: matches.length > 0
-            ? `Found ${matches.length} pattern matches.`
-            : `Script ran on ${runData.length} bars but found 0 matches. Try lowering the correlation threshold or adjusting the pattern.`,
-        });
-        if (matches.length > 0) setTimeout(() => setRunState("idle"), 2000);
+        setRunState(out.matches.length > 0 ? "done" : "idle");
+
+        if (out.fixedScript) {
+          // Load the auto-fixed script into the editor so the user
+          // sees what changed + future runs use the fixed version
+          setCurrentScript(out.fixedScript);
+          addMessage({
+            role: "agent",
+            content:
+              `Run failed, but auto-fixed: ${out.fixExplanation}\n\n` +
+              `Re-ran with the fix and found ${out.matches.length} match${out.matches.length !== 1 ? "es" : ""}.`,
+          });
+        } else {
+          addMessage({
+            role: "agent",
+            content: out.matches.length > 0
+              ? `Found ${out.matches.length} pattern matches.`
+              : `Script ran on ${runData.length} bars but found 0 matches. Try lowering the correlation threshold or adjusting the pattern.`,
+          });
+        }
+        if (out.matches.length > 0) setTimeout(() => setRunState("idle"), 2000);
       } catch (err) {
         setRunState("error");
         const errMsg = err instanceof Error ? err.message : "Failed";
@@ -331,33 +351,50 @@ export function RightSidebar() {
     }
 
     // Multi-chart path: scan every loaded canvas window.
+    // Auto-fix reuses the fixed script across datasets once it's been
+    // fixed for the first crashing dataset.
     setRunState("running");
     try {
       const perChart: Array<{ symbol: string; count: number }> = [];
       let totalMatches = 0;
+      let activeScript = script;
+      let fixNote: string | null = null;
+
       for (const { datasetId, bars } of windowsWithData) {
-        const matches = await executePatternScript(script, bars);
-        setPatternMatchesForDataset(datasetId, matches);
-        totalMatches += matches.length;
+        const out = await runPatternScriptWithAutoFix(activeScript, bars, intent);
+        setPatternMatchesForDataset(datasetId, out.matches);
+        totalMatches += out.matches.length;
         const ds = datasets.find((d) => d.id === datasetId);
         const sym = String(ds?.metadata?.symbol || ds?.name || "?");
-        perChart.push({ symbol: sym, count: matches.length });
+        perChart.push({ symbol: sym, count: out.matches.length });
+        if (out.fixedScript) {
+          activeScript = out.fixedScript;
+          if (!fixNote) fixNote = out.fixExplanation;
+        }
       }
 
       setLastScriptResult({ ran: true });
       setRunState(totalMatches > 0 ? "done" : "idle");
 
+      // If a fix was applied, update the editor so the user sees the
+      // corrected version going forward.
+      if (activeScript !== script) {
+        setCurrentScript(activeScript);
+      }
+
       const breakdown = perChart.map((p) => `${p.symbol}: ${p.count}`).join(", ");
+      const fixPrefix = fixNote ? `Run failed, but auto-fixed: ${fixNote}\n\n` : "";
       addMessage({
         role: "agent",
-        content:
+        content: fixPrefix + (
           perChart.length === 1
             ? (totalMatches > 0
                 ? `Found ${totalMatches} pattern matches on ${perChart[0].symbol}.`
                 : `Script ran on ${perChart[0].symbol} but found 0 matches.`)
             : (totalMatches > 0
                 ? `Found ${totalMatches} total matches across ${perChart.length} charts (${breakdown}).`
-                : `Script ran across ${perChart.length} charts (${breakdown}) but found 0 matches.`),
+                : `Script ran across ${perChart.length} charts (${breakdown}) but found 0 matches.`)
+        ),
       });
 
       if (totalMatches > 0) setTimeout(() => setRunState("idle"), 2000);

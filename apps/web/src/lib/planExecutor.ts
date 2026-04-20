@@ -21,12 +21,71 @@
  * plan completes, the box auto-collapses to a summary chip.
  */
 
-import { sendChat, type PlanStep } from "@/lib/api";
+import { sendChat, type PlanStep, fixScript } from "@/lib/api";
 import { executePatternScript } from "@/lib/scriptExecutor";
 import { executeStrategy } from "@/lib/strategyExecutor";
 import { useStore } from "@/store/useStore";
 import { runToolCalls } from "@/lib/toolRegistry";
 import type { StrategyConfig, TraceStep, TraceSubStep, TraceData } from "@/types";
+
+/**
+ * Auto-fix a pattern script that crashed in the Web Worker, then re-run
+ * it. Returns { matches, fixedScript, explanation } on success, or
+ * throws the original error if the fix attempt fails too.
+ *
+ * Bounded to a single fix attempt per script per dataset so one
+ * hopelessly broken script can't trigger a fix loop (backend has its
+ * own retry caps, but defence in depth).
+ *
+ * Shared between planExecutor and RightSidebar's handleRun so both
+ * code paths get automatic error recovery.
+ */
+export async function runPatternScriptWithAutoFix(
+  script: string,
+  bars: import("@/types").OHLCBar[],
+  intent: string,
+): Promise<{
+  matches: import("@/types").PatternMatch[];
+  fixedScript: string | null;
+  fixExplanation: string | null;
+}> {
+  try {
+    const matches = await executePatternScript(script, bars);
+    return { matches, fixedScript: null, fixExplanation: null };
+  } catch (runErr) {
+    const errMsg = runErr instanceof Error ? runErr.message : String(runErr);
+    // Ask the backend Error Handler Agent for a fix
+    const fix = await fixScript({
+      script,
+      error: errMsg,
+      intent,
+      script_type: "pattern",
+    }).catch((fixApiErr) => {
+      console.warn("[autofix] /fix-script call failed:", fixApiErr);
+      return null;
+    });
+
+    if (!fix || !fix.fixed_script || fix.error) {
+      // Fixer couldn't help — re-throw original error
+      throw runErr;
+    }
+
+    // Try once with the fixed script
+    try {
+      const matches = await executePatternScript(fix.fixed_script, bars);
+      return {
+        matches,
+        fixedScript: fix.fixed_script,
+        fixExplanation: fix.explanation || "Script auto-fixed",
+      };
+    } catch (secondErr) {
+      // Fix didn't help either — re-throw the SECOND error
+      // (it's more informative than the first since the fixer agent's
+      // diagnosis is in the middle)
+      throw secondErr;
+    }
+  }
+}
 
 /**
  * Known sub-step sequences for long-running skills. When a step with one of
@@ -288,6 +347,11 @@ export async function executePlanInBrowser({ steps, existingTraceId }: ExecutePl
           })
           .filter((x): x is NonNullable<typeof x> => x !== null);
 
+        // Track if the Error Handler Agent replaced the script so we
+        // can load the fixed version into the editor AFTER the run.
+        let effectiveScript = result.script;
+        let fixNote: string | null = null;
+
         if (windowsWithData.length === 0) {
           // Fall back to the legacy chartData check for single-chart mode
           const chartData = state.chartData;
@@ -295,11 +359,19 @@ export async function executePlanInBrowser({ steps, existingTraceId }: ExecutePl
             resultSummary = "no dataset on chart — skipped run";
           } else {
             try {
-              const matches = await executePatternScript(result.script, chartData);
-              state.setPatternMatches(matches);
+              const out = await runPatternScriptWithAutoFix(
+                result.script, chartData, step.message,
+              );
+              state.setPatternMatches(out.matches);
               state.setLastScriptResult({ ran: true });
-              resultSummary = `found ${matches.length} pattern match${matches.length !== 1 ? "es" : ""}`;
-              accumulatedContext.pattern_matches_count = matches.length;
+              resultSummary =
+                `found ${out.matches.length} pattern match${out.matches.length !== 1 ? "es" : ""}` +
+                (out.fixedScript ? " (auto-fixed after initial error)" : "");
+              accumulatedContext.pattern_matches_count = out.matches.length;
+              if (out.fixedScript) {
+                effectiveScript = out.fixedScript;
+                fixNote = out.fixExplanation;
+              }
             } catch (err) {
               const msg = err instanceof Error ? err.message : String(err);
               state.setLastScriptResult({ ran: true, error: msg });
@@ -309,18 +381,29 @@ export async function executePlanInBrowser({ steps, existingTraceId }: ExecutePl
           }
         } else {
           // Multi-chart path: run script on every window's data.
+          // Auto-fix runs per-dataset — if the script crashes on the
+          // first dataset, the fixed version is used for all remaining
+          // datasets too (don't re-fix per dataset; reuse the fix).
           const perDatasetCounts: Array<{ symbol: string; count: number }> = [];
           let totalMatches = 0;
           let anyError: string | null = null;
+          let activeScript = result.script;
 
           for (const { datasetId, bars } of windowsWithData) {
             try {
-              const matches = await executePatternScript(result.script, bars);
-              state.setPatternMatchesForDataset(datasetId, matches);
-              totalMatches += matches.length;
+              const out = await runPatternScriptWithAutoFix(
+                activeScript, bars, step.message,
+              );
+              state.setPatternMatchesForDataset(datasetId, out.matches);
+              totalMatches += out.matches.length;
               const ds = state.datasets.find((d) => d.id === datasetId);
               const sym = ds?.metadata?.symbol || ds?.name || "?";
-              perDatasetCounts.push({ symbol: String(sym), count: matches.length });
+              perDatasetCounts.push({ symbol: String(sym), count: out.matches.length });
+              if (out.fixedScript) {
+                activeScript = out.fixedScript;
+                effectiveScript = out.fixedScript;
+                if (!fixNote) fixNote = out.fixExplanation;
+              }
             } catch (err) {
               anyError = err instanceof Error ? err.message : String(err);
               break;
@@ -336,15 +419,31 @@ export async function executePlanInBrowser({ steps, existingTraceId }: ExecutePl
           state.setLastScriptResult({ ran: true });
           accumulatedContext.pattern_matches_count = totalMatches;
 
+          const fixSuffix = fixNote ? " (auto-fixed after initial error)" : "";
           if (perDatasetCounts.length === 1) {
             const { symbol, count } = perDatasetCounts[0];
-            resultSummary = `found ${count} pattern match${count !== 1 ? "es" : ""} on ${symbol}`;
+            resultSummary =
+              `found ${count} pattern match${count !== 1 ? "es" : ""} on ${symbol}${fixSuffix}`;
           } else {
             const breakdown = perDatasetCounts
               .map(({ symbol, count }) => `${symbol}:${count}`)
               .join(", ");
             resultSummary =
-              `${totalMatches} total matches across ${perDatasetCounts.length} charts (${breakdown})`;
+              `${totalMatches} total matches across ${perDatasetCounts.length} charts (${breakdown})${fixSuffix}`;
+          }
+        }
+
+        // If a fix was applied, replace the script in the editor with
+        // the corrected version so the user can see what changed +
+        // keep using it for future runs.
+        if (effectiveScript !== result.script) {
+          runToolCalls(
+            [{ tool: "script_editor.load", value: effectiveScript }],
+            step.skill,
+            ["script_editor.load"],
+          );
+          if (fixNote) {
+            accumulatedContext.pattern_auto_fix_explanation = fixNote;
           }
         }
       }
