@@ -270,39 +270,94 @@ export function RightSidebar() {
   const handleRun = async () => {
     // Use currentScript state, or fall back to textarea DOM value
     const script = currentScript || (document.querySelector('textarea') as HTMLTextAreaElement)?.value || "";
-    if (!script || !activeDataset) return;
+    if (!script) return;
     if (!currentScript) setCurrentScript(script);
 
-    // Use chart data (resampled) for pattern detection — much faster than raw 137k bars
-    const runData = chartData;
-    if (!runData || runData.length === 0) {
-      addMessage({ role: "agent", content: "No data available. Upload a dataset first." });
+    // Multi-chart pattern detection: run the same script against every
+    // loaded chart window on the canvas. Matches are stored per-dataset
+    // so each ChartWindow renders only its own detections, AND the
+    // bottom panel aggregates across all datasets for a unified list.
+    // Falls back to the legacy single-chart path when the canvas has
+    // no windows with data (older UI code paths).
+    const state = useStore.getState();
+    const windowsWithData = state.chartWindows
+      .map((w) => {
+        const dsid = w.datasetId;
+        const bars = dsid ? state.datasetChartData[dsid] : undefined;
+        return dsid && bars && bars.length > 0 ? { datasetId: dsid, bars } : null;
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null);
+
+    const setPatternMatchesForDataset = state.setPatternMatchesForDataset;
+
+    if (windowsWithData.length === 0) {
+      // Legacy single-chart fallback
+      const runData = chartData;
+      if (!runData || runData.length === 0) {
+        addMessage({ role: "agent", content: "No data available. Upload a dataset first." });
+        return;
+      }
+      setRunState("running");
+      try {
+        const matches = await executePatternScript(script, runData);
+        setPatternMatches(matches);
+        setLastScriptResult({ ran: true });
+        setRunState(matches.length > 0 ? "done" : "idle");
+        addMessage({
+          role: "agent",
+          content: matches.length > 0
+            ? `Found ${matches.length} pattern matches.`
+            : `Script ran on ${runData.length} bars but found 0 matches. Try lowering the correlation threshold or adjusting the pattern.`,
+        });
+        if (matches.length > 0) setTimeout(() => setRunState("idle"), 2000);
+      } catch (err) {
+        setRunState("error");
+        const errMsg = err instanceof Error ? err.message : "Failed";
+        setPatternMatches([]);
+        setLastScriptResult({ ran: true, error: errMsg });
+        addMessage({ role: "agent", content: `Run error: ${errMsg}` });
+        setTimeout(() => setRunState("idle"), 3000);
+      }
       return;
     }
 
+    // Multi-chart path: scan every loaded canvas window.
     setRunState("running");
-
     try {
-      const matches = await executePatternScript(script, runData);
-      setPatternMatches(matches);
+      const perChart: Array<{ symbol: string; count: number }> = [];
+      let totalMatches = 0;
+      for (const { datasetId, bars } of windowsWithData) {
+        const matches = await executePatternScript(script, bars);
+        setPatternMatchesForDataset(datasetId, matches);
+        totalMatches += matches.length;
+        const ds = datasets.find((d) => d.id === datasetId);
+        const sym = String(ds?.metadata?.symbol || ds?.name || "?");
+        perChart.push({ symbol: sym, count: matches.length });
+      }
+
       setLastScriptResult({ ran: true });
-      setRunState(matches.length > 0 ? "done" : "idle");
+      setRunState(totalMatches > 0 ? "done" : "idle");
+
+      const breakdown = perChart.map((p) => `${p.symbol}: ${p.count}`).join(", ");
       addMessage({
         role: "agent",
-        content: matches.length > 0
-          ? `Found ${matches.length} pattern matches.`
-          : `Script ran on ${runData.length} bars but found 0 matches. Try lowering the correlation threshold or adjusting the pattern.`,
+        content:
+          perChart.length === 1
+            ? (totalMatches > 0
+                ? `Found ${totalMatches} pattern matches on ${perChart[0].symbol}.`
+                : `Script ran on ${perChart[0].symbol} but found 0 matches.`)
+            : (totalMatches > 0
+                ? `Found ${totalMatches} total matches across ${perChart.length} charts (${breakdown}).`
+                : `Script ran across ${perChart.length} charts (${breakdown}) but found 0 matches.`),
       });
-      if (matches.length > 0) setTimeout(() => setRunState("idle"), 2000);
+
+      if (totalMatches > 0) setTimeout(() => setRunState("idle"), 2000);
     } catch (err) {
       setRunState("error");
       const errMsg = err instanceof Error ? err.message : "Failed";
       setPatternMatches([]);
       setLastScriptResult({ ran: true, error: errMsg });
-      addMessage({
-        role: "agent",
-        content: `Run error: ${errMsg}`,
-      });
+      addMessage({ role: "agent", content: `Run error: ${errMsg}` });
       setTimeout(() => setRunState("idle"), 3000);
     }
   };
