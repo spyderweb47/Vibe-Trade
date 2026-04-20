@@ -157,10 +157,31 @@ export async function executePlanInBrowser({ steps }: ExecutePlanArgs): Promise<
   // Accumulated context flows between steps
   const accumulatedContext: Record<string, unknown> = {};
 
+  // Multi-chart context — every skill call sees the full list of
+  // dataset ids currently loaded on the Canvas (one per open chart
+  // window), so skills can operate across multiple charts at once
+  // (Swarm portfolio debate, per-chart pattern detection, cross-asset
+  // backtest). Skills that don't understand dataset_ids fall back to
+  // dataset_id (the focused window) like before.
+  const collectDatasetIds = (): string[] => {
+    const windows = useStore.getState().chartWindows;
+    return windows
+      .map((w) => w.datasetId)
+      .filter((id): id is string => Boolean(id));
+  };
+
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
     patchStep(i, { status: "running" });
     patchTrace({ title: `Running step ${i + 1}/${steps.length}` });
+
+    // Refresh the multi-chart list on every step — earlier steps may
+    // have added or removed windows (e.g. data_fetcher spawns one per
+    // fetched ticker).
+    const currentDatasetIds = collectDatasetIds();
+    if (currentDatasetIds.length > 0) {
+      accumulatedContext.dataset_ids = currentDatasetIds;
+    }
 
     // Per-step context = accumulated + the planner's per-step overrides
     const stepContext = { ...accumulatedContext, ...(step.context || {}) };
@@ -223,23 +244,81 @@ export async function executePlanInBrowser({ steps }: ExecutePlanArgs): Promise<
 
       let resultSummary = "";
 
-      // ─── Auto-run pattern scripts ─────────────────────────────────────
+      // ─── Auto-run pattern scripts — across EVERY canvas chart ─────────
+      // Multi-chart mode: the same generated pattern script is executed
+      // against each loaded dataset, and matches are stored per-dataset
+      // so every ChartWindow renders ONLY its own detections.
+      // Single-chart fallback: if the canvas has 0 or 1 windows, runs
+      // against the focused chart's data like before.
       if (result.script && (result.script_type === "pattern" || step.skill === "pattern")) {
-        const chartData = useStore.getState().chartData;
-        if (!chartData || chartData.length === 0) {
-          resultSummary = "no dataset on chart — skipped run";
+        const state = useStore.getState();
+        const windowsWithData = state.chartWindows
+          .map((w) => {
+            const dsid = w.datasetId;
+            const bars = dsid ? state.datasetChartData[dsid] : undefined;
+            return dsid && bars && bars.length > 0
+              ? { datasetId: dsid, bars, window: w }
+              : null;
+          })
+          .filter((x): x is NonNullable<typeof x> => x !== null);
+
+        if (windowsWithData.length === 0) {
+          // Fall back to the legacy chartData check for single-chart mode
+          const chartData = state.chartData;
+          if (!chartData || chartData.length === 0) {
+            resultSummary = "no dataset on chart — skipped run";
+          } else {
+            try {
+              const matches = await executePatternScript(result.script, chartData);
+              state.setPatternMatches(matches);
+              state.setLastScriptResult({ ran: true });
+              resultSummary = `found ${matches.length} pattern match${matches.length !== 1 ? "es" : ""}`;
+              accumulatedContext.pattern_matches_count = matches.length;
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              state.setLastScriptResult({ ran: true, error: msg });
+              patchStep(i, { status: "failed", error: `pattern run failed: ${msg}` });
+              continue;
+            }
+          }
         } else {
-          try {
-            const matches = await executePatternScript(result.script, chartData);
-            useStore.getState().setPatternMatches(matches);
-            useStore.getState().setLastScriptResult({ ran: true });
-            resultSummary = `found ${matches.length} pattern match${matches.length !== 1 ? "es" : ""}`;
-            accumulatedContext.pattern_matches_count = matches.length;
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            useStore.getState().setLastScriptResult({ ran: true, error: msg });
-            patchStep(i, { status: "failed", error: `pattern run failed: ${msg}` });
+          // Multi-chart path: run script on every window's data.
+          const perDatasetCounts: Array<{ symbol: string; count: number }> = [];
+          let totalMatches = 0;
+          let anyError: string | null = null;
+
+          for (const { datasetId, bars } of windowsWithData) {
+            try {
+              const matches = await executePatternScript(result.script, bars);
+              state.setPatternMatchesForDataset(datasetId, matches);
+              totalMatches += matches.length;
+              const ds = state.datasets.find((d) => d.id === datasetId);
+              const sym = ds?.metadata?.symbol || ds?.name || "?";
+              perDatasetCounts.push({ symbol: String(sym), count: matches.length });
+            } catch (err) {
+              anyError = err instanceof Error ? err.message : String(err);
+              break;
+            }
+          }
+
+          if (anyError) {
+            state.setLastScriptResult({ ran: true, error: anyError });
+            patchStep(i, { status: "failed", error: `pattern run failed: ${anyError}` });
             continue;
+          }
+
+          state.setLastScriptResult({ ran: true });
+          accumulatedContext.pattern_matches_count = totalMatches;
+
+          if (perDatasetCounts.length === 1) {
+            const { symbol, count } = perDatasetCounts[0];
+            resultSummary = `found ${count} pattern match${count !== 1 ? "es" : ""} on ${symbol}`;
+          } else {
+            const breakdown = perDatasetCounts
+              .map(({ symbol, count }) => `${symbol}:${count}`)
+              .join(", ");
+            resultSummary =
+              `${totalMatches} total matches across ${perDatasetCounts.length} charts (${breakdown})`;
           }
         }
       }
@@ -324,11 +403,17 @@ export async function executePlanInBrowser({ steps }: ExecutePlanArgs): Promise<
       }
 
       // Always carry the active dataset ID forward so downstream skills
-      // (like swarm_intelligence) can find the data in the backend store
+      // (like swarm_intelligence) can find the data in the backend store.
+      // Plus the full list of open-window datasets for multi-chart
+      // aware skills.
       const currentDataset = useStore.getState().activeDataset;
       if (currentDataset) {
         accumulatedContext.dataset_id = currentDataset;
         accumulatedContext.activeDataset = currentDataset;
+      }
+      const dsIds = collectDatasetIds();
+      if (dsIds.length > 0) {
+        accumulatedContext.dataset_ids = dsIds;
       }
     } catch (err) {
       if (subStepTimer) clearTimeout(subStepTimer);

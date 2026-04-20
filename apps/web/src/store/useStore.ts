@@ -230,10 +230,15 @@ interface AppState {
   selectedTimeframe: string | null; // null = auto (fit to 6000 bars)
   setSelectedTimeframe: (tf: string | null) => void;
 
-  // Pattern matches
+  // Pattern matches — kept for backward compat (= matches on the focused
+  // chart's dataset). Canonical per-dataset storage lives in
+  // `patternMatchesByDataset` so multi-chart pattern detection can show
+  // distinct matches on each chart window.
   patternMatches: PatternMatch[];
+  patternMatchesByDataset: Record<string, PatternMatch[]>;
   lastScriptResult: { ran: boolean; error?: string } | null;
   setPatternMatches: (matches: PatternMatch[]) => void;
+  setPatternMatchesForDataset: (datasetId: string, matches: PatternMatch[]) => void;
   setLastScriptResult: (result: { ran: boolean; error?: string } | null) => void;
 
   // Analysis
@@ -960,11 +965,25 @@ export const useStore = create<AppState>((set, get) => ({
 
   // Pattern matches
   patternMatches: [],
+  patternMatchesByDataset: {},
   lastScriptResult: null,
   setPatternMatches: (matches) => set((state) => {
     const next = { ...state, patternMatches: matches };
     const conversations = _snapshotLiveStateInto(next, state.activeConversationId);
     return conversations ? { patternMatches: matches, conversations } : { patternMatches: matches };
+  }),
+  setPatternMatchesForDataset: (datasetId, matches) => set((state) => {
+    const nextByDataset = { ...state.patternMatchesByDataset, [datasetId]: matches };
+    // Keep the legacy global patternMatches in sync with the focused
+    // chart so existing consumers (PatternMatches tab, CLI, etc.) keep
+    // working during the multi-chart transition.
+    const focused = state.chartWindows.find((w) => w.id === state.focusedWindowId);
+    const nextMatches = focused?.datasetId === datasetId ? matches : state.patternMatches;
+    const next = { ...state, patternMatchesByDataset: nextByDataset, patternMatches: nextMatches };
+    const conversations = _snapshotLiveStateInto(next, state.activeConversationId);
+    return conversations
+      ? { patternMatchesByDataset: nextByDataset, patternMatches: nextMatches, conversations }
+      : { patternMatchesByDataset: nextByDataset, patternMatches: nextMatches };
   }),
   setLastScriptResult: (result) => set({ lastScriptResult: result }),
 

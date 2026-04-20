@@ -192,8 +192,18 @@ export function RightSidebar() {
 
       // If sending new pattern fingerprint data, don't pass old script (prevents edit mode)
       const isNewFingerprint = text.includes("TRIGGER SHAPE:") || text.includes("SHAPE:");
+      // Multi-chart context: every request sees all loaded chart windows
+      // on the Canvas, so skills can opt into multi-dataset behavior
+      // (portfolio swarm debate, per-chart pattern detection, etc.).
+      // Skills that only know about dataset_id fall back to the focused
+      // window, same as before.
+      const canvasDatasetIds = useStore
+        .getState()
+        .chartWindows.map((w) => w.datasetId)
+        .filter((id): id is string => Boolean(id));
       const result = await sendChat(text, activeMode, {
         dataset_id: activeDataset,
+        dataset_ids: canvasDatasetIds,
         pattern_script: isNewFingerprint ? "" : currentScript,
         strategy_config: strategyConfig || undefined,
         pending_fingerprint: isNewFingerprint ? undefined : (pendingFingerprint || undefined),

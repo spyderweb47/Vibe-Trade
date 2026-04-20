@@ -21,7 +21,7 @@ either register one or use the planned LLM-fallback path (not yet shipped).
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Dict
+from typing import Any, Awaitable, Callable, Dict, List
 
 from core.agents.pattern_agent import PatternAgent
 from core.agents.strategy_agent import StrategyAgent
@@ -196,43 +196,85 @@ async def _swarm_intelligence_processor(
     Delegates to the existing debate pipeline via DebateOrchestrator.
     Loads bars from the backend's in-memory store (same as the /debate
     endpoint) — the frontend only needs to pass the dataset_id.
+
+    Multi-chart mode: if `dataset_ids` is provided (list of >1), the
+    primary asset (first id) drives the technical analysis while the
+    other assets are included as portfolio context in `report_text`
+    so the debate considers them as comparables / alternatives /
+    hedges. Single-chart mode is unchanged.
     """
     from core.engine.dag_orchestrator import DebateOrchestrator
     from services.api.store import store
 
     dataset_id = context.get("dataset_id") or context.get("activeDataset")
+    dataset_ids_ctx = context.get("dataset_ids")
     report = context.get("report", "") or message
 
-    # Load bars from the backend store (synced by the frontend on dataset load)
-    bars = None
-    symbol = "Unknown"
-    if dataset_id:
-        df = store.get_dataframe(dataset_id)
-        if df is not None and len(df) > 0:
-            bars = df.tail(500).to_dict("records")
-            meta = store.get_metadata(dataset_id)
-            if meta:
-                if isinstance(meta, dict):
-                    symbol = meta.get("symbol") or meta.get("filename", "Unknown")
-                elif hasattr(meta, "symbol") and meta.symbol:
-                    symbol = meta.symbol
+    # Normalize dataset_ids: accept list, fall back to the single
+    # dataset_id, deduplicate preserving order.
+    dataset_ids: List[str] = []
+    if isinstance(dataset_ids_ctx, list):
+        dataset_ids = [str(i) for i in dataset_ids_ctx if isinstance(i, str) and i]
+    if dataset_id and dataset_id not in dataset_ids:
+        dataset_ids.insert(0, dataset_id)
 
-    # If no dataset or no bars, also check all datasets in the store
-    if not bars:
+    # Helper: load (bars, symbol) for one dataset id. Returns (None, fallback)
+    # when the id isn't in the store.
+    def _load_dataset(dsid: str) -> tuple:
+        df = store.get_dataframe(dsid)
+        if df is None or len(df) == 0:
+            return None, "Unknown"
+        bars_ = df.tail(500).to_dict("records")
+        sym_ = "Unknown"
+        meta = store.get_metadata(dsid)
+        if meta:
+            if isinstance(meta, dict):
+                sym_ = meta.get("symbol") or meta.get("filename", "Unknown")
+            elif hasattr(meta, "symbol") and meta.symbol:
+                sym_ = meta.symbol
+        return bars_, sym_
+
+    # Load each dataset. Skip any that aren't actually in the store.
+    loaded: List[tuple] = []  # [(dataset_id, bars, symbol), ...]
+    for dsid in dataset_ids:
+        b, s = _load_dataset(dsid)
+        if b:
+            loaded.append((dsid, b, s))
+
+    # Fall back to "most recent dataset in store" when nothing we were
+    # asked to load actually exists (e.g. user cleared state).
+    if not loaded:
         all_ds = store.list_datasets()
         if all_ds:
-            # Use the most recently added dataset
             last_id = all_ds[-1] if isinstance(all_ds[-1], str) else all_ds[-1].get("id", "")
-            df = store.get_dataframe(last_id)
-            if df is not None and len(df) > 0:
-                dataset_id = last_id
-                bars = df.tail(500).to_dict("records")
-                meta = store.get_metadata(last_id)
-                if meta:
-                    if isinstance(meta, dict):
-                        symbol = meta.get("symbol") or meta.get("filename", "Unknown")
-                    elif hasattr(meta, "symbol") and meta.symbol:
-                        symbol = meta.symbol
+            b, s = _load_dataset(last_id)
+            if b:
+                loaded.append((last_id, b, s))
+
+    # Primary asset drives the main technical analysis.
+    if loaded:
+        dataset_id, bars, symbol = loaded[0]
+    else:
+        bars = None
+        symbol = "Unknown"
+
+    # If we have multiple datasets, build a portfolio context summary
+    # that gets injected into the orchestrator's report_text. The
+    # debate then considers the primary asset with awareness of the
+    # portfolio siblings (e.g. "ETH is up 8% over the same window,
+    # strengthens the rotation-away-from-BTC thesis").
+    if len(loaded) > 1:
+        from core.agents.simulation_agents import format_ohlc_summary
+        portfolio_lines = [
+            "## Portfolio context (other assets on the canvas):",
+        ]
+        for dsid, pbars, psym in loaded[1:]:
+            try:
+                portfolio_lines.append(format_ohlc_summary(pbars, psym, "Raw"))
+            except Exception:  # noqa: BLE001
+                portfolio_lines.append(f"- {psym}: {len(pbars)} bars available")
+        portfolio_block = "\n".join(portfolio_lines)
+        report = (report + "\n\n" + portfolio_block).strip() if report else portfolio_block
 
     if not bars:
         return SkillResponse(
@@ -291,8 +333,18 @@ async def _swarm_intelligence_processor(
     total_rounds = result.get("total_rounds", 0)
     price_targets = summary.get("price_targets", {})
 
+    # Multi-chart reply annotation — tell the user the debate considered
+    # all assets on their canvas, not just the primary ticker.
+    portfolio_note = ""
+    if len(loaded) > 1:
+        others = ", ".join(s for (_, _, s) in loaded[1:])
+        portfolio_note = (
+            f" (portfolio debate on {symbol} with {len(loaded) - 1} "
+            f"sibling asset{'s' if len(loaded) - 1 != 1 else ''}: {others})"
+        )
+
     reply_parts = [
-        f"**Swarm debate complete** — {len(entities)} personas, {total_rounds} rounds, {len(thread)} messages.",
+        f"**Swarm debate complete** — {len(entities)} personas, {total_rounds} rounds, {len(thread)} messages{portfolio_note}.",
         f"",
         f"**Consensus: {direction}** with {confidence:.0f}% confidence.",
     ]

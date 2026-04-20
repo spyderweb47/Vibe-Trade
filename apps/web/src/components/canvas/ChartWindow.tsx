@@ -29,7 +29,16 @@ interface Props {
 export function ChartWindow({ window: w, focused, canvasBounds }: Props) {
   const datasets = useStore((s) => s.datasets);
   const datasetChartData = useStore((s) => s.datasetChartData);
-  const patternMatches = useStore((s) => s.patternMatches);
+  // Per-dataset pattern matches — each chart window displays ONLY the
+  // matches detected against its own dataset, even when pattern
+  // detection ran across multiple charts at once. Falls back to the
+  // legacy global patternMatches when the per-dataset map is empty
+  // (single-chart mode, or running against only this chart).
+  const patternMatchesByDataset = useStore((s) => s.patternMatchesByDataset);
+  const globalPatternMatches = useStore((s) => s.patternMatches);
+  const patternMatches = w.datasetId && patternMatchesByDataset[w.datasetId]
+    ? patternMatchesByDataset[w.datasetId]
+    : (w.id === useStore.getState().focusedWindowId ? globalPatternMatches : []);
   const appMode = useStore((s) => s.appMode);
   const focusChartWindow = useStore((s) => s.focusChartWindow);
   const removeChartWindow = useStore((s) => s.removeChartWindow);
