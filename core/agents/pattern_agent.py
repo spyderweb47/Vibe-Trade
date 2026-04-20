@@ -116,6 +116,58 @@ script that detects occurrences of that pattern in OHLC data.
     one in any cluster. Greedy non-max suppression: walk results sorted by confidence,
     keep one if no kept result already covers ≥ 50% of its bar range.
 
+14. OPTIONAL PER-MATCH DRAWINGS. A bounding box alone is often too coarse for
+    geometric patterns — head-and-shoulders has three peaks + a neckline,
+    double-top has two peaks and a horizontal resistance line, harmonics
+    have fibonacci retracement legs. You can attach annotations to any
+    match by including a `drawings` array on the result object:
+
+    ```javascript
+    results.push({
+      start_idx: leftShoulderIdx,
+      end_idx: rightShoulderIdx,
+      confidence: score,
+      pattern_type: 'head_and_shoulders',
+      drawings: [
+        // Neckline connecting left shoulder low and right shoulder low
+        { type: 'trendline',
+          points: [
+            { idx: leftShoulderIdx, price: lsLow },
+            { idx: rightShoulderIdx, price: rsLow }
+          ],
+          label: 'neckline',
+          dashed: true },
+        // Peaks labeled
+        { type: 'point', idx: leftShoulderIdx,  price: lsHigh, label: 'LS' },
+        { type: 'point', idx: headIdx,          price: headHigh, label: 'H' },
+        { type: 'point', idx: rightShoulderIdx, price: rsHigh, label: 'RS' },
+      ],
+    });
+    ```
+
+    Available drawing types (all fields strictly typed — the renderer
+    silently drops malformed entries):
+
+      - `trendline`:       { type, points: [{idx,price}, {idx,price}], color?, label?, dashed? }
+      - `horizontal_line`: { type, price, start_idx?, end_idx?, color?, label?, dashed? }
+      - `point`:           { type, idx, price, label?, color? }
+      - `label`:           { type, idx, price, text, color? }
+      - `fibonacci`:       { type, points: [{idx,price}, {idx,price}], levels? (array of 0-1 floats) }
+
+    Rules for using drawings:
+    - OMIT `drawings` when the bounding box alone tells the story (e.g. a
+      generic bullish-engulfing candle pattern — the box IS the pattern).
+    - ADD drawings when the pattern has SPECIFIC geometric elements the user
+      wants to see called out (necklines, support/resistance, fib levels,
+      named peaks/troughs).
+    - All `idx` values MUST be valid indices into `data`. Out-of-range
+      drawings are dropped silently but waste tokens.
+    - Keep labels short — "LS", "H", "RS", "resistance", "neckline", etc.
+    - Don't over-annotate: 3-6 drawings per match is usually enough. More
+      clutters the chart.
+    - Colors are optional — if omitted, the drawing uses the match's
+      direction colour (green for bullish, red for bearish, orange for neutral).
+
 ## SHAPE / fingerprint patterns (CRITICAL)
 
 A fingerprint request looks like this:
@@ -820,7 +872,21 @@ a Web Worker. Judge the draft against these requirements:
    A script with overly strict thresholds will find zero matches on real
    data — this is a fatal UX bug even though the code "runs"
 6. Handles edge cases — checks `data.length >= N` before indexing
-7. Logic is concise (under ~60 lines) and readable
+7. Logic is concise (under ~60 lines of detector logic — drawings code
+   doesn't count against this budget) and readable
+8. OPTIONAL drawings API — if the pattern has geometric elements
+   (necklines, peaks, support/resistance, fib legs), the script MAY
+   attach `drawings: [...]` to each result. Judge these when present:
+   - Drawing types must be one of: trendline, horizontal_line, point,
+     label, fibonacci
+   - All `idx` fields must be in range `[0, data.length)` — hardcoded
+     out-of-range indices are a bug (silently dropped at render)
+   - 3-6 drawings per match is ideal; more clutters the chart
+   - Generic candle patterns (engulfing, doji, hammer) should NOT
+     attach drawings — the box is sufficient
+   - Patterns with explicit geometry (head-and-shoulders, double-top,
+     harmonic XABCD, flag, wedge) benefit from drawings and should
+     include them
 
 The programmatic static analysis report accompanying this script lists
 concrete issues it could detect (forbidden APIs found, missing

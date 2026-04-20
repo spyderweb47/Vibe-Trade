@@ -8,7 +8,7 @@ import type {
   ISeriesApi,
 } from "lightweight-charts";
 import type { CanvasRenderingTarget2D } from "fancy-canvas";
-import type { PatternMatch, OHLCBar } from "@/types";
+import type { PatternMatch, OHLCBar, PatternDrawing } from "@/types";
 
 interface HighlightBox {
   x1: number;
@@ -18,7 +18,35 @@ interface HighlightBox {
   label: string;
   confidence: number;
   direction: "bullish" | "bearish" | "neutral";
+  /** Per-match drawing primitives resolved to pixel coordinates. */
+  drawings?: ResolvedDrawing[];
 }
+
+/** A drawing with every (idx, price) pair converted to (x, y) pixel. */
+type ResolvedDrawing =
+  | {
+      kind: "trendline";
+      x1: number; y1: number; x2: number; y2: number;
+      color: string; dashed: boolean; label?: string;
+    }
+  | {
+      kind: "horizontal_line";
+      x1: number; x2: number; y: number;
+      color: string; dashed: boolean; label?: string;
+    }
+  | {
+      kind: "point";
+      x: number; y: number; color: string; label?: string;
+    }
+  | {
+      kind: "label";
+      x: number; y: number; text: string; color: string;
+    }
+  | {
+      kind: "fibonacci";
+      x1: number; x2: number; y1: number; y2: number;
+      levels: number[];
+    };
 
 const BULLISH_FILL = "rgba(34, 197, 94, 0.10)";
 const BULLISH_BORDER = "rgba(34, 197, 94, 0.55)";
@@ -26,6 +54,17 @@ const BEARISH_FILL = "rgba(239, 68, 68, 0.10)";
 const BEARISH_BORDER = "rgba(239, 68, 68, 0.55)";
 const NEUTRAL_FILL = "rgba(255, 107, 0, 0.10)";
 const NEUTRAL_BORDER = "rgba(255, 107, 0, 0.55)";
+
+const FIB_LEVELS_DEFAULT = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+const FIB_COLORS: Record<string, string> = {
+  "0":     "#787b86",
+  "0.236": "#ff4d4d",
+  "0.382": "#ffb020",
+  "0.5":   "#00d68f",
+  "0.618": "#00bcd4",
+  "0.786": "#ff6b00",
+  "1":     "#787b86",
+};
 
 class HighlightRenderer implements IPrimitivePaneRenderer {
   private _boxes: HighlightBox[] = [];
@@ -71,8 +110,110 @@ class HighlightRenderer implements IPrimitivePaneRenderer {
         ctx.textAlign = "right";
         const arrow = dir === "bullish" ? "\u25B2" : dir === "bearish" ? "\u25BC" : "\u25C6";
         ctx.fillText(arrow, x2 - 4, y2 - 4);
+
+        // ─── Per-match drawings (on top of the box) ──────────────
+        if (box.drawings && box.drawings.length > 0) {
+          this._drawAnnotations(ctx, box.drawings, border);
+        }
       }
     });
+  }
+
+  private _drawAnnotations(
+    ctx: CanvasRenderingContext2D,
+    drawings: ResolvedDrawing[],
+    defaultColor: string,
+  ): void {
+    for (const d of drawings) {
+      if (d.kind === "trendline") {
+        ctx.strokeStyle = d.color || defaultColor;
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash(d.dashed ? [4, 3] : []);
+        ctx.beginPath();
+        ctx.moveTo(d.x1, d.y1);
+        ctx.lineTo(d.x2, d.y2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        if (d.label) {
+          ctx.font = "bold 9px 'Inter', sans-serif";
+          ctx.textBaseline = "bottom";
+          ctx.textAlign = "center";
+          ctx.fillStyle = d.color || defaultColor;
+          ctx.fillText(d.label, (d.x1 + d.x2) / 2, (d.y1 + d.y2) / 2 - 3);
+        }
+      } else if (d.kind === "horizontal_line") {
+        ctx.strokeStyle = d.color || defaultColor;
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash(d.dashed ? [4, 3] : []);
+        ctx.beginPath();
+        ctx.moveTo(d.x1, d.y);
+        ctx.lineTo(d.x2, d.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        if (d.label) {
+          ctx.font = "bold 9px 'Inter', sans-serif";
+          ctx.textBaseline = "bottom";
+          ctx.textAlign = "left";
+          ctx.fillStyle = d.color || defaultColor;
+          ctx.fillText(d.label, d.x1 + 4, d.y - 3);
+        }
+      } else if (d.kind === "point") {
+        const color = d.color || defaultColor;
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(d.x, d.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        if (d.label) {
+          ctx.font = "bold 10px 'Inter', sans-serif";
+          ctx.textBaseline = "bottom";
+          ctx.textAlign = "center";
+          ctx.fillStyle = color;
+          // Draw a tiny text shadow for readability over candles
+          ctx.strokeStyle = "rgba(0, 0, 0, 0.6)";
+          ctx.lineWidth = 3;
+          ctx.strokeText(d.label, d.x, d.y - 8);
+          ctx.fillText(d.label, d.x, d.y - 8);
+        }
+      } else if (d.kind === "label") {
+        ctx.font = "bold 10px 'Inter', sans-serif";
+        ctx.textBaseline = "middle";
+        ctx.textAlign = "left";
+        ctx.fillStyle = d.color || defaultColor;
+        // Shadow for readability
+        ctx.strokeStyle = "rgba(0, 0, 0, 0.6)";
+        ctx.lineWidth = 3;
+        ctx.strokeText(d.text, d.x + 4, d.y);
+        ctx.fillText(d.text, d.x + 4, d.y);
+      } else if (d.kind === "fibonacci") {
+        const levels = d.levels.length > 0 ? d.levels : FIB_LEVELS_DEFAULT;
+        const minY = Math.min(d.y1, d.y2);
+        const maxY = Math.max(d.y1, d.y2);
+        const height = maxY - minY;
+        const x1 = Math.min(d.x1, d.x2);
+        const x2 = Math.max(d.x1, d.x2);
+        ctx.lineWidth = 1;
+        for (const level of levels) {
+          const y = minY + height * level;
+          const key = String(level);
+          const color = FIB_COLORS[key] || defaultColor;
+          ctx.strokeStyle = color;
+          ctx.setLineDash([3, 2]);
+          ctx.beginPath();
+          ctx.moveTo(x1, y);
+          ctx.lineTo(x2, y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.font = "9px 'Inter', sans-serif";
+          ctx.textBaseline = "middle";
+          ctx.textAlign = "right";
+          ctx.fillStyle = color;
+          ctx.fillText(`${(level * 100).toFixed(1)}%`, x1 - 2, y);
+        }
+      }
+    }
   }
 
   draw(): void {}
@@ -167,10 +308,124 @@ export class PatternHighlightPrimitive implements ISeriesPrimitive<Time> {
       const y2 = series.priceToCoordinate(minPrice);
       if (x1 == null || x2 == null || y1 == null || y2 == null) continue;
 
-      boxes.push({ x1, x2, y1, y2, label: m.name, confidence: m.confidence, direction: m.direction });
+      // Resolve per-match drawings from (idx, price) → (x, y) pixels.
+      // Bad / out-of-range drawings are dropped silently so a
+      // partially-broken match still renders its box + valid drawings.
+      const resolvedDrawings = this._resolveDrawings(
+        m.drawings, this._data, ts, series, m.startIndex, m.endIndex, x1, x2,
+      );
+
+      boxes.push({
+        x1, x2, y1, y2,
+        label: m.name,
+        confidence: m.confidence,
+        direction: m.direction,
+        drawings: resolvedDrawings,
+      });
     }
 
     this._paneView.update(boxes);
+  }
+
+  /**
+   * Convert (idx, price) coords in each PatternDrawing into the
+   * pixel-space ResolvedDrawing the renderer consumes. Returns
+   * undefined when `input` is empty so the renderer can skip the
+   * annotations loop entirely.
+   */
+  private _resolveDrawings(
+    input: PatternDrawing[] | undefined,
+    data: OHLCBar[],
+    ts: ReturnType<IChartApi["timeScale"]>,
+    series: ISeriesApi<"Candlestick">,
+    boxStartIdx: number,
+    boxEndIdx: number,
+    boxX1: number,
+    boxX2: number,
+  ): ResolvedDrawing[] | undefined {
+    if (!input || input.length === 0) return undefined;
+
+    // Helper: idx → pixel x. Out-of-range → null.
+    const idxToX = (idx: number): number | null => {
+      if (idx < 0 || idx >= data.length) return null;
+      const t = data[idx].time as unknown as Time;
+      const x = ts.timeToCoordinate(t);
+      return x ?? null;
+    };
+
+    const priceToY = (price: number): number | null => {
+      const y = series.priceToCoordinate(price);
+      return y ?? null;
+    };
+
+    const out: ResolvedDrawing[] = [];
+    for (const d of input) {
+      try {
+        if (d.type === "trendline" && Array.isArray(d.points) && d.points.length >= 2) {
+          const x1 = idxToX(d.points[0].idx);
+          const y1 = priceToY(d.points[0].price);
+          const x2 = idxToX(d.points[1].idx);
+          const y2 = priceToY(d.points[1].price);
+          if (x1 != null && y1 != null && x2 != null && y2 != null) {
+            out.push({
+              kind: "trendline", x1, y1, x2, y2,
+              color: d.color || "",
+              dashed: !!d.dashed,
+              label: d.label,
+            });
+          }
+        } else if (d.type === "horizontal_line" && typeof d.price === "number") {
+          const y = priceToY(d.price);
+          // Default span to the bounding box if no explicit idx range
+          const sIdx = d.start_idx ?? boxStartIdx;
+          const eIdx = d.end_idx ?? boxEndIdx;
+          const x1 = idxToX(sIdx) ?? boxX1;
+          const x2 = idxToX(eIdx) ?? boxX2;
+          if (y != null) {
+            out.push({
+              kind: "horizontal_line",
+              x1, x2, y,
+              color: d.color || "",
+              dashed: !!d.dashed,
+              label: d.label,
+            });
+          }
+        } else if (d.type === "point" && typeof d.idx === "number" && typeof d.price === "number") {
+          const x = idxToX(d.idx);
+          const y = priceToY(d.price);
+          if (x != null && y != null) {
+            out.push({
+              kind: "point", x, y,
+              color: d.color || "",
+              label: d.label,
+            });
+          }
+        } else if (d.type === "label" && typeof d.idx === "number" && typeof d.price === "number" && typeof d.text === "string") {
+          const x = idxToX(d.idx);
+          const y = priceToY(d.price);
+          if (x != null && y != null) {
+            out.push({
+              kind: "label", x, y, text: d.text,
+              color: d.color || "",
+            });
+          }
+        } else if (d.type === "fibonacci" && Array.isArray(d.points) && d.points.length >= 2) {
+          const x1 = idxToX(d.points[0].idx);
+          const y1 = priceToY(d.points[0].price);
+          const x2 = idxToX(d.points[1].idx);
+          const y2 = priceToY(d.points[1].price);
+          if (x1 != null && y1 != null && x2 != null && y2 != null) {
+            out.push({
+              kind: "fibonacci", x1, y1, x2, y2,
+              levels: Array.isArray(d.levels) ? d.levels : [],
+            });
+          }
+        }
+      } catch {
+        // Malformed individual drawing — silently drop, keep going
+      }
+    }
+    return out.length > 0 ? out : undefined;
   }
 
   paneViews(): readonly IPrimitivePaneView[] { return [this._paneView]; }

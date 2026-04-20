@@ -20,6 +20,64 @@ export interface Dataset {
   };
 }
 
+/**
+ * A single annotation a pattern-detection script can attach to a match.
+ *
+ * The old API gave each match only a bounding box (startIndex..endIndex
+ * + min/max price). That's fine for a generic "something happened here"
+ * highlight, but many real patterns are shaped NOT as a rectangle:
+ * head-and-shoulders wants a neckline + three labelled peaks, double-
+ * bottoms want a horizontal support line through the two troughs,
+ * harmonics want fibonacci levels between key swing points.
+ *
+ * Each match's `drawings?` array carries these extra annotations. The
+ * `PatternHighlightPrimitive` renders them on top of the existing box,
+ * using the match's direction for default colours when omitted.
+ *
+ * Coordinates are in (idx, price) space — the renderer converts to
+ * pixel space using the chart's timeScale + priceScale (same
+ * transforms the bounding box uses).
+ */
+export type PatternDrawing =
+  | {
+      type: 'trendline';
+      points: [{ idx: number; price: number }, { idx: number; price: number }];
+      color?: string;
+      label?: string;
+      dashed?: boolean;
+    }
+  | {
+      type: 'horizontal_line';
+      price: number;
+      /** Optional — defaults to the match's bounding box span if omitted. */
+      start_idx?: number;
+      end_idx?: number;
+      color?: string;
+      label?: string;
+      dashed?: boolean;
+    }
+  | {
+      type: 'point';
+      idx: number;
+      price: number;
+      /** Text that floats next to the dot. Keep short. */
+      label?: string;
+      color?: string;
+    }
+  | {
+      type: 'label';
+      idx: number;
+      price: number;
+      text: string;
+      color?: string;
+    }
+  | {
+      type: 'fibonacci';
+      points: [{ idx: number; price: number }, { idx: number; price: number }];
+      /** Override default 0/23.6/38.2/50/61.8/78.6/100 set. */
+      levels?: number[];
+    };
+
 export interface PatternMatch {
   id: string;
   name: string;
@@ -30,6 +88,8 @@ export interface PatternMatch {
   direction: 'bullish' | 'bearish' | 'neutral';
   confidence: number;
   description?: string;
+  /** Optional per-match annotations — see PatternDrawing docs above. */
+  drawings?: PatternDrawing[];
 }
 
 export interface Strategy {

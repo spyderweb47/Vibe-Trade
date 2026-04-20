@@ -1,10 +1,14 @@
-import type { OHLCBar, PatternMatch } from "@/types";
+import type { OHLCBar, PatternMatch, PatternDrawing } from "@/types";
 
 interface RawMatch {
   start_idx: number;
   end_idx: number;
   confidence: number;
   pattern_type: string;
+  /** Optional — script can attach per-match trend lines, points,
+   *  fib levels, labels, horizontal support/resistance lines, etc.
+   *  Passed through to PatternMatch.drawings for chart rendering. */
+  drawings?: PatternDrawing[];
 }
 
 /**
@@ -158,6 +162,13 @@ export async function executePatternScript(
       endTime: String(endBar?.time ?? 0),
       direction,
       confidence: m.confidence,
+      // Pass through optional drawings the script attached. Shape is
+      // validated at render time in PatternHighlightPrimitive — we don't
+      // reject bad drawings here so a partially-correct script still
+      // produces a rendered match instead of disappearing silently.
+      ...(Array.isArray(m.drawings) && m.drawings.length > 0
+        ? { drawings: m.drawings }
+        : {}),
     };
   });
 }
