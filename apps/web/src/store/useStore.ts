@@ -11,7 +11,7 @@ import type {
   Conversation,
 } from '@/types';
 import type { Drawing, DrawingType } from '@/lib/chart-primitives/drawingTypes';
-import { resampleToTimeframe } from '@/lib/csv/resampleOHLC';
+import { resampleToTimeframe, resampleOHLC } from '@/lib/csv/resampleOHLC';
 import type { SkillMetadata } from '@/lib/api';
 
 // ─── Conversations persistence ────────────────────────────────────────────
@@ -960,12 +960,40 @@ export const useStore = create<AppState>((set, get) => ({
       if (!id) return {};
       const raw = state.datasetRawData[id];
       if (!raw || raw.length === 0) return {};
-      if (tf === null) {
-        // Auto mode — use the pre-resampled chart data
-        return { selectedTimeframe: null, chartData: state.datasetChartData[id] || [] };
-      }
-      const resampled = resampleToTimeframe(raw, tf);
-      return { selectedTimeframe: tf, chartData: resampled };
+
+      // Resolve the bars the focused window should display at this
+      // timeframe.
+      //   - Explicit tf  → resample raw → tf
+      //   - Auto (null) → resampleOHLC re-derives the "fit to ~6000
+      //                   bars" default from raw, same logic the
+      //                   loader originally applied at addDataset
+      //                   time. We can't just restore the old
+      //                   datasetChartData here because we've been
+      //                   overwriting that slot on each timeframe
+      //                   change; re-deriving from raw is the
+      //                   authoritative source of truth.
+      const nextBars =
+        tf === null
+          ? resampleOHLC(raw).data
+          : resampleToTimeframe(raw, tf);
+
+      // Multi-chart safety: each ChartWindow reads
+      // `datasetChartData[w.datasetId]` directly, NOT the global
+      // chartData. Previously this action only updated chartData, so
+      // clicking "2h" did nothing to the window on screen.
+      // Now we update the per-dataset slot so the focused window picks
+      // up the resampled bars; the legacy global chartData stays in
+      // sync for backward compat with skill processors that still
+      // read it.
+      //
+      // Unfocused windows with OTHER datasets keep their previous
+      // chart data — timeframe is per-focused-chart, same behavior
+      // the single-chart UI always had.
+      return {
+        selectedTimeframe: tf,
+        chartData: nextBars,
+        datasetChartData: { ...state.datasetChartData, [id]: nextBars },
+      };
     }),
 
   // Pattern matches
