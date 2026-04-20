@@ -38,6 +38,7 @@ export function RightSidebar() {
   const appMode = useStore((s) => s.appMode);
   const messages = useStore((s) => s.messages);
   const addMessage = useStore((s) => s.addMessage);
+  const updateMessage = useStore((s) => s.updateMessage);
   const activeDataset = useStore((s) => s.activeDataset);
   const datasets = useStore((s) => s.datasets);
   const indicators = useStore((s) => s.indicators);
@@ -108,17 +109,67 @@ export function RightSidebar() {
     try {
       // Always run through the planner so the trace UI shows progress for
       // every request — even single-skill tasks. The sub-planner trace
-      // gives real-time insight into what each skill is doing.
+      // gives real-time insight into what each skill is doing. If the LLM
+      // planner is slow or unavailable the backend has a keyword fallback
+      // (see core/agents/planner._keyword_fallback) that guarantees common
+      // intents ("fetch X", "run swarm", "find pattern") still produce a
+      // one-step plan instead of silently falling through to plain chat.
       const skillCount = activeSkillIds.size;
+      // Surface an interim trace message so the user sees immediate
+      // feedback while the /plan call is in-flight. If the planner
+      // returns a real plan, executePlanInBrowser replaces this trace;
+      // if it fails, the catch block marks the trace as failed.
+      const planningTraceId = addMsg({
+        role: "trace",
+        content: "",
+        trace: {
+          status: "planning",
+          title: "Planning your request...",
+          steps: [
+            { skill: "planner", message: "Thinking about which skills to use", status: "running" },
+          ],
+        },
+      });
       try {
         const availableSkills = skillCount >= 1 ? Array.from(activeSkillIds) : undefined;
         const planResult = await getPlan(text, undefined, availableSkills);
         if (planResult.steps && planResult.steps.length > 0) {
+          // Mark the planning trace done before the per-step executor
+          // renders its own trace messages.
+          updateMessage(planningTraceId, {
+            trace: {
+              status: "done",
+              title: `Plan: ${planResult.steps.map((s: { skill: string }) => s.skill).join(" → ")}`,
+              steps: [
+                { skill: "planner", message: `${planResult.steps.length} step(s) ready`, status: "done" },
+              ],
+            },
+          });
           await executePlanInBrowser({ steps: planResult.steps });
           return;
         }
+        // Empty plan — mark as skipped so the trace card doesn't sit
+        // forever in 'running' state.
+        updateMessage(planningTraceId, {
+          trace: {
+            status: "done",
+            title: "No plan needed",
+            steps: [
+              { skill: "planner", message: "Routing directly to chat", status: "done" },
+            ],
+          },
+        });
       } catch (err) {
         console.warn("Plan endpoint failed, falling back to general chat:", err);
+        updateMessage(planningTraceId, {
+          trace: {
+            status: "failed",
+            title: "Planning failed — using direct chat",
+            steps: [
+              { skill: "planner", message: String(err).slice(0, 160), status: "failed" },
+            ],
+          },
+        });
       }
 
       // Auto-sync dataset to backend if needed

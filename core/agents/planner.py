@@ -202,4 +202,78 @@ def plan(
             "context": step.get("context") if isinstance(step.get("context"), dict) else {},
         })
 
+    # If the LLM returned nothing usable, fall back to keyword-based
+    # single-skill detection so the user still gets trace-UI progress.
+    # The planner pipeline is what drives the live "what's happening"
+    # bar in chat — without a plan, the frontend silently routes through
+    # plain chat and the user sees no activity indicator at all.
+    if not validated:
+        guess = _keyword_fallback(message, valid_ids)
+        if guess:
+            print(
+                f"[planner] LLM returned no valid steps — using keyword fallback: {guess['skill']}",
+                flush=True,
+            )
+            validated = [guess]
+
     return validated
+
+
+# ─── Keyword fallback ────────────────────────────────────────────────────────
+
+# Verb phrases that map obviously to a single skill. Kept intentionally
+# conservative — only clear matches. When the user's intent doesn't
+# match any of these, we fall through to plain chat (not bogus plans).
+_FALLBACK_RULES: List[Dict[str, Any]] = [
+    {
+        "skill": "data_fetcher",
+        "keywords": (
+            "fetch", "load", "download", "pull", "get data", "get ohlc",
+            "show chart", "show me the chart", "show price", "bring up",
+            "add chart", "new chart",
+        ),
+    },
+    {
+        "skill": "swarm_intelligence",
+        "keywords": (
+            "swarm", "committee", "debate", "multi-agent", "multi agent",
+            "run agents", "analyze with agents", "panel debate",
+        ),
+    },
+    {
+        "skill": "pattern",
+        "keywords": (
+            "detect pattern", "find pattern", "pattern detector",
+            "engulfing", "head and shoulders", "double top", "double bottom",
+            "scan for", "find occurrences",
+        ),
+    },
+    {
+        "skill": "strategy",
+        "keywords": (
+            "backtest", "strategy", "build a strategy", "run a strategy",
+            "profit factor", "sharpe", "pnl",
+        ),
+    },
+]
+
+
+def _keyword_fallback(message: str, valid_ids: set) -> Optional[Dict[str, Any]]:
+    """
+    Rule-based single-skill detection for when the LLM planner returns
+    nothing. Returns the matched step dict, or None if no rule fires.
+    """
+    low = message.lower().strip()
+    if not low:
+        return None
+    for rule in _FALLBACK_RULES:
+        if rule["skill"] not in valid_ids:
+            continue
+        if any(kw in low for kw in rule["keywords"]):
+            return {
+                "skill": rule["skill"],
+                "message": message.strip(),
+                "rationale": f"keyword match on '{rule['skill']}' (LLM plan empty)",
+                "context": {},
+            }
+    return None

@@ -588,31 +588,44 @@ export const useStore = create<AppState>((set, get) => ({
   syncedDatasets: new Set(),
   addDataset: (dataset, chartData, rawData) => {
     set((state) => {
-      // If there's no chart window yet showing this dataset, spawn one
-      // so the canvas has something to render. Subsequent datasets added
-      // from the left sidebar will NOT auto-spawn — users drag them in
-      // from Phase 2.
-      const alreadyShown = state.chartWindows.some((w) => w.datasetId === dataset.id);
-      const firstWindow = state.chartWindows.length === 0;
+      // Every fetched dataset gets its OWN chart window. No reuse of the
+      // focused one, no retargeting. This matches the UX where the chat
+      // is the sole way to spawn charts: each "fetch TICKER" produces a
+      // new window. If a window for this dataset somehow already exists
+      // (e.g. the same dataset was fetched twice in a row), we just
+      // refocus it instead of creating a duplicate.
+      const existing = state.chartWindows.find((w) => w.datasetId === dataset.id);
       let nextWindows = state.chartWindows;
       let nextFocused = state.focusedWindowId;
-      if (!alreadyShown && firstWindow) {
+      const zTop = state.chartWindows.reduce((m, w) => Math.max(m, w.zIndex), 0) + 1;
+
+      if (existing) {
+        nextFocused = existing.id;
+        nextWindows = state.chartWindows.map((w) =>
+          w.id === existing.id ? { ...w, zIndex: zTop } : w
+        );
+      } else {
         const wid = (typeof crypto !== "undefined" && crypto.randomUUID)
           ? crypto.randomUUID()
           : `w_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        const zTop = state.chartWindows.reduce((m, w) => Math.max(m, w.zIndex), 0) + 1;
+        // First window: zero-size sentinel → Canvas fills it on first layout.
+        // Subsequent windows: cascade from the last window so they don't
+        // stack on top of each other. Size matches the previous window or
+        // a reasonable default.
+        const last = state.chartWindows[state.chartWindows.length - 1];
+        const nth = state.chartWindows.length;
+        const isFirst = nth === 0;
+        const cascadeX = isFirst ? 0 : (last?.x ?? 0) + 40;
+        const cascadeY = isFirst ? 0 : (last?.y ?? 0) + 40;
+        const w = isFirst ? 0 : Math.max(480, last?.width ?? 640);
+        const h = isFirst ? 0 : Math.max(320, last?.height ?? 420);
         nextWindows = [
           ...state.chartWindows,
-          { id: wid, datasetId: dataset.id, x: 0, y: 0, width: 0, height: 0, zIndex: zTop },
+          { id: wid, datasetId: dataset.id, x: cascadeX, y: cascadeY, width: w, height: h, zIndex: zTop },
         ];
         nextFocused = wid;
-      } else if (!alreadyShown && state.focusedWindowId) {
-        // Retarget the focused window to the new dataset so existing UX
-        // (data_fetcher populates the current chart) still works.
-        nextWindows = state.chartWindows.map((w) =>
-          w.id === state.focusedWindowId ? { ...w, datasetId: dataset.id } : w
-        );
       }
+
       return {
         datasets: [...state.datasets, dataset],
         datasetChartData: { ...state.datasetChartData, [dataset.id]: chartData },
