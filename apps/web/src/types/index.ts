@@ -196,6 +196,11 @@ export interface Conversation {
   currentDebate?: SimulationDebate | null;
   // Chart drawings (trend lines, fibs, rectangles, etc.)
   drawings?: unknown[];
+  // Canvas state — per-conversation chart windows + focus. When switching
+  // conversations the whole layout (positions, sizes, count, which dataset
+  // is in each window) is restored so every thread has its own workspace.
+  chartWindows?: ChartWindow[];
+  focusedWindowId?: string | null;
 }
 
 export interface IndicatorConfig {

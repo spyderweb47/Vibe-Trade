@@ -122,6 +122,9 @@ function _snapshotLiveStateInto(state: any, activeId: string | null): Conversati
     selectedTimeframe: state.selectedTimeframe ?? null,
     currentDebate: state.currentDebate ?? null,
     drawings: state.drawings || [],
+    // Canvas — per-conversation workspace layout
+    chartWindows: state.chartWindows || [],
+    focusedWindowId: state.focusedWindowId ?? null,
   };
   const conversations = [...state.conversations];
   conversations[idx] = updated;
@@ -413,6 +416,20 @@ export const useStore = create<AppState>((set, get) => ({
       activeDataset: active.activeDataset,
       activeSkillIds: new Set(active.activeSkillIds || []),
       activeMode: active.activeSkillIds?.[0] || 'general',
+      // Canvas — restore the workspace the user left this conversation
+      // with. Includes each window's dataset id, position, and size.
+      chartWindows: active.chartWindows || [],
+      focusedWindowId: active.focusedWindowId ?? null,
+      // Plus the other session-scoped state that was missing here — the
+      // snapshot on the conversation already tracks them, the hydration
+      // path just wasn't reading them back. Fixes stale chart data
+      // visible after an app reload.
+      chartData: active.chartData || [],
+      datasets: (active.datasets || []) as never,
+      datasetChartData: (active.datasetChartData || {}) as never,
+      selectedTimeframe: active.selectedTimeframe ?? null,
+      currentDebate: (active.currentDebate ?? null) as never,
+      drawings: (active.drawings || []) as never,
     });
     savePersistedConversations(conversations, active.id);
   },
@@ -446,6 +463,9 @@ export const useStore = create<AppState>((set, get) => ({
       selectedTimeframe: null,
       currentDebate: null as never,
       drawings: [] as never,
+      // Canvas — fresh empty workspace for the new conversation
+      chartWindows: [],
+      focusedWindowId: null,
     });
     savePersistedConversations(next, fresh.id);
     return fresh.id;
@@ -480,6 +500,11 @@ export const useStore = create<AppState>((set, get) => ({
       selectedTimeframe: target.selectedTimeframe ?? null,
       currentDebate: (target.currentDebate ?? null) as never,
       drawings: (target.drawings || []) as never,
+      // Canvas — restore this conversation's own chart windows layout.
+      // Every conversation has its own workspace: N windows, their
+      // sizes, positions, which dataset each one shows.
+      chartWindows: target.chartWindows || [],
+      focusedWindowId: target.focusedWindowId ?? null,
     });
     savePersistedConversations(conversations, id);
   },
@@ -502,12 +527,28 @@ export const useStore = create<AppState>((set, get) => ({
         backtestResults: null,
         activeSkillIds: new Set(['pattern']),
         activeMode: 'pattern',
+        // Session isolation — fresh canvas too
+        chartData: [],
+        activeDataset: null,
+        datasets: [] as never,
+        datasetChartData: {} as never,
+        datasetRawData: {} as never,
+        syncedDatasets: new Set() as never,
+        selectedTimeframe: null,
+        currentDebate: null as never,
+        drawings: [] as never,
+        chartWindows: [],
+        focusedWindowId: null,
       });
       savePersistedConversations([fresh], fresh.id);
       return;
     }
     if (id === state.activeConversationId) {
-      // Switch to the most recent remaining conversation
+      // Switch to the most recent remaining conversation — restore its
+      // full workspace (messages + canvas + chart data + drawings etc),
+      // not just a subset. Previously this path only restored messages
+      // and activeDataset, which meant deleting the active conversation
+      // left stale chart data / windows from the deleted thread visible.
       const next = remaining[0];
       set({
         conversations: remaining,
@@ -523,6 +564,15 @@ export const useStore = create<AppState>((set, get) => ({
         activeSkillIds: new Set(next.activeSkillIds || ['pattern']),
         activeMode: next.activeSkillIds?.[0] || 'pattern',
         appMode: next.appMode,
+        // Session isolation — same restore list as switchConversation
+        chartData: next.chartData || [],
+        datasets: (next.datasets || []) as never,
+        datasetChartData: (next.datasetChartData || {}) as never,
+        selectedTimeframe: next.selectedTimeframe ?? null,
+        currentDebate: (next.currentDebate ?? null) as never,
+        drawings: (next.drawings || []) as never,
+        chartWindows: next.chartWindows || [],
+        focusedWindowId: next.focusedWindowId ?? null,
       });
       savePersistedConversations(remaining, next.id);
     } else {
@@ -608,17 +658,20 @@ export const useStore = create<AppState>((set, get) => ({
         const wid = (typeof crypto !== "undefined" && crypto.randomUUID)
           ? crypto.randomUUID()
           : `w_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        // First window: zero-size sentinel → Canvas fills it on first layout.
-        // Subsequent windows: cascade from the last window so they don't
-        // stack on top of each other. Size matches the previous window or
-        // a reasonable default.
+        // Default compact size — fits 2-3 charts side-by-side on a
+        // typical laptop Canvas without immediate resizing. Subsequent
+        // windows inherit the previous window's size (so if the user
+        // resized it to be bigger/smaller, new ones match), cascaded by
+        // a small offset so they don't stack perfectly on top of each
+        // other.
+        const DEFAULT_W = 560;
+        const DEFAULT_H = 360;
         const last = state.chartWindows[state.chartWindows.length - 1];
-        const nth = state.chartWindows.length;
-        const isFirst = nth === 0;
-        const cascadeX = isFirst ? 0 : (last?.x ?? 0) + 40;
-        const cascadeY = isFirst ? 0 : (last?.y ?? 0) + 40;
-        const w = isFirst ? 0 : Math.max(480, last?.width ?? 640);
-        const h = isFirst ? 0 : Math.max(320, last?.height ?? 420);
+        const isFirst = state.chartWindows.length === 0;
+        const cascadeX = isFirst ? 20 : (last?.x ?? 0) + 32;
+        const cascadeY = isFirst ? 20 : (last?.y ?? 0) + 32;
+        const w = last?.width && last.width > 0 ? last.width : DEFAULT_W;
+        const h = last?.height && last.height > 0 ? last.height : DEFAULT_H;
         nextWindows = [
           ...state.chartWindows,
           { id: wid, datasetId: dataset.id, x: cascadeX, y: cascadeY, width: w, height: h, zIndex: zTop },
@@ -685,14 +738,14 @@ export const useStore = create<AppState>((set, get) => ({
       : `w_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     set((state) => {
       const zTop = state.chartWindows.reduce((m, w) => Math.max(m, w.zIndex), 0) + 1;
-      // Default size — the Canvas will clamp these to its actual bounds
-      // at mount time; 0 means "fill" until first layout.
-      const width = opts?.width ?? 640;
-      const height = opts?.height ?? 420;
-      // Cascade subsequent windows a bit down-and-right from the last one
+      // Compact defaults — matches addDataset's cascade sizing so
+      // programmatic window-spawning looks identical to the chat-driven
+      // path. Override via opts when callers want something specific.
+      const width = opts?.width ?? 560;
+      const height = opts?.height ?? 360;
       const lastW = state.chartWindows[state.chartWindows.length - 1];
-      const x = opts?.x ?? (lastW ? Math.min(lastW.x + 40, 400) : 0);
-      const y = opts?.y ?? (lastW ? Math.min(lastW.y + 40, 300) : 0);
+      const x = opts?.x ?? (lastW ? Math.min(lastW.x + 32, 400) : 20);
+      const y = opts?.y ?? (lastW ? Math.min(lastW.y + 32, 300) : 20);
       const newWindow = { id: wid, datasetId, x, y, width, height, zIndex: zTop };
       return {
         chartWindows: [...state.chartWindows, newWindow],
@@ -703,6 +756,12 @@ export const useStore = create<AppState>((set, get) => ({
         chartData: datasetId ? state.datasetChartData[datasetId] || state.chartData : state.chartData,
       };
     });
+    // Persist so the canvas layout survives a conversation switch or
+    // page reload. Every mutation snapshots — cheap because the snapshot
+    // writes to localStorage (not a network round-trip).
+    const s = get();
+    const snapped = _snapshotLiveStateInto(s, s.activeConversationId);
+    if (snapped) set({ conversations: snapped });
     return wid;
   },
   removeChartWindow: (id) => {
@@ -729,11 +788,17 @@ export const useStore = create<AppState>((set, get) => ({
         chartData: nextChartData,
       };
     });
+    const s = get();
+    const snapped = _snapshotLiveStateInto(s, s.activeConversationId);
+    if (snapped) set({ conversations: snapped });
   },
   updateChartWindow: (id, patch) => {
     set((state) => ({
       chartWindows: state.chartWindows.map((w) => (w.id === id ? { ...w, ...patch } : w)),
     }));
+    const s = get();
+    const snapped = _snapshotLiveStateInto(s, s.activeConversationId);
+    if (snapped) set({ conversations: snapped });
   },
   focusChartWindow: (id) => {
     set((state) => {
@@ -751,6 +816,11 @@ export const useStore = create<AppState>((set, get) => ({
           : state.chartData,
       };
     });
+    // Focus changes z-index and activeDataset, both of which need to
+    // persist so a conversation's last-focused window is restored.
+    const s = get();
+    const snapped = _snapshotLiveStateInto(s, s.activeConversationId);
+    if (snapped) set({ conversations: snapped });
   },
   setChartWindowDataset: (id, datasetId) => {
     set((state) => ({
@@ -763,6 +833,9 @@ export const useStore = create<AppState>((set, get) => ({
         ? state.datasetChartData[datasetId] || []
         : state.chartData,
     }));
+    const s = get();
+    const snapped = _snapshotLiveStateInto(s, s.activeConversationId);
+    if (snapped) set({ conversations: snapped });
   },
 
   // Scripts
