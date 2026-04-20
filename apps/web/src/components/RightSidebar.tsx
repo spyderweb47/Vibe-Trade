@@ -529,7 +529,42 @@ export function RightSidebar() {
               >
                 Save
               </button>
-              {(patternMatches.length > 0 || activeMode === "strategy") && (
+              {/* Clear chart visual output.
+                  Scoped to JUST the visual outputs on chart windows —
+                  pattern matches (global + per-dataset), chart focus
+                  state, backtest plotted trades, pine drawings, pattern
+                  highlights. Keeps the script, backtestResults, and
+                  user-drawn drawings (trend lines, fibs) intact so users
+                  can re-run without losing their own work. */}
+              <button
+                onClick={() => {
+                  const state = useStore.getState();
+                  // Global pattern matches
+                  setPatternMatches([]);
+                  // Per-dataset pattern matches — iterate all known datasets
+                  for (const dsid of Object.keys(state.patternMatchesByDataset)) {
+                    state.setPatternMatchesForDataset(dsid, []);
+                  }
+                  // Chart focus (global + per-dataset)
+                  state.setChartFocus(null);
+                  for (const dsid of Object.keys(state.chartFocusByDataset)) {
+                    state.setChartFocusForDataset(dsid, null);
+                  }
+                  // Strategy backtest plotted-trades overlay
+                  state.setPlottedTrades([]);
+                  state.setHighlightedTradeId(null);
+                  // Pine-script generated drawings (but NOT user drawings)
+                  state.setPineDrawings(null);
+                  // Pattern-selector state
+                  state.setCapturedPattern(null);
+                }}
+                title="Clear visual output on the chart (pattern highlights, trade markers, zoom). Keeps your script, drawings, and backtest results intact."
+                className="rounded px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider transition-colors"
+                style={{ color: "var(--accent)", background: "transparent", border: "1px solid var(--border)" }}
+              >
+                Clear Chart
+              </button>
+              {(patternMatches.length > 0 || currentScript) && (
                 <button
                   onClick={() => {
                     setPatternMatches([]);
@@ -538,10 +573,11 @@ export function RightSidebar() {
                     setBacktestResults(null);
                     setView("chat");
                   }}
+                  title="Reset — clear script + backtest results + pattern matches and switch to chat view"
                   className="rounded px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider transition-colors"
                   style={{ color: "var(--danger)", background: "transparent", border: "1px solid var(--border)" }}
                 >
-                  Clear
+                  Reset
                 </button>
               )}
             </>
