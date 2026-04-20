@@ -86,14 +86,33 @@ The shape MUST be:
    {{"steps": []}}
 7. Return AT MOST 5 steps. Bigger plans are usually overengineered.
 
+8. DO NOT use data_fetcher unless the user is EXPLICITLY asking to
+   load a new ticker's historical bars onto the chart. Specifically:
+   - ONLY emit a data_fetcher step when the message names a ticker,
+     asset, or symbol that isn't already on the chart and the user
+     wants to fetch/load/download its OHLC data.
+   - DO NOT emit data_fetcher for messages like "show me the debate
+     results", "display the pattern matches", "load my strategy",
+     "pull up the backtest", "fetch the agent findings". The words
+     show/load/pull/fetch are generic; what matters is whether the
+     user wants MARKET DATA or just wants to display/interact with
+     something already computed.
+   - When the user asks a skill-specific question on an ALREADY-LOADED
+     chart (e.g. "run swarm on this chart", "find engulfing patterns",
+     "build a mean-reversion strategy") — skip data_fetcher entirely.
+     The chart data is already there; the skill will use it.
+
 ## Common decompositions
 
-- "Fetch X data and find Y pattern" → 2 steps: data_fetcher → pattern
-- "Backtest a strategy on Y data" → 2 steps: data_fetcher → strategy
-- "Find Y patterns in the current chart and build a strategy on them"
-  → 2 steps: pattern → strategy
-- "Fetch data, find pattern, build strategy" → 3 steps
-- Just "fetch X" → 1 step (data_fetcher only)
+- "Fetch BTC/USDT 1h data and find engulfing" → 2 steps: data_fetcher → pattern
+- "Backtest a strategy on AAPL daily" → 2 steps: data_fetcher → strategy
+- "Find engulfing patterns in the current chart and build a strategy"
+  → 2 steps: pattern → strategy  (NO data_fetcher — chart already loaded)
+- "Run swarm intelligence on this asset" → 1 step: predict_analysis
+  (NO data_fetcher — "this asset" means what's on the chart)
+- Just "fetch BTC 1h" → 1 step: data_fetcher
+- "Show me the cross-exam results" → 0 steps (out of scope —
+  user is asking to navigate existing output, not run a skill)
 
 Return ONLY the JSON object."""
 
@@ -195,6 +214,23 @@ def plan(
         msg = step.get("message")
         if skill_id not in valid_ids or not isinstance(msg, str) or not msg.strip():
             continue
+
+        # Post-hoc validation: the LLM planner sometimes emits a
+        # data_fetcher step even when the user's message doesn't
+        # actually name a ticker ("show me the debate results",
+        # "load my script", "pull up the pattern matches"). Those
+        # steps would hit parse_query on the backend, find no symbol,
+        # and fail with the "I couldn't find a ticker or pair"
+        # message — confusing the user who never asked to fetch
+        # anything. Drop silently instead.
+        if skill_id == "data_fetcher" and not _fetch_looks_intended(msg.strip()):
+            print(
+                f"[planner] dropping data_fetcher step with no ticker in message: "
+                f"{msg.strip()[:100]}",
+                flush=True,
+            )
+            continue
+
         validated.append({
             "skill": skill_id,
             "message": msg.strip(),
@@ -224,15 +260,13 @@ def plan(
 # Verb phrases that map obviously to a single skill. Kept intentionally
 # conservative — only clear matches. When the user's intent doesn't
 # match any of these, we fall through to plain chat (not bogus plans).
+#
+# ORDERING MATTERS. Specific-skill rules come FIRST so a message like
+# "run swarm debate on BTC" matches predict_analysis (not data_fetcher,
+# even though "BTC" is in the text). data_fetcher is the LAST fallback
+# and requires BOTH an explicit fetch verb AND a parseable ticker —
+# see `_fetch_looks_intended` below.
 _FALLBACK_RULES: List[Dict[str, Any]] = [
-    {
-        "skill": "data_fetcher",
-        "keywords": (
-            "fetch", "load", "download", "pull", "get data", "get ohlc",
-            "show chart", "show me the chart", "show price", "bring up",
-            "add chart", "new chart",
-        ),
-    },
     {
         # Renamed from swarm_intelligence. Keep BOTH skill ids as valid
         # targets; the backend processor registry aliases them. The
@@ -261,7 +295,45 @@ _FALLBACK_RULES: List[Dict[str, Any]] = [
             "profit factor", "sharpe", "pnl",
         ),
     },
+    {
+        # data_fetcher LAST and with a ticker-requirement guard
+        # (see _fetch_looks_intended). Previously this rule ran first
+        # with generic verbs like "load" / "fetch" / "pull" / "show",
+        # which misfired on "load my script" / "pull up the debate" /
+        # "show me the matches" — all of those should NOT trigger a
+        # market-data fetch.
+        "skill": "data_fetcher",
+        "keywords": (
+            # Verbs that strongly suggest a data fetch, but still need
+            # a ticker present (enforced in _fetch_looks_intended).
+            "fetch", "download", "pull data", "get data", "get ohlc",
+            "load data", "load bars", "add chart", "new chart",
+            "bring up",
+        ),
+        "require_ticker": True,
+    },
 ]
+
+
+def _fetch_looks_intended(message: str) -> bool:
+    """
+    Returns True iff the message plausibly contains a tradeable
+    asset reference — ticker, common asset name, or forex pair.
+
+    Uses the regex-only path of core.data.fetcher.parse_query (not the
+    LLM path; we don't want to burn a round-trip just to decide
+    whether a planner step is real). If the regex can't find a
+    symbol, the message is almost certainly NOT a fetch request —
+    drop the data_fetcher step.
+    """
+    try:
+        from core.data.fetcher import _parse_query_regex
+        parsed = _parse_query_regex(message)
+        return bool(parsed.get("symbol"))
+    except Exception:  # noqa: BLE001
+        # If the regex parser itself errors, don't block — be lenient
+        # and trust the keyword match alone.
+        return True
 
 
 def _keyword_fallback(message: str, valid_ids: set) -> Optional[Dict[str, Any]]:
@@ -275,11 +347,17 @@ def _keyword_fallback(message: str, valid_ids: set) -> Optional[Dict[str, Any]]:
     for rule in _FALLBACK_RULES:
         if rule["skill"] not in valid_ids:
             continue
-        if any(kw in low for kw in rule["keywords"]):
-            return {
-                "skill": rule["skill"],
-                "message": message.strip(),
-                "rationale": f"keyword match on '{rule['skill']}' (LLM plan empty)",
-                "context": {},
-            }
+        if not any(kw in low for kw in rule["keywords"]):
+            continue
+        # data_fetcher additionally requires a parseable ticker so
+        # "load my script" / "fetch the strategy output" don't
+        # misfire into a failing market-data request.
+        if rule.get("require_ticker") and not _fetch_looks_intended(message):
+            continue
+        return {
+            "skill": rule["skill"],
+            "message": message.strip(),
+            "rationale": f"keyword match on '{rule['skill']}' (LLM plan empty)",
+            "context": {},
+        }
     return None
