@@ -211,6 +211,33 @@ export interface IndicatorConfig {
   color?: string;
 }
 
+/**
+ * A single chart window floating on the Canvas. Each window is a freely
+ * draggable + resizable rectangle that shows OHLCV data for ONE dataset.
+ * Users can add multiple windows with different tickers, resize them, and
+ * close individual ones without affecting the others.
+ *
+ * Coordinates (x, y, width, height) are in pixels, relative to the Canvas
+ * container's top-left corner. The Canvas uses absolute positioning; bounds
+ * are clamped in the store actions so a window can't be dragged off-screen.
+ */
+export interface ChartWindow {
+  /** uuid — stable across position updates. */
+  id: string;
+  /** Which dataset this window shows. null = empty/placeholder window. */
+  datasetId: string | null;
+  /** Position in px from Canvas top-left. */
+  x: number;
+  y: number;
+  /** Size in px. */
+  width: number;
+  height: number;
+  /** Stacking order. The most recently focused window has the highest z. */
+  zIndex: number;
+  /** Optional custom title. Falls back to the dataset's symbol. */
+  title?: string;
+}
+
 export interface Script {
   id: string;
   name: string;

@@ -180,6 +180,20 @@ interface AppState {
   markSynced: (id: string) => void;
   setActiveDataset: (id: string | null) => void;
 
+  // ===== Canvas (multi-chart freeform workspace) =====
+  /** Chart windows floating on the Canvas. Each shows one dataset. */
+  chartWindows: import('@/types').ChartWindow[];
+  /** The window currently focused for chart interactions (drawings,
+   *  skill outputs). `activeDataset` is kept in sync with the focused
+   *  window's datasetId for backward compatibility with existing
+   *  skill processors that still read `activeDataset`. */
+  focusedWindowId: string | null;
+  addChartWindow: (datasetId: string | null, opts?: { x?: number; y?: number; width?: number; height?: number }) => string;
+  removeChartWindow: (id: string) => void;
+  updateChartWindow: (id: string, patch: Partial<Omit<import('@/types').ChartWindow, 'id'>>) => void;
+  focusChartWindow: (id: string) => void;
+  setChartWindowDataset: (id: string, datasetId: string | null) => void;
+
   // Scripts
   scripts: Script[];
   addScript: (script: Script) => void;
@@ -573,13 +587,42 @@ export const useStore = create<AppState>((set, get) => ({
   datasetRawData: {},
   syncedDatasets: new Set(),
   addDataset: (dataset, chartData, rawData) => {
-    set((state) => ({
-      datasets: [...state.datasets, dataset],
-      datasetChartData: { ...state.datasetChartData, [dataset.id]: chartData },
-      datasetRawData: { ...state.datasetRawData, [dataset.id]: rawData },
-      activeDataset: dataset.id,
-      chartData,
-    }));
+    set((state) => {
+      // If there's no chart window yet showing this dataset, spawn one
+      // so the canvas has something to render. Subsequent datasets added
+      // from the left sidebar will NOT auto-spawn — users drag them in
+      // from Phase 2.
+      const alreadyShown = state.chartWindows.some((w) => w.datasetId === dataset.id);
+      const firstWindow = state.chartWindows.length === 0;
+      let nextWindows = state.chartWindows;
+      let nextFocused = state.focusedWindowId;
+      if (!alreadyShown && firstWindow) {
+        const wid = (typeof crypto !== "undefined" && crypto.randomUUID)
+          ? crypto.randomUUID()
+          : `w_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const zTop = state.chartWindows.reduce((m, w) => Math.max(m, w.zIndex), 0) + 1;
+        nextWindows = [
+          ...state.chartWindows,
+          { id: wid, datasetId: dataset.id, x: 0, y: 0, width: 0, height: 0, zIndex: zTop },
+        ];
+        nextFocused = wid;
+      } else if (!alreadyShown && state.focusedWindowId) {
+        // Retarget the focused window to the new dataset so existing UX
+        // (data_fetcher populates the current chart) still works.
+        nextWindows = state.chartWindows.map((w) =>
+          w.id === state.focusedWindowId ? { ...w, datasetId: dataset.id } : w
+        );
+      }
+      return {
+        datasets: [...state.datasets, dataset],
+        datasetChartData: { ...state.datasetChartData, [dataset.id]: chartData },
+        datasetRawData: { ...state.datasetRawData, [dataset.id]: rawData },
+        activeDataset: dataset.id,
+        chartData,
+        chartWindows: nextWindows,
+        focusedWindowId: nextFocused,
+      };
+    });
     // Snapshot so chart data persists across conversation switches
     const s = get();
     const snapped = _snapshotLiveStateInto(s, s.activeConversationId);
@@ -590,11 +633,124 @@ export const useStore = create<AppState>((set, get) => ({
       syncedDatasets: new Set([...state.syncedDatasets, id]),
     })),
   setActiveDataset: (id) =>
+    set((state) => {
+      // Keep the focused window in sync with activeDataset so legacy
+      // skill processors that read `activeDataset` still target the
+      // right chart. If no window shows this dataset yet, retarget the
+      // currently-focused window (or the first window) to it.
+      let nextWindows = state.chartWindows;
+      let nextFocused = state.focusedWindowId;
+      if (id) {
+        const existing = state.chartWindows.find((w) => w.datasetId === id);
+        if (existing) {
+          nextFocused = existing.id;
+          const zTop = state.chartWindows.reduce((m, w) => Math.max(m, w.zIndex), 0);
+          nextWindows = state.chartWindows.map((w) =>
+            w.id === existing.id ? { ...w, zIndex: zTop + 1 } : w
+          );
+        } else if (state.focusedWindowId) {
+          nextWindows = state.chartWindows.map((w) =>
+            w.id === state.focusedWindowId ? { ...w, datasetId: id } : w
+          );
+        }
+      }
+      return {
+        activeDataset: id,
+        chartData: id ? state.datasetChartData[id] || [] : [],
+        patternMatches: [],
+        chartWindows: nextWindows,
+        focusedWindowId: nextFocused,
+      };
+    }),
+
+  // ===== Canvas / chart windows =====
+  chartWindows: [],
+  focusedWindowId: null,
+  addChartWindow: (datasetId, opts) => {
+    const wid = (typeof crypto !== "undefined" && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : `w_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    set((state) => {
+      const zTop = state.chartWindows.reduce((m, w) => Math.max(m, w.zIndex), 0) + 1;
+      // Default size — the Canvas will clamp these to its actual bounds
+      // at mount time; 0 means "fill" until first layout.
+      const width = opts?.width ?? 640;
+      const height = opts?.height ?? 420;
+      // Cascade subsequent windows a bit down-and-right from the last one
+      const lastW = state.chartWindows[state.chartWindows.length - 1];
+      const x = opts?.x ?? (lastW ? Math.min(lastW.x + 40, 400) : 0);
+      const y = opts?.y ?? (lastW ? Math.min(lastW.y + 40, 300) : 0);
+      const newWindow = { id: wid, datasetId, x, y, width, height, zIndex: zTop };
+      return {
+        chartWindows: [...state.chartWindows, newWindow],
+        focusedWindowId: wid,
+        // Update activeDataset for legacy skill compat when we spawn
+        // with a real dataset.
+        activeDataset: datasetId ?? state.activeDataset,
+        chartData: datasetId ? state.datasetChartData[datasetId] || state.chartData : state.chartData,
+      };
+    });
+    return wid;
+  },
+  removeChartWindow: (id) => {
+    set((state) => {
+      const remaining = state.chartWindows.filter((w) => w.id !== id);
+      let nextFocused = state.focusedWindowId;
+      let nextActive = state.activeDataset;
+      let nextChartData = state.chartData;
+      if (state.focusedWindowId === id) {
+        // Focus the next-highest-z window (if any); otherwise clear.
+        const top = remaining.length > 0
+          ? remaining.reduce((best, w) => (w.zIndex > best.zIndex ? w : best), remaining[0])
+          : null;
+        nextFocused = top?.id ?? null;
+        nextActive = top?.datasetId ?? null;
+        nextChartData = top?.datasetId
+          ? state.datasetChartData[top.datasetId] || []
+          : [];
+      }
+      return {
+        chartWindows: remaining,
+        focusedWindowId: nextFocused,
+        activeDataset: nextActive,
+        chartData: nextChartData,
+      };
+    });
+  },
+  updateChartWindow: (id, patch) => {
     set((state) => ({
-      activeDataset: id,
-      chartData: id ? state.datasetChartData[id] || [] : [],
-      patternMatches: [],
-    })),
+      chartWindows: state.chartWindows.map((w) => (w.id === id ? { ...w, ...patch } : w)),
+    }));
+  },
+  focusChartWindow: (id) => {
+    set((state) => {
+      const target = state.chartWindows.find((w) => w.id === id);
+      if (!target) return {} as Partial<typeof state>;
+      const zTop = state.chartWindows.reduce((m, w) => Math.max(m, w.zIndex), 0);
+      return {
+        focusedWindowId: id,
+        chartWindows: state.chartWindows.map((w) =>
+          w.id === id ? { ...w, zIndex: zTop + 1 } : w
+        ),
+        activeDataset: target.datasetId ?? state.activeDataset,
+        chartData: target.datasetId
+          ? state.datasetChartData[target.datasetId] || state.chartData
+          : state.chartData,
+      };
+    });
+  },
+  setChartWindowDataset: (id, datasetId) => {
+    set((state) => ({
+      chartWindows: state.chartWindows.map((w) =>
+        w.id === id ? { ...w, datasetId } : w
+      ),
+      // If we're retargeting the focused window, sync legacy state.
+      activeDataset: state.focusedWindowId === id ? datasetId : state.activeDataset,
+      chartData: state.focusedWindowId === id && datasetId
+        ? state.datasetChartData[datasetId] || []
+        : state.chartData,
+    }));
+  },
 
   // Scripts
   scripts: [],
