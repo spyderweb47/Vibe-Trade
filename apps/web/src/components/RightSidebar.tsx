@@ -114,6 +114,15 @@ export function RightSidebar() {
       // (see core/agents/planner._keyword_fallback) that guarantees common
       // intents ("fetch X", "run swarm", "find pattern") still produce a
       // one-step plan instead of silently falling through to plain chat.
+      //
+      // availableSkills is intentionally left `undefined` (= planner
+      // considers all registered skills). We used to restrict it to the
+      // user's activeSkillIds, but that backfired when chip selection
+      // (e.g. default "pattern") didn't match the typed intent
+      // (e.g. "run swarm intelligence") — the planner would either
+      // return empty or try to stuff the request into a single wrong
+      // skill. Typed intent always wins; chip selection stays as UI
+      // organisation only.
       const skillCount = activeSkillIds.size;
       // Surface an interim trace message so the user sees immediate
       // feedback while the /plan call is in-flight. If the planner
@@ -131,8 +140,10 @@ export function RightSidebar() {
         },
       });
       try {
-        const availableSkills = skillCount >= 1 ? Array.from(activeSkillIds) : undefined;
-        const planResult = await getPlan(text, undefined, availableSkills);
+        // Pass undefined → planner sees all registered skills. See
+        // rationale comment above.
+        void skillCount; // kept for any future "show-me-a-warning" logic
+        const planResult = await getPlan(text, undefined, undefined);
         if (planResult.steps && planResult.steps.length > 0) {
           // Mark the planning trace done before the per-step executor
           // renders its own trace messages.
