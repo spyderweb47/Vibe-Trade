@@ -88,6 +88,62 @@ export async function runPatternScriptWithAutoFix(
 }
 
 /**
+ * Strategy-script equivalent of runPatternScriptWithAutoFix.
+ *
+ * Flow:
+ *   1. Try executeStrategy(script, bars, config)
+ *   2. On runtime crash: POST /fix-script with script_type="strategy"
+ *   3. Try once with the fixed version
+ *   4. Second crash → re-throw (caller shows original error)
+ *
+ * Returns { result, fixedScript, fixExplanation } — fixedScript is null
+ * on success-first-try so callers know whether to persist the fix.
+ *
+ * Bounded to one fix attempt per run, matching the pattern helper.
+ */
+export async function runStrategyWithAutoFix(
+  script: string,
+  bars: import("@/types").OHLCBar[],
+  config: StrategyConfig,
+  intent: string,
+): Promise<{
+  result: import("@/types").BacktestResult;
+  fixedScript: string | null;
+  fixExplanation: string | null;
+}> {
+  try {
+    const result = await executeStrategy(script, bars, config);
+    return { result, fixedScript: null, fixExplanation: null };
+  } catch (runErr) {
+    const errMsg = runErr instanceof Error ? runErr.message : String(runErr);
+    const fix = await fixScript({
+      script,
+      error: errMsg,
+      intent,
+      script_type: "strategy",
+    }).catch((apiErr) => {
+      console.warn("[autofix] /fix-script call failed (strategy):", apiErr);
+      return null;
+    });
+
+    if (!fix || !fix.fixed_script || fix.error) {
+      throw runErr;
+    }
+
+    try {
+      const result = await executeStrategy(fix.fixed_script, bars, config);
+      return {
+        result,
+        fixedScript: fix.fixed_script,
+        fixExplanation: fix.explanation || "Strategy script auto-fixed",
+      };
+    } catch (secondErr) {
+      throw secondErr;
+    }
+  }
+}
+
+/**
  * Known sub-step sequences for long-running skills. When a step with one of
  * these skill IDs starts running, the trace shows internal progress ticking
  * through these stages on a timer. When the backend call returns, all
@@ -471,16 +527,37 @@ export async function executePlanInBrowser({ steps, existingTraceId }: ExecutePl
           resultSummary = "no dataset on chart — skipped backtest";
         } else {
           try {
-            const backtest = await executeStrategy(result.script, chartData, config);
+            // Auto-fix on runtime crash — same pattern as
+            // runPatternScriptWithAutoFix: try once, on crash POST
+            // /fix-script, try with the fix, re-throw on second crash.
+            const out = await runStrategyWithAutoFix(
+              result.script, chartData, config, step.message,
+            );
+            const backtest = out.result;
             useStore.getState().setBacktestResults(backtest);
             const winRate = (backtest.winRate * 100).toFixed(1);
             const totalReturn = (backtest.totalReturn * 100).toFixed(1);
-            resultSummary = `${backtest.totalTrades} trades, ${winRate}% win rate, ${totalReturn}% return`;
+            const fixSuffix = out.fixedScript ? " (auto-fixed after initial error)" : "";
+            resultSummary =
+              `${backtest.totalTrades} trades, ${winRate}% win rate, ${totalReturn}% return${fixSuffix}`;
             accumulatedContext.backtest_summary = {
               totalTrades: backtest.totalTrades,
               winRate: backtest.winRate,
               totalReturn: backtest.totalReturn,
             };
+
+            // Load the fixed script into the editor so the user sees
+            // the corrected version + future runs use it.
+            if (out.fixedScript) {
+              runToolCalls(
+                [{ tool: "script_editor.load", value: out.fixedScript }],
+                step.skill,
+                ["script_editor.load"],
+              );
+              if (out.fixExplanation) {
+                accumulatedContext.strategy_auto_fix_explanation = out.fixExplanation;
+              }
+            }
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             patchStep(i, { status: "failed", error: `backtest failed: ${msg}` });

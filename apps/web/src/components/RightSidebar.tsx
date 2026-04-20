@@ -5,7 +5,7 @@ import { useStore } from "@/store/useStore";
 import { ScriptEditor } from "./ScriptEditor";
 import { sendChat } from "@/lib/api";
 import { executePatternScript } from "@/lib/scriptExecutor";
-import { runPatternScriptWithAutoFix } from "@/lib/planExecutor";
+import { runPatternScriptWithAutoFix, runStrategyWithAutoFix } from "@/lib/planExecutor";
 import { executeStrategy } from "@/lib/strategyExecutor";
 import { StrategyForm } from "./StrategyForm";
 import { TradingPanel } from "./playground/TradingPanel";
@@ -454,12 +454,24 @@ export function RightSidebar() {
         stopLoss: { type: "percentage" as const, value: 2 },
         maxDrawdown: 20, seedAmount: 10000, specialInstructions: "",
       };
-      const result = await executeStrategy(script, runData, config);
+      // Same auto-fix behaviour as pattern Run: on runtime crash, the
+      // Error Handler Agent diagnoses + fixes + we re-run once. If a
+      // fix is applied, the editor is updated so the user sees the
+      // corrected version.
+      const recentUserMsg = messages.filter((m) => m.role === "user").slice(-1)[0];
+      const intent = recentUserMsg?.content || "strategy backtest";
+      const out = await runStrategyWithAutoFix(script, runData, config, intent);
+      const result = out.result;
       setBacktestResults(result);
       setRunState("done");
+      if (out.fixedScript) {
+        setCurrentScript(out.fixedScript);
+      }
+      const fixPrefix = out.fixExplanation ? `Strategy failed, but auto-fixed: ${out.fixExplanation}\n\n` : "";
       addMessage({
         role: "agent",
-        content: `Backtest complete: ${result.totalTrades} trades, ${(result.winRate * 100).toFixed(1)}% win rate, ${(result.totalReturn * 100).toFixed(1)}% return, Sharpe ${result.sharpeRatio}.`,
+        content: fixPrefix +
+          `Backtest complete: ${result.totalTrades} trades, ${(result.winRate * 100).toFixed(1)}% win rate, ${(result.totalReturn * 100).toFixed(1)}% return, Sharpe ${result.sharpeRatio}.`,
       });
 
       // Get AI analysis

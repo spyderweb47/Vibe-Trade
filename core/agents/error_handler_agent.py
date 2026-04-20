@@ -67,18 +67,41 @@ Common mistakes that cause silent "0 matches" (not a crash but a bug):
 """
 
 _STRATEGY_API_CONTEXT = """\
-The script runs inside the backtest harness (see apps/web/src/lib/strategyExecutor.ts).
+The script runs inside `new Function("data", "config", "Math", YOUR_CODE)`
+in a Web Worker sandbox. See apps/web/src/lib/strategyExecutor.ts for
+the exact runtime.
 
 Available:
-  - `data` — OHLC bars
-  - `params` — strategy config (TP %, SL %, seed amount)
-  - Helper functions for entries/exits
+  - `data` — array of OHLC bars: { time, open, high, low, close, volume }
+  - `config` — strategy config: { stopLoss (%), takeProfit (%),
+              maxDrawdown, seedAmount }
+  - `Math` — standard JS Math object
 
-Required:
-  - `onBar(ctx, i)` function that receives current bar index
-  - Return signals via `ctx.enter_long`, `ctx.enter_short`, `ctx.exit`
+Forbidden:
+  - import / require / fetch / XMLHttpRequest / eval / Function / DOM APIs
+  - async / await / Promises
 
-Forbidden: same sandbox restrictions as pattern scripts.
+Required output:
+  Script must return an object: { trades: [...], equity: [...] }
+
+  Each trade object should have:
+    - entryIdx (number)        — bar index where position opened
+    - exitIdx (number)         — bar index where position closed
+    - entryPrice (number)      — optional; falls back to data[entryIdx].close
+    - exitPrice (number)       — optional; falls back to data[exitIdx].close
+    - type / direction: "long" | "short"
+    - pnl (number)             — optional; falls back to price delta
+
+  `equity` is an array of account values per bar (or a single number).
+
+Common mistakes:
+  - Script forgets the `return { trades, equity }` — wrapper adds a
+    fallback but only if `trades` and `equity` are defined
+  - Using variables without `let/const/var` → "Unexpected identifier" error
+  - Hardcoded seed that ignores config.seedAmount
+  - Forgetting to update equity[] per bar
+  - Entry/exit indices out of bounds (no `data.length` guard)
+  - "Cannot read property 'close' of undefined" — off-by-one on data[i+1]
 """
 
 
