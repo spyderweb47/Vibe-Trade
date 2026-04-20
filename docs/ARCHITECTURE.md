@@ -1,278 +1,483 @@
-# Vibe Trade Architecture
+# Vibe Trade — Architecture (v0.4.2 baseline)
 
-Vibe Trade is a 3-layer system. Each layer has a clear responsibility, clean
-boundaries, and a well-defined interface to the layers above and below it.
+> **Scope**: this document is the canonical snapshot of the system as of
+> commit **`653a51d`** (post-Phase-3 canvas + multi-chart swarm). It's the
+> reference for rebuilding / refactoring from scratch. Subsystem-specific
+> docs live alongside:
+>
+> - `SKILLS.md` — skill system, planner, processors, tool registry
+> - `SWARM_PIPELINE.md` — deep-dive on the multi-agent debate
+> - `CANVAS.md` — the multi-chart workspace (added in Phase 3)
+>
+> Superseded versions of these docs are archived in `docs/back/`.
+
+## 1. Elevator pitch
+
+Vibe Trade is an AI-powered trading research platform. A user describes
+what they want in natural language ("fetch AAPL 1d last 2 years, find a
+double-bottom, backtest it with $10k, then run a swarm debate"); a
+planner LLM decomposes that into a sequence of **skill** invocations;
+each skill runs on the backend, returns a chat reply plus a list of
+**tool calls** that mutate frontend state (load a chart, render matches,
+open a bottom-panel tab, set a timeframe, etc.). The UI renders multiple
+chart windows on a freeform canvas, with a bottom panel that swaps in
+skill-specific tabs.
+
+## 2. Tech stack
+
+### Backend (Python 3.12+)
+- **FastAPI** — HTTP API (`services/api`)
+- **pandas / numpy** — OHLC data wrangling
+- **yfinance + ccxt** — market data providers (`core/data/fetcher.py`)
+- **openai / anthropic SDKs** — LLM calls, provider-agnostic via
+  `core/agents/llm_client.py`
+- **ddgs** (DuckDuckGo) — web research for swarm personas
+- **BeautifulSoup + pypdf2** — HTML/PDF scraping for fetch_url / fetch_pdf tools
+
+### Frontend (Next.js 16 App Router)
+- **React 19** + **TypeScript**
+- **Zustand** — state store (`apps/web/src/store/useStore.ts`)
+- **lightweight-charts v5** — candlestick rendering via Series/Pane
+  Primitives (all drawing tools are custom, no proprietary library)
+- **react-rnd** — drag/resize of chart windows on the canvas
+- **React Flow** — Swarm DAG visualization
+- **Tailwind v4** — styling
+- **jsPDF** — native text-based PDF export of Run Stats reports
+
+### CLI (installable via `pipx install vibe-trade`)
+- **Typer** — subcommand routing
+- **Rich** — terminal output
+- `vibe-trade serve` bundles the built Next.js export and serves it
+  from the FastAPI process so the end user doesn't need Node.
+
+## 3. The 3-layer mental model
+
+The codebase is organised in layers that the user explicitly maintains:
 
 ```
-                    User
-                      |
-                      v
-  +-------------------------------------------+
-  |              Layer 1: CANVAS               |
-  |   React components, Zustand store, chart   |
-  |          (apps/web/src/)                   |
-  +-------------------+--+--------------------+
-                      |  ^
-            tool_calls|  |store updates
-                      v  |
-  +-------------------------------------------+
-  |              Layer 2: TOOLS                |
-  |   Product features skills can invoke       |
-  |   (core/tool_catalog.py + toolRegistry.ts) |
-  +-------------------+--+--------------------+
-                      |  ^
-        skill dispatch|  |SkillResponse
-                      v  |
-  +-------------------------------------------+
-  |              Layer 3: SKILLS               |
-  |   SKILL.md instruction files               |
-  |          (skills/{name}/SKILL.md)          |
-  +-------------------------------------------+
+┌──────────────────────────────────────────────────────┐
+│                       CANVAS                         │
+│   (main chart area, now a multi-window workspace)    │
+├──────────────────────────────────────────────────────┤
+│                        TOOLS                         │
+│  (tool_calls the skills emit to mutate UI state —    │
+│   data.dataset.add, script_editor.load, chart.set_*, │
+│   simulation.set_debate, notify.toast, etc.)         │
+├──────────────────────────────────────────────────────┤
+│                       SKILLS                         │
+│  (registered handlers for the 4 core capabilities:   │
+│   data_fetcher, pattern, strategy, swarm_intel)      │
+└──────────────────────────────────────────────────────┘
 ```
 
+- **Canvas** is the stage — holds N freely-positioned chart windows +
+  per-window state + user-drawn overlays. Everything else eventually
+  lands here or in the bottom panel.
+- **Tools** are the *verbs* a skill can use to affect the UI. Each is
+  registered with a handler in `apps/web/src/lib/toolRegistry.ts`. The
+  backend just emits `{tool: "data.dataset.add", value: {...}}` in the
+  `tool_calls` list — the frontend tool executor does the actual work.
+- **Skills** are the *nouns* — registered capabilities the planner can
+  invoke. Each skill has a Python processor (`core/agents/processors.py`)
+  and a metadata file (`skills/<id>/SKILL.md` + `skill.yaml`).
 
-## Layer 1: Canvas
+## 4. End-to-end request flow
 
-**Where:** `apps/web/src/`
+A typical request: user types *"run swarm intelligence"* with two
+charts on the canvas.
 
-The Canvas is everything the user sees and interacts with. It renders data,
-accepts input, and executes tool calls from the agent.
-
-| Component | File | Responsibility |
-|-----------|------|----------------|
-| Page layout | `app/page.tsx` | Orchestrates sidebar, chart, panels, right sidebar |
-| Zustand store | `store/useStore.ts` | Global state: datasets, messages, skills, debates |
-| Chart | `components/Chart.tsx` | Candlestick chart via lightweight-charts |
-| Drawing toolbar | `components/DrawingToolbar.tsx` | Pattern selector, trendlines, fib, etc. |
-| Bottom panel | `components/BottomPanel.tsx` | Tab container, renders skill output_tabs |
-| Chat input | `components/ChatInputBar.tsx` | Skill chip row, message input, send button |
-| Right sidebar | `components/RightSidebar.tsx` | Chat thread, code editor toggle |
-| Left sidebar | `components/LeftSidebar.tsx` | Mode toggle, chat history, new chat |
-| Tool registry | `lib/toolRegistry.ts` | Executes tool_calls within declared allowlists |
-
-**Key rule:** The Canvas never calls agent logic directly. It sends a chat
-message to the backend, receives a `SkillResponse` with `tool_calls`, and
-the tool registry executes them. The Canvas is a dumb terminal.
-
-
-## Layer 2: Tools
-
-**Where:** `core/tool_catalog.py` (definitions) + `apps/web/src/lib/toolRegistry.ts` (executors)
-
-Tools are reusable product features that any skill can invoke. A tool is a
-named capability with a defined interface. Skills declare which tools they
-need; the system enforces those declarations.
-
-### Tool categories
-
-| Category | Prefix | Examples |
-|----------|--------|----------|
-| Chart interactions | `chart.*` | pattern_selector, highlight_matches, focus_range |
-| Drawing tools | `chart.drawing.*` | trendline, fibonacci, rectangle, long/short |
-| Script editor | `script_editor.*` | load, run |
-| Bottom panel | `bottom_panel.*` | activate_tab, set_data |
-| Inline cards | `chatbox.card.*` | strategy_builder, generic |
-| Data | `data.*` | fetch_market, dataset.add, indicators.toggle |
-| Simulation | `simulation.*` | run_debate, set_debate, reset |
-| Notifications | `notify.*` | toast |
-
-### How tools work
-
-1. **Definitions** live in `core/tool_catalog.py` as `ToolDef` dataclasses.
-   Each has an `id`, `name`, `category`, `description`, and `input_schema`.
-
-2. **Executors** live in `apps/web/src/lib/toolRegistry.ts`. Each tool id
-   maps to a function that updates the Zustand store, calls an API, or
-   manipulates the Canvas.
-
-3. **Skills declare tools** in their SKILL.md `tools:` frontmatter. The
-   skill registry validates these against the catalog on load.
-
-4. **Enforcement** happens in `toolRegistry.ts::runToolCalls()` — if a
-   skill tries to invoke a tool it didn't declare, the call is blocked
-   with a console warning.
-
-### Adding a new tool
-
-1. Add a `ToolDef(...)` to `core/tool_catalog.py` in the right category
-2. Add a matching executor in `apps/web/src/lib/toolRegistry.ts`
-3. Reference the tool id in any SKILL.md that should use it
-
-
-## Layer 3: Skills
-
-**Where:** `skills/{name}/SKILL.md`
-
-A skill is a **natural-language instruction file** for the AI agent. Think
-of each SKILL.md as a program written in English instead of Python. It tells
-the agent:
-
-- What it can do (metadata, description)
-- Which tools it has access to (tools allowlist)
-- What UI it contributes (output_tabs for bottom panel)
-- How to process user requests (instructions in the markdown body)
-- What inputs it accepts and outputs it produces
-
-### SKILL.md structure
-
-```yaml
----
-id: pattern                              # unique identifier
-name: Pattern Skill                      # display name
-tagline: Pattern                         # chip label in the UI
-description: Detects chart patterns...   # full description
-version: 1.0.0
-author: Vibe Trade Core
-category: analysis                       # analysis | generation | data | simulation
-icon: chart-line                         # icon hint for the Canvas
-color: "#ff6b00"                         # accent color for the Canvas
-
-tools:                                   # tools this skill can invoke
-  - chart.pattern_selector
-  - chart.highlight_matches
-  - script_editor.load
-  - bottom_panel.activate_tab
-  - notify.toast
-
-output_tabs:                             # bottom-panel tabs this skill contributes
-  - id: pattern_analysis
-    label: Pattern Analysis
-    component: PatternContent            # React component name in BOTTOM_PANEL_COMPONENTS
-
-store_slots:                             # store keys this skill writes to
-  - patternMatches
-  - currentScript
-
-input_hints:
-  placeholder: "Describe a pattern..."   # chat input placeholder
-  supports_fingerprint: true             # accepts chart selection fingerprints
----
-
-# Pattern Skill
-
-[Instructions, examples, IO contracts, tool usage documentation...]
+```
+User                                                Frontend
+─────                                               ────────
+types "run swarm intelligence"                       RightSidebar.handleSubmit()
+                                                             │
+                                                             ▼
+                                                     Adds user message;
+                                                     Posts interim trace
+                                                     "Planning your request..."
+                                                             │
+                                                             ▼
+                                          POST /plan ────────┐
+                                                              ▼
+                                                    Backend: planner.plan()
+                                                    ├─ LLM (if available)
+                                                    └─ keyword fallback:
+                                                       "swarm" → swarm_intelligence
+                                                             │
+                                                             ▼
+                                         returns [{skill: "swarm_intelligence",
+                                                   message: "run swarm intelligence",
+                                                   rationale: ..., context: {}}]
+                                                             │
+                                                             ▼
+                                             planExecutor.executePlanInBrowser()
+                                                 ├─ collectDatasetIds()
+                                                 │   → ["btc_id","cl_id"]
+                                                 │   (all canvas windows
+                                                 │    with datasets)
+                                                 ├─ stepContext =
+                                                 │   { dataset_id: focused_id,
+                                                 │     dataset_ids: [...],
+                                                 │     ... }
+                                                 └─ sendChat(step.message,
+                                                            "swarm_intelligence",
+                                                            stepContext)
+                                                             │
+                                          POST /chat ────────┘
+                                                              ▼
+                                              services/api/routers/chat.py
+                                                             │
+                                              processors._swarm_intelligence_processor()
+                                                             │
+                                     ┌───────────────────────┼──────────────────┐
+                                     ▼                       ▼                  ▼
+                              normalise dataset_ids   load each from      build portfolio
+                              (focused → index 0)     services.api.store   report_text
+                                                             │
+                                             DebateOrchestrator.run(bars, symbol,
+                                                                    report_text)
+                                                             │
+                          ┌──────────┬──────────┬───────────┼────────┬─────────┐
+                          ▼          ▼          ▼           ▼        ▼         ▼
+                       Stage1    Stage1.5   Stage2     Stage2.5  Stage3     Stage4/5
+                       context   intel      personas   research  debate     cross/report
+                                                             │
+                                                             ▼
+                                        returns {entities, thread, summary,
+                                                 intel_briefing, cross_exam_results,
+                                                 market_context, data_feeds,
+                                                 agent_research, convergence_timeline,
+                                                 events}
+                                                             │
+                                                             ▼
+                                           SkillResponse with tool_calls:
+                                           [simulation.set_debate,
+                                            bottom_panel.activate_tab,
+                                            notify.toast]
+                                                             │
+                                              JSON ◄─────────┘
+                                                │
+                                                ▼
+                                 toolRegistry executes each tool_call:
+                                  - simulation.set_debate →
+                                      setCurrentDebate(mapped)
+                                  - bottom_panel.activate_tab →
+                                      activate DAG Graph tab
+                                  - notify.toast → show toast
+                                                │
+                                                ▼
+                                 Bottom panel tabs render:
+                                  DAG Graph, Personalities,
+                                  Debate Thread, Run Stats
 ```
 
-### Skill lifecycle
-
-1. **Discovery:** `core/skill_registry.py` scans `skills/` at import time
-2. **Registration:** Each SKILL.md is parsed into `SkillMetadata` + body
-3. **Serving:** `GET /skills` returns all skills as JSON for the Canvas
-4. **Selection:** User clicks a skill chip in `ChatInputBar`
-5. **Dispatch:** Chat message routes to `VibeTrade.dispatch(skill_id, ...)`
-6. **Processing:** `core/agents/processors.py` has one processor per skill
-7. **Response:** Processor returns `SkillResponse` with reply + tool_calls
-8. **Execution:** Canvas executes tool_calls via `toolRegistry.ts`
-
-### Adding a new skill
-
-1. Create `skills/{name}/SKILL.md` with YAML frontmatter + instructions
-2. Add a processor function in `core/agents/processors.py`
-3. Register it in the `PROCESSORS` dict at the bottom of that file
-4. (If new tools are needed) Add them to `core/tool_catalog.py` + `toolRegistry.ts`
-5. Restart the backend. The Canvas picks up the new skill automatically.
-
-No frontend code changes needed unless the skill introduces new bottom-panel
-tab components (which go in `apps/web/src/components/tabs/`).
-
-
-## Directory map
+## 5. Directory map
 
 ```
 trading-platform/
-|
-+-- core/                          # Python backend logic
-|   +-- agents/
-|   |   +-- processors.py          # Skill processors (one per skill)
-|   |   +-- vibe_trade_agent.py    # Dispatcher + multi-step planner
-|   |   +-- planner.py             # LLM-based plan decomposition
-|   |   +-- llm_client.py          # Multi-provider LLM client (9 providers)
-|   |   +-- pattern_agent.py       # Pattern detection prompts + logic
-|   |   +-- strategy_agent.py      # Strategy generation prompts + logic
-|   |   +-- simulation_agents.py   # Debate personas + discussion agents
-|   |
-|   +-- engine/
-|   |   +-- dag_orchestrator.py    # 6-stage debate pipeline
-|   |   +-- simulation_engine.py   # Bar-by-bar trading simulation
-|   |
-|   +-- data/
-|   |   +-- fetcher.py             # yfinance + ccxt data fetcher
-|   |
-|   +-- skill_registry.py          # SkillRegistry — discovers SKILL.md files
-|   +-- skill_types.py             # Skill, SkillResponse, ToolContext types
-|   +-- tool_catalog.py            # TOOL_CATALOG — 28 tools across 8 categories
-|
-+-- skills/                        # SKILL.md files ONLY (no Python)
-|   +-- pattern/SKILL.md
-|   +-- strategy/SKILL.md
-|   +-- data_fetcher/SKILL.md
-|   +-- swarm_intelligence/SKILL.md
-|   +-- _template/SKILL.md         # Copy this to create a new skill
-|
-+-- services/api/                  # FastAPI backend
-|   +-- main.py                    # App entry point
-|   +-- routers/                   # HTTP endpoints
-|
-+-- apps/web/src/                  # Next.js frontend (Canvas)
-|   +-- app/page.tsx               # Main layout
-|   +-- store/useStore.ts          # Zustand global state
-|   +-- lib/toolRegistry.ts        # Tool executors
-|   +-- lib/api.ts                 # Backend API client
-|   +-- components/                # React components
-|       +-- tabs/                  # Bottom-panel tab components
-|
-+-- vibe_trade/                    # CLI package (pipx install vibe-trade)
-|   +-- cli.py                     # Typer commands
-|   +-- serve_cmd.py               # vibe-trade serve
-|   +-- setup_cmd.py               # vibe-trade setup
-|   +-- updater.py                 # Update checker + vibe-trade update
-|
-+-- docs/
-    +-- ARCHITECTURE.md            # This file
+├── core/                      # Python business logic (no FastAPI here)
+│   ├── agents/                # LLM agents + skill processors
+│   │   ├── llm_client.py      # Provider-agnostic chat_completion
+│   │   ├── planner.py         # LLM planner + keyword fallback
+│   │   ├── processors.py      # Entry point for each skill
+│   │   ├── simulation_agents.py  # All swarm agent classes
+│   │   ├── swarm_tools.py     # Web search, indicators, etc.
+│   │   ├── pattern_agent.py   # Pattern detection logic
+│   │   └── strategy_agent.py  # Strategy generation logic
+│   ├── engine/
+│   │   ├── dag_orchestrator.py  # Swarm 5-stage orchestrator
+│   │   └── simulation_engine.py # Bar-by-bar replay simulator
+│   ├── data/fetcher.py        # yfinance / ccxt wrappers
+│   ├── indicators/            # Built-in + custom indicator scripts
+│   └── skill_registry.py      # Loads skills/*/skill.yaml into registry
+│
+├── services/api/              # FastAPI HTTP layer
+│   ├── main.py                # App + routers + StaticFiles mount
+│   ├── store.py               # In-memory dataset store (DataFrame cache)
+│   └── routers/
+│       ├── chat.py            # /chat, /plan, /fetch-data
+│       ├── simulation.py      # /debate, /interview
+│       ├── upload.py          # /upload-csv, /datasets/sync
+│       ├── patterns.py        # /run-pattern
+│       ├── strategies.py      # /run-strategy
+│       ├── backtest.py        # /run-backtest
+│       ├── analysis.py        # /run-analysis
+│       └── indicators.py      # /run-indicator
+│
+├── skills/                    # Declarative skill definitions
+│   ├── data_fetcher/SKILL.md + skill.yaml
+│   ├── pattern/SKILL.md + skill.yaml
+│   ├── strategy/SKILL.md + skill.yaml
+│   ├── swarm_intelligence/SKILL.md + skill.yaml
+│   └── _template/             # Copy-this-to-add-a-new-skill
+│
+├── apps/web/                  # Next.js frontend
+│   ├── src/
+│   │   ├── app/page.tsx       # Root layout (sidebars + canvas + panel)
+│   │   ├── components/
+│   │   │   ├── canvas/        # NEW (Phase 3) — Canvas + ChartWindow
+│   │   │   ├── tabs/          # Bottom-panel tab implementations
+│   │   │   ├── playground/    # Paper-trading UI
+│   │   │   ├── simulation/    # Swarm settings / DAG host
+│   │   │   ├── Chart.tsx      # One lightweight-charts instance
+│   │   │   ├── DrawingToolbar.tsx
+│   │   │   ├── RightSidebar.tsx     # Chat + script editor
+│   │   │   ├── LeftSidebar.tsx      # Conversation list + mode toggle
+│   │   │   ├── BottomPanel.tsx      # Dockable bottom panel
+│   │   │   ├── TopBar.tsx
+│   │   │   └── TimeframeSelector.tsx
+│   │   ├── lib/
+│   │   │   ├── api.ts         # Typed HTTP client for the FastAPI
+│   │   │   ├── planExecutor.ts  # Step-by-step plan execution + trace
+│   │   │   ├── toolRegistry.ts  # Tool-call → store-mutation router
+│   │   │   ├── scriptExecutor.ts  # Pattern script Web Worker
+│   │   │   ├── strategyExecutor.ts # Backtest Web Worker
+│   │   │   ├── chart-primitives/  # Custom lightweight-charts plugins
+│   │   │   └── csv/              # Upload + resampling logic
+│   │   ├── store/useStore.ts   # All zustand state + actions
+│   │   └── types/index.ts      # Shared TypeScript types
+│   └── package.json
+│
+├── vibe_trade/                # The CLI package (pip-installable)
+│   ├── cli.py                 # Typer app
+│   ├── serve_cmd.py           # vibe-trade serve
+│   ├── fetch_cmd.py           # vibe-trade fetch
+│   ├── simulate_cmd.py        # vibe-trade simulate
+│   ├── setup_cmd.py           # vibe-trade setup (API key wizard)
+│   ├── update_cmd.py          # vibe-trade update (pipx-aware)
+│   ├── build_frontend.py      # Triggers npm run build on serve if no bundle
+│   ├── user_config.py         # XDG-compliant config/env resolution
+│   └── web_static/            # Bundled Next.js static export (release)
+│
+├── docs/                      # This folder
+│   ├── ARCHITECTURE.md        # You are here
+│   ├── SKILLS.md
+│   ├── SWARM_PIPELINE.md
+│   ├── CANVAS.md
+│   └── back/                  # Archive of pre-refactor docs
+│
+└── pyproject.toml             # vibe-trade Python package
 ```
 
+## 6. Frontend state model
 
-## Data flow
+All UI state lives in a single Zustand store: `apps/web/src/store/useStore.ts`.
+Key slices (with their authoritative types in `src/types/index.ts`):
 
-```
-User types: "fetch BTC 1h and find triple tops"
-                        |
-                        v
-              [ChatInputBar] sends POST /chat
-                        |
-                        v
-           [chat.py] routes to VibeTrade.dispatch()
-                        |
-                        v
-     [vibe_trade_agent.py] detects multi-step request
-        calls planner → decomposes into 2 steps:
-          Step 1: data_fetcher → "fetch BTC 1h"
-          Step 2: pattern → "find triple tops"
-                        |
-                        v
-        [processors.py] runs _data_fetcher_processor()
-          → calls core.data.fetcher.fetch()
-          → returns SkillResponse with tool_calls:
-              data.dataset.add, chart.set_timeframe, notify.toast
-                        |
-                        v
-        [processors.py] runs _pattern_processor()
-          → calls PatternAgent.generate()
-          → returns SkillResponse with tool_calls:
-              script_editor.load, bottom_panel.activate_tab
-                        |
-                        v
-              [RightSidebar] receives combined response
-                        |
-                        v
-        [toolRegistry.ts] executes all tool_calls:
-          1. data.dataset.add → store.addDataset()
-          2. chart.set_timeframe → store.setSelectedTimeframe()
-          3. notify.toast → console.log (stub)
-          4. script_editor.load → sink.setCurrentScript()
-          5. bottom_panel.activate_tab → sink.setBottomPanelTab()
-                        |
-                        v
-              Canvas updates: chart shows BTC, script loads,
-              bottom panel switches to Pattern Analysis tab
-```
+### Conversations
+- `conversations: Conversation[]` — persisted to localStorage
+- `activeConversationId: string | null`
+- Actions: `createConversation`, `switchConversation`, `deleteConversation`,
+  `hydrateConversations`
+
+Each `Conversation` snapshots a complete session: messages, active
+dataset, chart windows, datasets, drawings, debate results, etc.
+Switching threads restores this snapshot verbatim (see
+`_snapshotLiveStateInto` + restoration paths in useStore).
+
+### Datasets
+- `datasets: Dataset[]` — per-session
+- `datasetChartData: Record<id, OHLCBar[]>` — **what chart windows render**
+- `datasetRawData: Record<id, OHLCBar[]>` — source of truth (pre-resample)
+- `syncedDatasets: Set<id>` — which are confirmed in the backend store
+- `activeDataset: string | null` — focused window's dataset, kept in sync
+
+### Canvas (Phase 3)
+- `chartWindows: ChartWindow[]` — each `{id, datasetId, x, y, width, height, zIndex}`
+- `focusedWindowId: string | null`
+- Actions: `addChartWindow`, `removeChartWindow`, `updateChartWindow`,
+  `focusChartWindow`, `setChartWindowDataset`. Each mutation snapshots.
+
+### Per-dataset feature state (Phase 3 multi-chart)
+- `patternMatchesByDataset: Record<id, PatternMatch[]>` — so each
+  window shows only its own pattern matches
+- `chartFocusByDataset: Record<id, Focus | null>` — so clicking a
+  pattern match only zooms the chart that owns it
+- Legacy `patternMatches` + `chartFocus` kept as fallbacks for
+  single-chart UI paths
+
+### Skill messages / chat
+- `patternMessages: Message[]` + `strategyMessages: Message[]`
+- `messages: Message[]` (derived view of current mode)
+- Actions: `addMessage`, `updateMessage`, `addMessageToConversation`
+
+### Script editor + results
+- `currentScript: string`
+- `strategyConfig: StrategyConfig | null`
+- `backtestResults: BacktestResult | null`
+- `lastScriptResult: { ran, error? } | null`
+
+### Drawings + indicators
+- `drawings: Drawing[]` (global across all charts — flagged for Phase 4 to be per-window)
+- `indicators: IndicatorConfig[]` (global)
+- `pineDrawings`, `pineDrawingsPlotData`
+
+### Simulation / Swarm
+- `currentDebate: SimulationDebate | null`
+- `expandedAgentId: string | null` — which persona card is open
+- `agentInterviews: Record<agentId, Turn[]>` — chat with each agent
+- `agentInterviewLoading: Record<agentId, boolean>`
+
+### Playground (paper-trading)
+- `playgroundWallet`, `playgroundPositions`, `playgroundOrders`,
+  `playgroundTrades`, `playgroundReplay`
+- Drives a bar-by-bar replay loop via `usePlaygroundReplay`
+
+## 7. Data flow for the 4 core skills
+
+### data_fetcher
+1. Backend processor calls `core.data.fetcher.fetch(symbol, interval, limit)`
+   → yfinance/ccxt normalized bars
+2. Processor **saves bars into `services.api.store`** with a generated
+   `dataset_id` (backend has the data *before* the response returns)
+3. Emits `tool_call: data.dataset.add` with `{dataset_id, bars, metadata, ...}`
+4. Frontend toolRegistry uses the backend-supplied id; calls
+   `addDataset(dataset, bars, bars)`; `markSynced(id)` immediately
+5. `addDataset` auto-spawns a new ChartWindow on the canvas (cascaded
+   +32/+32 from the previous window, 560×360 default)
+
+### pattern
+1. User types "detect engulfing pattern"
+2. Backend `_pattern_processor` generates a JS pattern script via LLM
+3. Emits `tool_call: script_editor.load` + `tool_call: bottom_panel.activate_tab: pattern_analysis`
+4. Frontend `planExecutor` detects `result.script` and `step.skill === "pattern"`;
+   iterates over every canvas window with loaded bars, running
+   `executePatternScript(script, bars)` against each via Web Worker
+5. Calls `setPatternMatchesForDataset(dsid, matches)` per chart
+6. Each ChartWindow reads `patternMatchesByDataset[w.datasetId]` for
+   its highlights
+7. Bottom panel's **Pattern Analysis** tab merges all per-dataset match
+   lists into one flat table with Asset column; row clicks set
+   `chartFocusByDataset[owner_id]` so only that chart zooms
+
+### strategy
+1. User describes strategy + config (TP/SL, seed amount, instructions)
+2. Backend `_strategy_processor` generates a JS strategy script
+3. Frontend `planExecutor` runs `executeStrategy(script, chartData, config)`
+   in a Web Worker → `BacktestResult` with trades, equity curve, metrics
+4. Populates `backtestResults` — rendered in the bottom-panel
+   Portfolio Analysis / Trade List tabs
+5. **Multi-chart strategy is Phase 3.5 (deferred)** — currently backtests
+   against the focused chart only
+
+### swarm_intelligence
+Full pipeline documented in `SWARM_PIPELINE.md`. Summary:
+1. Processor receives `dataset_id` (focused) and `dataset_ids` (all canvas)
+2. Promotes focused to index 0; loads each from `services.api.store`
+3. For len(loaded) > 1, builds a portfolio context block appended to `report_text`
+4. `DebateOrchestrator.run()` runs 5 stages:
+   - Stage 1: Context Analysis (classifier + market context)
+   - Stage 1.5: Intelligence Gathering (web search + briefing synth)
+   - Stage 2: Persona Generation (50 agents)
+   - Stage 2.5: Iterative Research (each agent plans own queries)
+   - Stage 3: Multi-Round Debate (30 × 15 speakers)
+   - Stage 4: Cross-Examination (divergent agents pressed)
+   - Stage 5: ReACT Report
+5. Processor wraps orchestrator result with `{debate_id, symbol, bars_analyzed, events}`
+   and emits `tool_call: simulation.set_debate`
+6. toolRegistry maps snake_case→camelCase → `setCurrentDebate(mapped)`
+7. Four bottom-panel tabs render: DAG Graph, Personalities (click →
+   AgentDetailPanel with live `/interview` chat), Debate Thread, Run Stats
+
+## 8. HTTP API
+
+All mounted under the base FastAPI app in `services/api/main.py`. Key routes:
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/chat` | Dispatch a skill with a message + context |
+| POST | `/plan` | Build a multi-step plan (no execution) |
+| POST | `/fetch-data` | Raw yfinance/ccxt fetch (bypasses skills) |
+| POST | `/upload-csv` | Upload OHLCV CSV → store |
+| POST | `/datasets/sync` | Frontend pushes bars to backend store |
+| POST | `/run-pattern` | Run pattern detection server-side (alternative to Web Worker) |
+| POST | `/run-strategy` | Generate strategy script server-side |
+| POST | `/run-backtest` | Run backtest server-side |
+| POST | `/run-indicator` | Run indicator script |
+| POST | `/run-analysis` | Run multi-analysis (indicators, patterns, etc.) |
+| POST | `/debate` | Full swarm debate (direct REST, alternative to skill path) |
+| POST | `/interview` | Live Q&A with a specific debate agent |
+| GET | `/api/status` | Health + active LLM provider info |
+| GET | `/skills` | List registered skills |
+| GET | `/tools` | List registered tools |
+
+## 9. Reliability
+
+### Timeouts (layered)
+
+| Level | Budget (default) | Configurable via |
+|---|---|---|
+| Per-LLM-call HTTP | 90 s | `LLM_CALL_TIMEOUT_S` |
+| LLM retries on transient failures | 2 | `LLM_MAX_RETRIES` |
+| Per-swarm-speaker | 180 s | — |
+| Swarm Stage 4 (cross-exam) | 300 s | — |
+| Swarm Stage 5 (report) | 480 s, with 240 s per-call override | — |
+| Outer `/debate` endpoint | 45 min | `DEBATE_TIMEOUT_S` |
+
+### RunEvents
+Every failure / timeout / warning inside the Swarm pipeline is recorded
+as a `RunEvent` `{timestamp, level, stage, message}`. Returned in the
+`/debate` response (and surfaced via HTTPException detail on outer
+timeout). Rendered as a red/amber banner at the top of the **Run
+Stats** bottom-panel tab and as a Rich panel at the end of `vibe-trade
+simulate` CLI runs.
+
+### Fallbacks
+- Swarm Stage 5 report failure → `_fallback_summary_from_thread` builds
+  a real summary from the debate thread (top bullish / bearish excerpts
+  + median price predictions + consensus from `_compute_consensus`)
+  instead of a useless NEUTRAL stub
+- Swarm planner LLM failure → keyword fallback in `planner._keyword_fallback`
+  guarantees common intents ("fetch X", "run swarm", "find pattern")
+  still produce a plan
+- DuckDuckGo rate limit → multi-backend retry (`auto/html/lite`) +
+  exponential backoff in `swarm_tools.web_search`
+- Windows / uvicorn noise on startup → targeted `warnings.filter` +
+  `sys.unraisablehook` for the known-benign `_ssock` / coroutine warnings
+
+## 10. Persistence
+
+- **Backend dataset store** (`services/api/store.py`) — in-memory only.
+  No disk persistence. Each server restart clears it; the frontend
+  re-syncs datasets on demand.
+- **Frontend conversations** — persisted to `localStorage` via
+  `savePersistedConversations`. Hydrated on mount via
+  `hydrateConversations`. Each conversation carries: messages, active
+  dataset, datasets + chart data, drawings, chart windows (Phase 3),
+  selected timeframe, debate results.
+- **User API keys** — written to the user config dir via
+  `vibe_trade.user_config`:
+  - Linux/Mac: `~/.config/vibe-trade/.env`
+  - Windows: `%APPDATA%\vibe-trade\.env`
+
+## 11. What's intentionally NOT here (yet)
+
+- **Per-window indicators / drawings** (currently global — applies to
+  every chart). Flagged for Phase 4.
+- **Per-window timeframe selector** (TimeframeSelector affects only
+  the focused chart's dataset; there's one toolbar for the whole canvas).
+- **Multi-chart strategy backtest** (runs against the focused chart only;
+  Phase 3.5 will add cross-asset equity curves + combined drawdown).
+- **Dataset persistence** across server restarts (backend store is
+  purely in-memory).
+- **Streaming swarm progress** (frontend shows a timer-based fake
+  progress; real per-round updates require SSE or WebSocket).
+- **Drag-from-sidebar to spawn chart** (all charts come via chat
+  `data_fetcher` today).
+- **Per-window interview drawer** (interviews live in a bottom-panel
+  flow, not anchored to a window).
+
+## 12. Release process
+
+See `RELEASE_NOTES_v0.4.{0,1,2}.md` for templates. Steps:
+1. Bump `version` in `pyproject.toml` + `vibe_trade/__init__.py`
+2. Write `RELEASE_NOTES_v<X>.md`
+3. Commit
+4. `python -m vibe_trade.cli build-frontend --force` to refresh the bundled UI
+5. `python -m build` to produce wheel + sdist in `dist/`
+6. `python -m twine check dist/*`
+7. Create annotated tag `git tag -a v<X> -m "..."`
+8. Push `main` + tag
+9. `python -m twine upload dist/*` (needs PyPI token)
+10. `gh release create v<X> --title ... --notes-file RELEASE_NOTES_v<X>.md`
+    + drag the wheel/sdist as release assets
