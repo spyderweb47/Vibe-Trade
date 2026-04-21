@@ -1456,42 +1456,29 @@ async def _historic_news_processor(
                 ),
             ),
             RoleTemplate(
-                role="analyzer",
+                role="data_processor",
                 description=(
-                    "Parses the researcher's raw findings into a structured "
-                    "JSON event list with timestamps, categories, direction "
-                    "and impact ratings. MANDATORY."
+                    "The NewsDataProcessor agent. Extracts candidates from "
+                    "the real web-search findings programmatically, then "
+                    "enriches them in 5-at-a-time LLM batches with "
+                    "category / direction / impact / timestamp. Never "
+                    "invents URLs — the real URL from the search is "
+                    "preserved verbatim. Fault-isolated: a failed batch "
+                    "loses 5 events, not the whole run. MANDATORY."
                 ),
                 persona_defaults={
-                    "name": "News Analyzer",
-                    "background": "Quant, correlates news to price action",
-                    "style": "Rigorous, assigns impact ratings based on price-reaction size",
+                    "name": "News Data Processor",
+                    "background": "Structured-data specialist, converts unstructured research into validated events",
+                    "style": "Deterministic, batched, never hallucinates URLs",
                 },
                 allowed_tools=[],
                 mandatory=True,
                 default_task=(
-                    "Convert the researcher's findings into a strict-JSON "
-                    "event list. Each event MUST include timestamp (unix "
-                    "seconds), headline, summary, source, category, impact, "
-                    "direction."
+                    "Extract candidates from the real search results, "
+                    "batch-enrich with analytic fields, validate every "
+                    "timestamp is inside the chart range, drop any "
+                    "without a real URL."
                 ),
-            ),
-            RoleTemplate(
-                role="qa",
-                description=(
-                    "Reviews the analyzer's structured events. Drops "
-                    "duplicates, flags timestamps outside the chart range, "
-                    "rejects unsubstantiated claims without a source. "
-                    "MANDATORY."
-                ),
-                persona_defaults={
-                    "name": "News QA",
-                    "background": "Editorial fact-checker",
-                    "style": "Skeptical, demands credible sources + plausible timestamps",
-                },
-                allowed_tools=[],
-                mandatory=True,
-                default_task="Filter the event list for duplicates, invalid timestamps, and uncited claims",
             ),
             RoleTemplate(
                 role="macro_researcher",
@@ -1539,26 +1526,22 @@ async def _historic_news_processor(
                 ),
             ),
         ],
-        default_execution_mode="sequential",  # researcher -> analyzer -> qa
+        default_execution_mode="sequential",  # research -> data_processor
     )
 
     plan_tool_calls = [
         {"tool": "swarm.team_plan.set", "value": plan.to_trace_payload()},
     ]
 
-    # ─── Phase 2: execute researchers in parallel, then analyzer + qa ─
+    # ─── Phase 2: real search + NewsDataProcessor ─────────────────────
+    # The plan card above is declarative (shown in trace UI). The
+    # actual work happens in two deterministic agents:
+    #   1. _run_real_research  — direct web_search() calls
+    #   2. NewsDataProcessor   — batched enrichment of real candidates
+    # No team.assemble / team.run_parallel — those would just invoke
+    # agent.speak() which is a single LLM call with no tool execution
+    # (the old flow that hallucinated every URL).
     swarm = AgentSwarm()
-    specs = [
-        AgentSpec(
-            role=pa.role,
-            persona=pa.persona,
-            tools=pa.tools,
-            temperature=0.3,
-            max_tokens=2500,
-        )
-        for pa in plan.agents
-    ]
-    team = swarm.assemble(specs)
 
     # ─── Research phase — REAL web searches, not hallucinated ─────────
     # Previous version called agent.speak() for each researcher, which
@@ -1604,351 +1587,99 @@ async def _historic_news_processor(
             data={"events": [e for e in swarm.events()], "queries": queries},
         )
 
-    # Build the analyzer's input. We include the real findings PLUS a
-    # short context line so the analyzer knows what's expected.
-    research_context = (
-        f"Topic researched: {topic}\n"
-        f"Plot symbol (chart asset): {symbol}\n"
-        f"Chart date range: {date_range_hint or '(not provided)'}\n"
-        f"User's original request: {message or '(default — historic news)'}\n"
+    # ─── Data processing via the NewsDataProcessor agent ──────────────
+    # Replaces the old analyzer + QA loop. The old flow asked ONE giant
+    # LLM call to produce valid JSON for every event; it failed three
+    # different ways on three different assets (truncation, out-of-
+    # range hallucinations, prose changelog on iteration 2). The new
+    # agent batches the work — 5 events per LLM call on REAL search
+    # results, with fault isolation per batch and programmatic
+    # timestamp / URL validation.
+    from core.agents.news_data_processor import NewsDataProcessor
+
+    processor = NewsDataProcessor(
+        chart_lo_unix=chart_lo_unix,
+        chart_hi_unix=chart_hi_unix,
+        chart_lo_iso=chart_lo_iso,
+        chart_hi_iso=chart_hi_iso,
+        topic=topic,
+        event_sink=swarm._event,
+        batch_size=5,
     )
-    analyzer_context = research_context + "\n\n## Real web search findings\n\n" + real_findings
+    result = await asyncio.to_thread(processor.process, real_findings)
 
-    qa_result = await team.run_with_qa_loop(
-        task=(
-            f"Convert the researcher findings above into a strict-JSON "
-            f"event list for {symbol}.\n"
-            f"{date_constraint}\n"
-            "**Output rules — read carefully:**\n"
-            "1. Return ONLY raw JSON. NO markdown fences (```), NO preamble "
-            "('Here is the JSON:'), NO postamble ('Hope this helps').\n"
-            "2. The very first character of your response MUST be `{` and the "
-            "very last character MUST be `}`.\n"
-            "3. `timestamp` MUST be an integer in unix SECONDS within the "
-            f"range above ({chart_lo_unix}-{chart_hi_unix}). NOT "
-            f"milliseconds, NOT a date string.\n"
-            "4. Drop any event where you can't determine a precise date.\n"
-            "5. Drop any event without a credible named source.\n"
-            f"6. Aim for {target_min}-{target_max} events spread evenly "
-            f"across the date window. Cluster around earnings calendar "
-            f"dates and known macro events.\n"
-            "7. **NEVER invent URLs.** Use the EXACT url from the search "
-            "result you're extracting from. If the result has no URL, set "
-            'url to null — do NOT make one up like '
-            '\"https://reuters.com/markets/...\". Hallucinated URLs are '
-            "the #1 way this skill loses user trust.\n"
-            "8. Use the EXACT headline from the search result. Don't "
-            "rewrite or summarise it — copy it verbatim.\n\n"
-            "**Required shape (copy this skeleton exactly):**\n"
-            "{\n"
-            '  "events": [\n'
-            "    {\n"
-            f'      "timestamp": {chart_lo_unix or 1704067200},\n'
-            '      "headline": "Apple beats Q1 earnings estimates",\n'
-            '      "summary": "Apple reported Q1 FY2024 EPS of $2.18 vs $2.10 expected, '
-            'with iPhone revenue down 0.6% YoY but Services up 11.3%.",\n'
-            '      "source": "Reuters",\n'
-            '      "url": "https://example.com/article",\n'
-            '      "category": "earnings",\n'
-            '      "impact": "high",\n'
-            '      "direction": "bullish",\n'
-            '      "price_impact_pct": 2.4\n'
-            "    }\n"
-            "  ],\n"
-            '  "summary": "One-paragraph overview of the news landscape across the chart range.",\n'
-            '  "key_themes": ["AI strategy", "China demand", "Services growth"]\n'
-            "}\n\n"
-            "**Allowed values:**\n"
-            '- category: "earnings" | "regulatory" | "macro" | "product" | '
-            '"sentiment" | "geopolitical" | "technical"\n'
-            '- impact: "high" | "medium" | "low"\n'
-            '- direction: "bullish" | "bearish" | "neutral"\n\n'
-            f"Asset: {symbol}. Chart range: {date_range_hint or '(unknown)'}."
-        ),
-        context=analyzer_context,
-        producer_role="analyzer",
-        verifier_role="qa",
-        max_iterations=2,
-        spec=QASpec(
-            acceptance_criteria=(
-                f"Each event MUST satisfy ALL of:\n"
-                f"1. timestamp is an integer in the range "
-                f"{chart_lo_unix}-{chart_hi_unix} (inclusive). REJECT any "
-                f"event whose unix timestamp is outside this window.\n"
-                f"2. credible named source (e.g. 'Reuters', 'Bloomberg', "
-                f"'WSJ' — NOT 'multiple outlets' or 'various reports').\n"
-                f"3. non-empty headline.\n"
-                f"4. category is one of: earnings|regulatory|macro|product|"
-                f"sentiment|geopolitical|technical.\n"
-                f"5. no duplicates (same event with different timestamps "
-                f"or wording).\n"
-                f"6. event count >= {target_min}. If under {target_min}, "
-                f"the producer needs to add more events from the research "
-                f"findings.\n"
-                f"Date window for reference: {chart_lo_iso} to {chart_hi_iso}."
-            ),
-        ),
-    )
-
-    # Parse the final artifact. Analyzer was instructed to return
-    # strict JSON, but real LLM output frequently has preamble text,
-    # markdown fences with various spacing, or both. Be liberal:
-    #   1. Strip ```json / ``` fences if present
-    #   2. If the result still doesn't parse, search for the first
-    #      balanced { ... } block and try that
-    raw_content = qa_result.final_artifact.content or ""
-    cleaned = raw_content.strip()
-
-    # Strip code fences (```json ... ```, ``` ... ```)
-    if cleaned.startswith("```"):
-        nl = cleaned.index("\n") if "\n" in cleaned else len(cleaned)
-        cleaned = cleaned[nl + 1:]
-        if cleaned.endswith("```"):
-            cleaned = cleaned[:-3]
-        cleaned = cleaned.strip()
-
-    def _extract_json_object(text: str) -> str | None:
-        """
-        Scan for the first balanced {...} or [...] block. Tolerates
-        preamble like 'Here is the JSON:\n\n{...}\n\nHope this helps.'
-        Returns the substring or None if no balanced block found.
-        """
-        for opener, closer in (("{", "}"), ("[", "]")):
-            start = text.find(opener)
-            if start < 0:
-                continue
-            depth = 0
-            in_str = False
-            esc = False
-            for i in range(start, len(text)):
-                ch = text[i]
-                if esc:
-                    esc = False
-                    continue
-                if ch == "\\":
-                    esc = True
-                    continue
-                if ch == '"':
-                    in_str = not in_str
-                    continue
-                if in_str:
-                    continue
-                if ch == opener:
-                    depth += 1
-                elif ch == closer:
-                    depth -= 1
-                    if depth == 0:
-                        return text[start:i + 1]
-            # unbalanced — fall through to next opener
-        return None
-
-    def _coerce_timestamp(v: Any) -> int:
-        """Accept unix seconds (int/float/str-of-int) OR ISO date string."""
-        if isinstance(v, (int, float)):
-            n = int(v)
-            # If the LLM gave us milliseconds, scale down
-            if n > 10**12:
-                n //= 1000
-            return n
-        if isinstance(v, str):
-            s = v.strip()
-            if not s:
-                return 0
-            # Plain integer string
-            if s.lstrip("-").isdigit():
-                n = int(s)
-                if n > 10**12:
-                    n //= 1000
-                return n
-            # ISO date — try to parse
-            try:
-                from datetime import datetime as _dt
-                # Accept "2024-01-15", "2024-01-15T10:30:00", "2024-01-15T10:30:00Z"
-                s2 = s.replace("Z", "+00:00")
-                dt = _dt.fromisoformat(s2) if "T" in s2 or "+" in s2 or len(s2) > 10 else _dt.strptime(s2, "%Y-%m-%d")
-                return int(dt.timestamp())
-            except (ValueError, ImportError):
-                return 0
-        return 0
-
-    # Bounds for the "is this timestamp inside the chart range" filter.
-    # Allow a 14-day buffer on either side so pre-market news and
-    # slightly-after-close aftershocks still land on the chart.
-    chart_min_ts = 0
-    chart_max_ts = 10**12
-    if dataset_id:
-        df_bounds = store.get_dataframe(dataset_id)
-        if df_bounds is not None and len(df_bounds) > 0:
-            try:
-                chart_min_ts = int(df_bounds.iloc[0]["time"]) - 14 * 86400
-                chart_max_ts = int(df_bounds.iloc[-1]["time"]) + 14 * 86400
-            except Exception:  # noqa: BLE001
-                pass
-
-    events: List[Dict[str, Any]] = []
-    overview_summary = ""
-    key_themes: List[str] = []
-    parse_error: str | None = None
-    parsed: Any = None
-    raw_event_count = 0           # how many events the analyzer produced
-    dropped_out_of_range = 0      # how many were filtered by chart range
-    dropped_no_timestamp = 0      # how many had unparseable timestamps
-
-    # First attempt: parse as-is (post fence-strip)
-    try:
-        parsed = _json.loads(cleaned)
-    except (_json.JSONDecodeError, ValueError) as exc:
-        parse_error = str(exc)
-        # Second attempt: extract first balanced JSON block (tolerates
-        # preamble/postamble text)
-        block = _extract_json_object(cleaned)
-        if block:
-            try:
-                parsed = _json.loads(block)
-                parse_error = None  # second attempt succeeded
-            except (_json.JSONDecodeError, ValueError) as exc2:
-                parse_error = f"after-extract: {exc2}"
-
-    # Some models return [..., ...] directly (the events array) instead
-    # of {"events": [...]}. Wrap for uniform handling.
-    if isinstance(parsed, list):
-        parsed = {"events": parsed}
-
-    if isinstance(parsed, dict):
-        raw_events = parsed.get("events") or []
-        # Some models nest one level deeper, e.g. {"data": {"events": [...]}}
-        if not raw_events and isinstance(parsed.get("data"), dict):
-            raw_events = parsed["data"].get("events") or []
-        if isinstance(raw_events, list):
-            raw_event_count = sum(1 for e in raw_events if isinstance(e, dict))
-            for e in raw_events:
-                if not isinstance(e, dict):
-                    continue
-                ts = _coerce_timestamp(e.get("timestamp") or e.get("date") or e.get("time"))
-                if ts <= 0:
-                    dropped_no_timestamp += 1
-                    continue
-                # Drop events whose timestamp is outside the chart
-                # range — plotting them would be invisible anyway
-                # and they're usually LLM hallucinations about
-                # events the asset wasn't tradable for yet.
-                if ts < chart_min_ts or ts > chart_max_ts:
-                    dropped_out_of_range += 1
-                    continue
-                # price_impact_pct may arrive as int, float, str, or
-                # be missing entirely — coerce defensively.
-                pip_raw = e.get("price_impact_pct") if "price_impact_pct" in e else e.get("priceImpactPct")
-                pip_val: float | None = None
-                if isinstance(pip_raw, (int, float)):
-                    pip_val = float(pip_raw)
-                elif isinstance(pip_raw, str):
-                    s = pip_raw.replace("%", "").strip()
-                    try:
-                        pip_val = float(s) if s else None
-                    except ValueError:
-                        pip_val = None
-
-                events.append({
-                    "id": f"ne_{ts}_{len(events)}",
-                    "timestamp": ts,
-                    "headline": str(e.get("headline") or e.get("title") or "").strip(),
-                    "summary": str(e.get("summary") or e.get("description") or "").strip(),
-                    "source": str(e.get("source") or "").strip(),
-                    "url": str(e.get("url") or e.get("link") or "").strip() or None,
-                    "category": str(e.get("category") or "sentiment").strip().lower() or "sentiment",
-                    "impact": str(e.get("impact") or "medium").strip().lower() or "medium",
-                    "direction": str(e.get("direction") or "neutral").strip().lower() or "neutral",
-                    "price_impact_pct": pip_val,
-                })
-            if dropped_out_of_range:
-                swarm._event(
-                    "warn", "historic_news",
-                    f"dropped {dropped_out_of_range} event(s) outside chart range "
-                    f"({chart_min_ts}..{chart_max_ts})",
-                    "analyzer",
-                )
-        overview_summary = str(parsed.get("summary") or "").strip()
-        key_themes = [str(t) for t in (parsed.get("key_themes") or parsed.get("keyThemes") or []) if t]
+    events: List[Dict[str, Any]] = result.events
+    overview_summary: str = result.summary
+    key_themes: List[str] = result.key_themes
 
     if not events:
-        # Distinguish the four real failure modes so the user can act:
-        #   A. JSON didn't parse at all                    -> re-run usually fixes
-        #   B. JSON parsed but events list missing/empty   -> analyzer found nothing
-        #   C. JSON parsed but every ts outside chart      -> load wider chart data
-        #   D. JSON parsed but every ts unparseable        -> prompt issue
-        preview = raw_content.strip()[:600] or "(empty)"
-        from datetime import datetime as _dt2, timezone as _tz2
-        try:
-            chart_lo_str = _dt2.fromtimestamp(chart_min_ts, tz=_tz2.utc).strftime("%Y-%m-%d") if chart_min_ts > 0 else "(open)"
-            chart_hi_str = _dt2.fromtimestamp(chart_max_ts, tz=_tz2.utc).strftime("%Y-%m-%d") if chart_max_ts < 10**12 else "(open)"
-        except (OverflowError, ValueError):
-            chart_lo_str, chart_hi_str = "?", "?"
-
-        if parse_error:
-            why = f"JSON parse failed: {parse_error}"
-            user_hint = "The model returned prose where JSON was expected. Try re-running."
-        elif parsed is None:
-            why = "Analyzer returned no parseable content"
-            user_hint = "Try re-running — the LLM may have produced an empty response."
-        elif not isinstance(parsed, dict):
-            why = f"Analyzer returned a {type(parsed).__name__}, expected an object"
-            user_hint = "Try re-running."
-        elif raw_event_count == 0:
-            why = "Analyzer returned valid JSON but no events"
-            user_hint = (
-                "The researchers may not have surfaced anything material for this "
-                "asset/period, or the analyzer judged everything as too weak to "
-                "include. Try a different timeframe or be more specific in your "
-                "request."
+        # Four distinct failure modes surfaced by the processor:
+        hint: str
+        why: str
+        if result.candidates_found == 0:
+            why = "No candidates could be extracted from the search findings"
+            hint = (
+                "The findings document didn't parse into any candidate events. "
+                "This usually means the search returned no usable results. Try "
+                "re-running or broadening the query."
             )
-        elif dropped_out_of_range == raw_event_count:
+        elif result.batches_failed == result.batches_processed > 0:
+            why = f"All {result.batches_processed} enrichment batches failed"
+            hint = (
+                "Every LLM batch either timed out or returned unparseable JSON. "
+                "Check your LLM provider (rate-limited, down, or misconfigured) "
+                "and try again."
+            )
+        elif result.dropped_out_of_range > 0 and result.dropped_out_of_range >= result.candidates_found - result.dropped_no_url:
             why = (
-                f"All {raw_event_count} event(s) had timestamps outside the chart "
-                f"range ({chart_lo_str} -> {chart_hi_str}, +/-14d buffer)"
+                f"All {result.candidates_found} candidate(s) were dated outside "
+                f"the chart range {chart_lo_iso} to {chart_hi_iso}"
             )
-            user_hint = (
-                f"The analyzer found events but they're all outside your chart's "
-                f"date range. Either the chart shows too narrow a window, or the "
-                f"analyzer mis-dated the events. Try loading a wider date range "
-                f"with `data_fetcher` (e.g. 'fetch {symbol} 1d for 5 years')."
+            hint = (
+                f"The search returned articles but none of them fit inside your "
+                f"chart's date window. Load a wider range with `data_fetcher` "
+                f"(e.g. 'fetch {symbol} 1d for 5 years') and re-run, or pick a "
+                f"topic with more activity in this period."
             )
-        elif dropped_no_timestamp == raw_event_count:
-            why = f"All {raw_event_count} event(s) had unparseable timestamps"
-            user_hint = "Try re-running — the LLM dated the events in an unrecognised format."
         else:
             why = (
-                f"All {raw_event_count} event(s) were filtered out — "
-                f"{dropped_out_of_range} outside chart range "
-                f"({chart_lo_str} -> {chart_hi_str}), "
-                f"{dropped_no_timestamp} with bad timestamps"
+                f"Processor kept 0 events out of {result.candidates_found} "
+                f"candidates — {result.dropped_no_url} without URL, "
+                f"{result.dropped_out_of_range} out of range, "
+                f"{result.dropped_no_timestamp} without timestamp, "
+                f"{result.batches_failed}/{result.batches_processed} batches failed"
             )
-            user_hint = "Mixed filtering issue — see counts above."
+            hint = (
+                "Mixed filtering issues. Try re-running; if it persists, the "
+                "search results for this topic+date combo may genuinely be thin."
+            )
 
-        swarm._event("error", "historic_news", f"{why}. Raw: {preview!r}", "analyzer")
+        swarm._event("error", "historic_news", why, "news_processor")
         return SkillResponse(
             reply=(
-                f"**Couldn't extract news events for {symbol}.**\n\n"
+                f"**Couldn't extract news events for {topic}.**\n\n"
                 f"_{why}._\n\n"
-                f"{user_hint}\n\n"
-                f"Analyzer's raw output (first 600 chars):\n\n"
-                f"```\n{preview}\n```"
+                f"{hint}\n\n"
+                f"Processor stats: {result.candidates_found} candidates -> "
+                f"{len(events)} kept "
+                f"({result.batches_processed} batch(es), "
+                f"{result.batches_failed} failed)"
             ),
             tool_calls=[*plan_tool_calls,
                 {"tool": "notify.toast",
-                 "value": {"level": "warning", "message": "No structured events — see chat for details"}},
+                 "value": {"level": "warning", "message": "No events extracted — see chat"}},
             ],
             data={
-                "raw_findings": findings,
-                "raw_event_count": raw_event_count,
-                "dropped_out_of_range": dropped_out_of_range,
-                "dropped_no_timestamp": dropped_no_timestamp,
-                "chart_range": [chart_min_ts, chart_max_ts],
+                "candidates_found": result.candidates_found,
+                "batches_processed": result.batches_processed,
+                "batches_failed": result.batches_failed,
+                "dropped_out_of_range": result.dropped_out_of_range,
+                "dropped_no_timestamp": result.dropped_no_timestamp,
+                "dropped_no_url": result.dropped_no_url,
+                "chart_range": [chart_lo_unix, chart_hi_unix],
                 "events": [e for e in swarm.events()],
             },
         )
-
-    # Sort by timestamp descending (newest first) for the UI timeline
-    events.sort(key=lambda e: e["timestamp"], reverse=True)
 
     # Build the reply
     by_category: Dict[str, int] = {}
