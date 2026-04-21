@@ -1480,6 +1480,9 @@ async def _historic_news_processor(
     key_themes: List[str] = []
     parse_error: str | None = None
     parsed: Any = None
+    raw_event_count = 0           # how many events the analyzer produced
+    dropped_out_of_range = 0      # how many were filtered by chart range
+    dropped_no_timestamp = 0      # how many had unparseable timestamps
 
     # First attempt: parse as-is (post fence-strip)
     try:
@@ -1507,12 +1510,13 @@ async def _historic_news_processor(
         if not raw_events and isinstance(parsed.get("data"), dict):
             raw_events = parsed["data"].get("events") or []
         if isinstance(raw_events, list):
-            dropped_out_of_range = 0
+            raw_event_count = sum(1 for e in raw_events if isinstance(e, dict))
             for e in raw_events:
                 if not isinstance(e, dict):
                     continue
                 ts = _coerce_timestamp(e.get("timestamp") or e.get("date") or e.get("time"))
                 if ts <= 0:
+                    dropped_no_timestamp += 1
                     continue
                 # Drop events whose timestamp is outside the chart
                 # range — plotting them would be invisible anyway
@@ -1557,34 +1561,80 @@ async def _historic_news_processor(
         key_themes = [str(t) for t in (parsed.get("key_themes") or parsed.get("keyThemes") or []) if t]
 
     if not events:
-        # Surface what actually went wrong + a preview of what the LLM
-        # returned so the user can see whether it's a JSON formatting
-        # issue, a content issue, or an empty-array issue.
+        # Distinguish the four real failure modes so the user can act:
+        #   A. JSON didn't parse at all                    → re-run usually fixes
+        #   B. JSON parsed but events list missing/empty   → analyzer found nothing
+        #   C. JSON parsed but every ts outside chart      → load wider chart data
+        #   D. JSON parsed but every ts unparseable        → prompt issue
         preview = raw_content.strip()[:600] or "(empty)"
+        from datetime import datetime as _dt2, timezone as _tz2
+        try:
+            chart_lo_str = _dt2.fromtimestamp(chart_min_ts, tz=_tz2.utc).strftime("%Y-%m-%d") if chart_min_ts > 0 else "(open)"
+            chart_hi_str = _dt2.fromtimestamp(chart_max_ts, tz=_tz2.utc).strftime("%Y-%m-%d") if chart_max_ts < 10**12 else "(open)"
+        except (OverflowError, ValueError):
+            chart_lo_str, chart_hi_str = "?", "?"
+
         if parse_error:
             why = f"JSON parse failed: {parse_error}"
+            user_hint = "The model returned prose where JSON was expected. Try re-running."
         elif parsed is None:
-            why = "Analyzer returned no parseable JSON"
+            why = "Analyzer returned no parseable content"
+            user_hint = "Try re-running — the LLM may have produced an empty response."
         elif not isinstance(parsed, dict):
             why = f"Analyzer returned a {type(parsed).__name__}, expected an object"
+            user_hint = "Try re-running."
+        elif raw_event_count == 0:
+            why = "Analyzer returned valid JSON but no events"
+            user_hint = (
+                "The researchers may not have surfaced anything material for this "
+                "asset/period, or the analyzer judged everything as too weak to "
+                "include. Try a different timeframe or be more specific in your "
+                "request."
+            )
+        elif dropped_out_of_range == raw_event_count:
+            why = (
+                f"All {raw_event_count} event(s) had timestamps outside the chart "
+                f"range ({chart_lo_str} → {chart_hi_str}, ±14d buffer)"
+            )
+            user_hint = (
+                f"The analyzer found events but they're all outside your chart's "
+                f"date range. Either the chart shows too narrow a window, or the "
+                f"analyzer mis-dated the events. Try loading a wider date range "
+                f"with `data_fetcher` (e.g. 'fetch {symbol} 1d for 5 years')."
+            )
+        elif dropped_no_timestamp == raw_event_count:
+            why = f"All {raw_event_count} event(s) had unparseable timestamps"
+            user_hint = "Try re-running — the LLM dated the events in an unrecognised format."
         else:
-            why = "Analyzer returned valid JSON but the events list was empty or malformed"
+            why = (
+                f"All {raw_event_count} event(s) were filtered out — "
+                f"{dropped_out_of_range} outside chart range "
+                f"({chart_lo_str} → {chart_hi_str}), "
+                f"{dropped_no_timestamp} with bad timestamps"
+            )
+            user_hint = "Mixed filtering issue — see counts above."
+
         swarm._event("error", "historic_news", f"{why}. Raw: {preview!r}", "analyzer")
         return SkillResponse(
             reply=(
                 f"**Couldn't extract news events for {symbol}.**\n\n"
                 f"_{why}._\n\n"
-                f"Researcher findings ARE in the trace UI's events panel. "
-                f"This usually means the model returned prose instead of "
-                f"strict JSON — re-running often works. If it keeps failing, "
-                f"check the analyzer's raw output (first 600 chars below):\n\n"
+                f"{user_hint}\n\n"
+                f"Analyzer's raw output (first 600 chars):\n\n"
                 f"```\n{preview}\n```"
             ),
             tool_calls=[*plan_tool_calls,
                 {"tool": "notify.toast",
                  "value": {"level": "warning", "message": "No structured events — see chat for details"}},
             ],
-            data={"raw_findings": findings, "events": [e for e in swarm.events()]},
+            data={
+                "raw_findings": findings,
+                "raw_event_count": raw_event_count,
+                "dropped_out_of_range": dropped_out_of_range,
+                "dropped_no_timestamp": dropped_no_timestamp,
+                "chart_range": [chart_min_ts, chart_max_ts],
+                "events": [e for e in swarm.events()],
+            },
         )
 
     # Sort by timestamp descending (newest first) for the UI timeline

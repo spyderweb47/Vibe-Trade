@@ -259,6 +259,11 @@ export interface Conversation {
   currentDebate?: SimulationDebate | null;
   // Chart drawings (trend lines, fibs, rectangles, etc.)
   drawings?: unknown[];
+  // Historic news events (per-conversation so threads don't leak news
+  // across each other when switching).
+  newsEvents?: NewsEvent[];
+  newsEventsSymbol?: string | null;
+  selectedNewsEventId?: string | null;
   // Canvas state — per-conversation chart windows + focus. When switching
   // conversations the whole layout (positions, sizes, count, which dataset
   // is in each window) is restored so every thread has its own workspace.

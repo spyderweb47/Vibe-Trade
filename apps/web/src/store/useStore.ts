@@ -148,6 +148,12 @@ function _snapshotLiveStateInto(state: any, activeId: string | null): Conversati
     selectedTimeframe: state.selectedTimeframe ?? null,
     currentDebate: state.currentDebate ?? null,
     drawings: state.drawings || [],
+    // Historic news (per-conversation; otherwise a thread that ran
+    // historic_news for AAPL would leak its markers into every other
+    // open thread).
+    newsEvents: state.newsEvents || [],
+    newsEventsSymbol: state.newsEventsSymbol ?? null,
+    selectedNewsEventId: state.selectedNewsEventId ?? null,
     // Canvas — per-conversation workspace layout
     chartWindows: state.chartWindows || [],
     focusedWindowId: state.focusedWindowId ?? null,
@@ -478,6 +484,10 @@ export const useStore = create<AppState>((set, get) => ({
       selectedTimeframe: active.selectedTimeframe ?? null,
       currentDebate: (active.currentDebate ?? null) as never,
       drawings: (active.drawings || []) as never,
+      // Historic news — same restore-or-default-to-empty pattern as drawings
+      newsEvents: (active.newsEvents || []) as never,
+      newsEventsSymbol: active.newsEventsSymbol ?? null,
+      selectedNewsEventId: active.selectedNewsEventId ?? null,
     });
     savePersistedConversations(conversations, active.id);
   },
@@ -511,6 +521,10 @@ export const useStore = create<AppState>((set, get) => ({
       selectedTimeframe: null,
       currentDebate: null as never,
       drawings: [] as never,
+      // Historic news — clean slate per new conversation
+      newsEvents: [] as never,
+      newsEventsSymbol: null,
+      selectedNewsEventId: null,
       // Canvas — fresh empty workspace for the new conversation
       chartWindows: [],
       focusedWindowId: null,
@@ -548,6 +562,12 @@ export const useStore = create<AppState>((set, get) => ({
       selectedTimeframe: target.selectedTimeframe ?? null,
       currentDebate: (target.currentDebate ?? null) as never,
       drawings: (target.drawings || []) as never,
+      // Historic news — restore this conversation's own event set,
+      // or empty if it never ran historic_news. Without this the news
+      // from the prior conversation stays on the chart.
+      newsEvents: (target.newsEvents || []) as never,
+      newsEventsSymbol: target.newsEventsSymbol ?? null,
+      selectedNewsEventId: target.selectedNewsEventId ?? null,
       // Canvas — restore this conversation's own chart windows layout.
       // Every conversation has its own workspace: N windows, their
       // sizes, positions, which dataset each one shows.
@@ -585,6 +605,9 @@ export const useStore = create<AppState>((set, get) => ({
         selectedTimeframe: null,
         currentDebate: null as never,
         drawings: [] as never,
+        newsEvents: [] as never,
+        newsEventsSymbol: null,
+        selectedNewsEventId: null,
         chartWindows: [],
         focusedWindowId: null,
       });
@@ -619,6 +642,9 @@ export const useStore = create<AppState>((set, get) => ({
         selectedTimeframe: next.selectedTimeframe ?? null,
         currentDebate: (next.currentDebate ?? null) as never,
         drawings: (next.drawings || []) as never,
+        newsEvents: (next.newsEvents || []) as never,
+        newsEventsSymbol: next.newsEventsSymbol ?? null,
+        selectedNewsEventId: next.selectedNewsEventId ?? null,
         chartWindows: next.chartWindows || [],
         focusedWindowId: next.focusedWindowId ?? null,
       });
