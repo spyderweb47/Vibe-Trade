@@ -151,9 +151,9 @@ function _snapshotLiveStateInto(state: any, activeId: string | null): Conversati
     // Historic news (per-conversation; otherwise a thread that ran
     // historic_news for AAPL would leak its markers into every other
     // open thread).
-    newsEvents: state.newsEvents || [],
-    newsEventsSymbol: state.newsEventsSymbol ?? null,
-    selectedNewsEventId: state.selectedNewsEventId ?? null,
+    newsEventsBySymbol: state.newsEventsBySymbol || {},
+    activeNewsSymbol: state.activeNewsSymbol ?? null,
+    selectedNewsEventIdBySymbol: state.selectedNewsEventIdBySymbol || {},
     // Canvas — per-conversation workspace layout
     chartWindows: state.chartWindows || [],
     focusedWindowId: state.focusedWindowId ?? null,
@@ -274,16 +274,21 @@ interface AppState {
   setLastScriptResult: (result: { ran: boolean; error?: string } | null) => void;
 
   // Historic News (produced by the historic_news skill)
-  //   newsEvents           — current list from last skill run
-  //   newsEventsSymbol     — symbol the events belong to (cleared on dataset change)
-  //   selectedNewsEventId  — which row is "selected" in HistoricNewsTab,
-  //                          drives the detail view on the right side
-  newsEvents: import('@/types').NewsEvent[];
-  newsEventsSymbol: string | null;
-  selectedNewsEventId: string | null;
+  //   newsEventsBySymbol         — symbol → events[] (multiple assets coexist)
+  //   activeNewsSymbol           — which sub-tab is currently shown
+  //   selectedNewsEventIdBySymbol — per-symbol selected event row
+  //
+  // Earlier single-symbol shape replaced so fetching news for a second
+  // asset doesn't wipe the first one. The HistoricNewsTab now renders
+  // one sub-tab per symbol with that asset's timeline + article detail.
+  // The special symbol "*" is the broadcast bucket (plotted on every chart).
+  newsEventsBySymbol: Record<string, import('@/types').NewsEvent[]>;
+  activeNewsSymbol: string | null;
+  selectedNewsEventIdBySymbol: Record<string, string | null>;
   setNewsEvents: (events: import('@/types').NewsEvent[], symbol: string) => void;
-  setSelectedNewsEventId: (id: string | null) => void;
-  clearNewsEvents: () => void;
+  setActiveNewsSymbol: (symbol: string | null) => void;
+  setSelectedNewsEventId: (symbol: string, id: string | null) => void;
+  clearNewsEvents: (symbol?: string) => void;
 
   // Analysis
   analysisResults: AnalysisResults | null;
@@ -485,9 +490,9 @@ export const useStore = create<AppState>((set, get) => ({
       currentDebate: (active.currentDebate ?? null) as never,
       drawings: (active.drawings || []) as never,
       // Historic news — same restore-or-default-to-empty pattern as drawings
-      newsEvents: (active.newsEvents || []) as never,
-      newsEventsSymbol: active.newsEventsSymbol ?? null,
-      selectedNewsEventId: active.selectedNewsEventId ?? null,
+      newsEventsBySymbol: (active.newsEventsBySymbol || {}) as never,
+      activeNewsSymbol: active.activeNewsSymbol ?? null,
+      selectedNewsEventIdBySymbol: (active.selectedNewsEventIdBySymbol || {}) as never,
     });
     savePersistedConversations(conversations, active.id);
   },
@@ -522,9 +527,9 @@ export const useStore = create<AppState>((set, get) => ({
       currentDebate: null as never,
       drawings: [] as never,
       // Historic news — clean slate per new conversation
-      newsEvents: [] as never,
-      newsEventsSymbol: null,
-      selectedNewsEventId: null,
+      newsEventsBySymbol: {} as never,
+      activeNewsSymbol: null,
+      selectedNewsEventIdBySymbol: {} as never,
       // Canvas — fresh empty workspace for the new conversation
       chartWindows: [],
       focusedWindowId: null,
@@ -565,9 +570,9 @@ export const useStore = create<AppState>((set, get) => ({
       // Historic news — restore this conversation's own event set,
       // or empty if it never ran historic_news. Without this the news
       // from the prior conversation stays on the chart.
-      newsEvents: (target.newsEvents || []) as never,
-      newsEventsSymbol: target.newsEventsSymbol ?? null,
-      selectedNewsEventId: target.selectedNewsEventId ?? null,
+      newsEventsBySymbol: (target.newsEventsBySymbol || {}) as never,
+      activeNewsSymbol: target.activeNewsSymbol ?? null,
+      selectedNewsEventIdBySymbol: (target.selectedNewsEventIdBySymbol || {}) as never,
       // Canvas — restore this conversation's own chart windows layout.
       // Every conversation has its own workspace: N windows, their
       // sizes, positions, which dataset each one shows.
@@ -605,9 +610,9 @@ export const useStore = create<AppState>((set, get) => ({
         selectedTimeframe: null,
         currentDebate: null as never,
         drawings: [] as never,
-        newsEvents: [] as never,
-        newsEventsSymbol: null,
-        selectedNewsEventId: null,
+        newsEventsBySymbol: {} as never,
+        activeNewsSymbol: null,
+        selectedNewsEventIdBySymbol: {} as never,
         chartWindows: [],
         focusedWindowId: null,
       });
@@ -642,9 +647,9 @@ export const useStore = create<AppState>((set, get) => ({
         selectedTimeframe: next.selectedTimeframe ?? null,
         currentDebate: (next.currentDebate ?? null) as never,
         drawings: (next.drawings || []) as never,
-        newsEvents: (next.newsEvents || []) as never,
-        newsEventsSymbol: next.newsEventsSymbol ?? null,
-        selectedNewsEventId: next.selectedNewsEventId ?? null,
+        newsEventsBySymbol: (next.newsEventsBySymbol || {}) as never,
+        activeNewsSymbol: next.activeNewsSymbol ?? null,
+        selectedNewsEventIdBySymbol: (next.selectedNewsEventIdBySymbol || {}) as never,
         chartWindows: next.chartWindows || [],
         focusedWindowId: next.focusedWindowId ?? null,
       });
@@ -1088,26 +1093,59 @@ export const useStore = create<AppState>((set, get) => ({
   setLastScriptResult: (result) => set({ lastScriptResult: result }),
 
   // Historic News — produced by the historic_news skill
-  newsEvents: [],
-  newsEventsSymbol: null,
-  selectedNewsEventId: null,
+  newsEventsBySymbol: {},
+  activeNewsSymbol: null,
+  selectedNewsEventIdBySymbol: {},
   setNewsEvents: (events, symbol) => set((state) => {
-    // Auto-select the first event so the detail pane has something to
-    // show the moment the user opens the Historic News tab.
+    // APPEND semantics — a fresh fetch for a new symbol coexists with
+    // previously-fetched symbols. Same symbol → overwrite that slot.
+    const nextMap = { ...state.newsEventsBySymbol, [symbol]: events };
     const firstId = events.length > 0 ? events[0].id : null;
+    const nextSelected = { ...state.selectedNewsEventIdBySymbol, [symbol]: firstId };
     const next = {
       ...state,
-      newsEvents: events,
-      newsEventsSymbol: symbol,
-      selectedNewsEventId: firstId,
+      newsEventsBySymbol: nextMap,
+      activeNewsSymbol: symbol,              // focus the newly-added tab
+      selectedNewsEventIdBySymbol: nextSelected,
     };
     const conversations = _snapshotLiveStateInto(next, state.activeConversationId);
-    return conversations
-      ? { newsEvents: events, newsEventsSymbol: symbol, selectedNewsEventId: firstId, conversations }
-      : { newsEvents: events, newsEventsSymbol: symbol, selectedNewsEventId: firstId };
+    const base = {
+      newsEventsBySymbol: nextMap,
+      activeNewsSymbol: symbol,
+      selectedNewsEventIdBySymbol: nextSelected,
+    };
+    return conversations ? { ...base, conversations } : base;
   }),
-  setSelectedNewsEventId: (id) => set({ selectedNewsEventId: id }),
-  clearNewsEvents: () => set({ newsEvents: [], newsEventsSymbol: null, selectedNewsEventId: null }),
+  setActiveNewsSymbol: (symbol) => set({ activeNewsSymbol: symbol }),
+  setSelectedNewsEventId: (symbol, id) => set((state) => ({
+    selectedNewsEventIdBySymbol: { ...state.selectedNewsEventIdBySymbol, [symbol]: id },
+  })),
+  clearNewsEvents: (symbol) => set((state) => {
+    if (!symbol) {
+      // Clear everything
+      return {
+        newsEventsBySymbol: {},
+        activeNewsSymbol: null,
+        selectedNewsEventIdBySymbol: {},
+      };
+    }
+    // Clear just one symbol's bucket
+    const nextMap = { ...state.newsEventsBySymbol };
+    delete nextMap[symbol];
+    const nextSelected = { ...state.selectedNewsEventIdBySymbol };
+    delete nextSelected[symbol];
+    // If we just removed the active tab, switch to another one (if any)
+    let nextActive: string | null = state.activeNewsSymbol;
+    if (state.activeNewsSymbol === symbol) {
+      const remaining = Object.keys(nextMap);
+      nextActive = remaining.length > 0 ? remaining[0] : null;
+    }
+    return {
+      newsEventsBySymbol: nextMap,
+      activeNewsSymbol: nextActive,
+      selectedNewsEventIdBySymbol: nextSelected,
+    };
+  }),
 
   // Analysis
   analysisResults: null,

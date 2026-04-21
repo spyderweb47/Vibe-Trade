@@ -508,40 +508,60 @@ export function Chart({
   }, [appModeTop]);
 
   // Historic news markers — push store state into the primitive whenever
-  // it changes so the chart visuals stay in sync with HistoricNewsTab.
-  // Scope: only plot on the chart whose dataset matches the news set's
-  // symbol. Otherwise a news set for AAPL would draw on an open MSFT
-  // chart too, which is confusing. We compare case-insensitively and
-  // fall back to "plot on every chart" when either side can't be
-  // resolved (legacy single-chart usage without a datasetId).
-  const newsEvents = useStore((s) => s.newsEvents);
-  const selectedNewsEventId = useStore((s) => s.selectedNewsEventId);
-  const newsEventsSymbol = useStore((s) => s.newsEventsSymbol);
+  // it changes. Scope per chart:
+  //   - Events for THIS chart's symbol (exact match, case-insensitive)
+  //   - PLUS events in the broadcast bucket "*" (if any)
+  //   - Both lists concatenated so a chart can show both at once
+  //
+  // This means fetching "AAPL news" + "MSFT news" in two separate runs
+  // plots each on the matching chart only, while "plot oil news on all
+  // charts" (broadcast) overlays on every chart in addition to that
+  // chart's own symbol news.
+  const newsEventsBySymbol = useStore((s) => s.newsEventsBySymbol);
+  const selectedNewsEventIdBySymbol = useStore((s) => s.selectedNewsEventIdBySymbol);
+  const activeNewsSymbol = useStore((s) => s.activeNewsSymbol);
   useEffect(() => {
     const nm = newsMarkersRef.current;
     if (!nm) return;
-    if (newsEvents.length === 0 || data.length === 0) {
+    if (data.length === 0) {
       nm.clear();
       return;
     }
-    // Resolve this chart's symbol from its datasetId (multi-chart mode)
-    // or the active dataset (single-chart mode).
     const ownDsId = datasetId ?? activeDatasetId;
     const ownDs = datasets.find((d) => d.id === ownDsId);
     const ownSymbol = String(ownDs?.metadata?.symbol || "").toUpperCase();
-    const newsSymbol = String(newsEventsSymbol || "").toUpperCase();
-    // Special "*" symbol = broadcast mode (user asked to plot the
-    // news on every open chart). Render here regardless of mismatch.
-    const isBroadcast = newsSymbol === "*";
-    // When we can resolve BOTH sides and they disagree (and we're not
-    // broadcasting), this chart belongs to a different asset — clear
-    // any previously-drawn markers and skip this run.
-    if (!isBroadcast && ownSymbol && newsSymbol && ownSymbol !== newsSymbol) {
+
+    // Collect events for THIS chart:
+    //   (a) any key in newsEventsBySymbol whose uppercased form matches ownSymbol
+    //   (b) the broadcast bucket "*"
+    const eventsForChart = [];
+    for (const [sym, events] of Object.entries(newsEventsBySymbol || {})) {
+      if (!events || events.length === 0) continue;
+      if (sym === "*") {
+        eventsForChart.push(...events);
+      } else if (ownSymbol && sym.toUpperCase() === ownSymbol) {
+        eventsForChart.push(...events);
+      }
+    }
+    if (eventsForChart.length === 0) {
       nm.clear();
       return;
     }
-    nm.setEvents(newsEvents, data, selectedNewsEventId);
-  }, [newsEvents, selectedNewsEventId, newsEventsSymbol, data, datasetId, activeDatasetId, datasets]);
+    // Highlight the selected row from the active sub-tab's events only —
+    // other sub-tabs' selections don't drive this chart's ring.
+    const activeSelId = activeNewsSymbol
+      ? (selectedNewsEventIdBySymbol[activeNewsSymbol] ?? null)
+      : null;
+    nm.setEvents(eventsForChart, data, activeSelId);
+  }, [
+    newsEventsBySymbol,
+    selectedNewsEventIdBySymbol,
+    activeNewsSymbol,
+    data,
+    datasetId,
+    activeDatasetId,
+    datasets,
+  ]);
 
   // Update pattern highlight boxes + auto-zoom to show matches
   useEffect(() => {
