@@ -14,6 +14,7 @@ import { DAGGraphTab } from "./tabs/DAGGraphTab";
 import { PersonalitiesTab } from "./tabs/PersonalitiesTab";
 import { DebateThreadTab } from "./tabs/DebateThreadTab";
 import { RunStatsTab } from "./tabs/RunStatsTab";
+import { HistoricNewsTab } from "./tabs/HistoricNewsTab";
 
 /**
  * Bottom-panel component registry.
@@ -32,6 +33,7 @@ export const BOTTOM_PANEL_COMPONENTS: Record<string, React.ComponentType> = {
   PersonalitiesTab,
   DebateThreadTab,
   RunStatsTab,
+  HistoricNewsTab,
 };
 
 const PLAYGROUND_TABS = ["Positions", "Open Orders", "Trade History", "Wallet"];

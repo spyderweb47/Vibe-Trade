@@ -111,6 +111,10 @@ The shape MUST be:
 - "Run swarm intelligence on this asset" → 1 step: predict_analysis
   (NO data_fetcher — "this asset" means what's on the chart)
 - Just "fetch BTC 1h" → 1 step: data_fetcher
+- "What news events moved AAPL in the last 3 months" → 1 step: historic_news
+  (NO data_fetcher — historic_news reads the current chart's asset; the
+  skill itself researches and plots news dots on the already-loaded chart)
+- "Fetch TSLA daily and show me historic news" → 2 steps: data_fetcher → historic_news
 - "Show me the cross-exam results" → 0 steps (out of scope —
   user is asking to navigate existing output, not run a skill)
 
@@ -293,6 +297,20 @@ _FALLBACK_RULES: List[Dict[str, Any]] = [
         "keywords": (
             "backtest", "strategy", "build a strategy", "run a strategy",
             "profit factor", "sharpe", "pnl",
+        ),
+    },
+    {
+        # Historic news — researches price-moving events for an asset,
+        # plots them on the chart as dots, and shows the articles in
+        # the bottom panel. Matches queries like "historic news for
+        # AAPL" / "what news moved BTC" / "key news events".
+        "skill": "historic_news",
+        "keywords": (
+            "historic news", "historical news", "news for", "news on",
+            "news about", "what news", "price moving news",
+            "price-moving news", "news events", "key news",
+            "market moving news", "news catalyst", "news catalysts",
+            "news impact", "news that affected", "news affecting",
         ),
     },
     {

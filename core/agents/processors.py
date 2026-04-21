@@ -1056,6 +1056,397 @@ async def _swarm_intelligence_processor(
     )
 
 
+# ─── Historic News skill processor ──────────────────────────────────────
+#
+# Research historic price-moving news events for the loaded asset and
+# emit a structured event list the frontend renders as chart markers +
+# a bottom-panel timeline. Uses the shared AgentSwarm service with a
+# researcher + analyzer + QA team; optional Macro Researcher /
+# Regulatory Researcher are added by the Team Planner when the asset
+# class benefits from them.
+
+async def _historic_news_processor(
+    message: str,
+    context: Dict[str, Any],
+    tools: ToolContext,
+) -> SkillResponse:
+    """
+    Plan-first historic-news research:
+      1. Team Planner picks Researcher + Analyzer + QA (mandatory) +
+         optional Macro / Regulatory researchers based on asset class
+      2. Plan rendered in trace UI
+      3. Researchers run in parallel — web-search for news across the
+         chart's date range
+      4. Analyzer merges findings into structured NewsEvent list
+         {timestamp, headline, summary, source, url, category,
+          impact, direction, price_impact_pct}
+      5. QA filters out duplicates, unsubstantiated claims,
+         out-of-range timestamps
+      6. Tool-call pushes events to the frontend store → chart
+         renders markers → HistoricNewsTab shows timeline
+    """
+    import json as _json
+    from core.engine.agent_swarm import AgentSwarm
+    from core.agents.base_agent import AgentSpec
+    from core.agents.qa_agent import QASpec
+    from core.agents.team_planner import TeamPlanner, RoleTemplate
+    from services.api.store import store
+
+    # Resolve asset from context (focused chart's dataset)
+    dataset_id = context.get("dataset_id") or context.get("activeDataset")
+    symbol = "Unknown"
+    date_range_hint = ""
+    if dataset_id:
+        df = store.get_dataframe(dataset_id)
+        if df is not None and len(df) > 0:
+            meta = store.get_metadata(dataset_id)
+            if meta:
+                if isinstance(meta, dict):
+                    symbol = meta.get("symbol") or meta.get("filename", symbol)
+                elif hasattr(meta, "symbol") and meta.symbol:
+                    symbol = meta.symbol
+            try:
+                first_t = int(df.iloc[0]["time"])
+                last_t = int(df.iloc[-1]["time"])
+                from datetime import datetime as _dt, timezone as _tz
+                first_date = _dt.fromtimestamp(first_t, tz=_tz.utc).strftime("%Y-%m-%d")
+                last_date = _dt.fromtimestamp(last_t, tz=_tz.utc).strftime("%Y-%m-%d")
+                date_range_hint = f"{first_date} to {last_date}"
+            except Exception:  # noqa: BLE001
+                pass
+
+    if symbol == "Unknown":
+        return SkillResponse(
+            reply=(
+                "I need a dataset loaded on the chart before researching "
+                "historic news. Ask me to fetch bars for a ticker first "
+                "(e.g. 'fetch AAPL 1d for 2 years'), then try again."
+            ),
+            tool_calls=[
+                {"tool": "notify.toast",
+                 "value": {"level": "warning", "message": "Load a dataset first"}},
+            ],
+        )
+
+    # ─── Phase 1: plan the team ──────────────────────────────────────
+    planner = TeamPlanner()
+    plan = planner.plan(
+        skill_id="historic_news",
+        user_message=f"Research historic news for {symbol}. {message}",
+        templates=[
+            RoleTemplate(
+                role="researcher",
+                description=(
+                    "Queries the web for historic news events on the asset. "
+                    "Uses search_web, fetch_news, fetch_url to pull article "
+                    "snippets across the chart's date range. MANDATORY."
+                ),
+                persona_defaults={
+                    "name": "News Researcher",
+                    "background": "Financial-news librarian, 10 years pulling event archives for asset managers",
+                    "style": "Systematic, covers multiple query angles, notes source reliability",
+                },
+                allowed_tools=["search_web", "fetch_news", "fetch_url"],
+                mandatory=True,
+                default_task=(
+                    f"Search for historic news events that moved {symbol} "
+                    f"between {date_range_hint or 'the chart range'}. Cover "
+                    f"earnings, product launches, macro shocks, regulatory "
+                    f"decisions, and geopolitical events."
+                ),
+            ),
+            RoleTemplate(
+                role="analyzer",
+                description=(
+                    "Parses the researcher's raw findings into a structured "
+                    "JSON event list with timestamps, categories, direction "
+                    "and impact ratings. MANDATORY."
+                ),
+                persona_defaults={
+                    "name": "News Analyzer",
+                    "background": "Quant, correlates news to price action",
+                    "style": "Rigorous, assigns impact ratings based on price-reaction size",
+                },
+                allowed_tools=[],
+                mandatory=True,
+                default_task=(
+                    "Convert the researcher's findings into a strict-JSON "
+                    "event list. Each event MUST include timestamp (unix "
+                    "seconds), headline, summary, source, category, impact, "
+                    "direction."
+                ),
+            ),
+            RoleTemplate(
+                role="qa",
+                description=(
+                    "Reviews the analyzer's structured events. Drops "
+                    "duplicates, flags timestamps outside the chart range, "
+                    "rejects unsubstantiated claims without a source. "
+                    "MANDATORY."
+                ),
+                persona_defaults={
+                    "name": "News QA",
+                    "background": "Editorial fact-checker",
+                    "style": "Skeptical, demands credible sources + plausible timestamps",
+                },
+                allowed_tools=[],
+                mandatory=True,
+                default_task="Filter the event list for duplicates, invalid timestamps, and uncited claims",
+            ),
+            RoleTemplate(
+                role="macro_researcher",
+                description=(
+                    "OPTIONAL. Add for commodities, currencies, indices — "
+                    "assets where macro news dominates price action. "
+                    "Covers Fed decisions, inflation prints, geopolitical events."
+                ),
+                persona_defaults={
+                    "name": "Macro Researcher",
+                    "background": "Macro strategist, follows central-bank and geopolitical news",
+                    "style": "Top-down, connects asset moves to macro drivers",
+                },
+                allowed_tools=["search_web", "fetch_policy"],
+                mandatory=False,
+                default_task=(
+                    f"Research macro events (Fed, inflation, geopolitical) "
+                    f"that moved {symbol} in {date_range_hint or 'the chart range'}"
+                ),
+            ),
+            RoleTemplate(
+                role="regulatory_researcher",
+                description=(
+                    "OPTIONAL. Add for crypto, pharma, defense, or any asset "
+                    "class with active policy considerations."
+                ),
+                persona_defaults={
+                    "name": "Regulatory Researcher",
+                    "background": "Policy analyst, tracks regulatory decisions + pending legislation",
+                    "style": "Cites specific agencies, dockets, and bill numbers",
+                },
+                allowed_tools=["fetch_policy", "fetch_url", "search_web"],
+                mandatory=False,
+                default_task=(
+                    f"Research regulatory decisions and policy news affecting {symbol}"
+                ),
+            ),
+        ],
+        default_execution_mode="sequential",  # researcher → analyzer → qa
+    )
+
+    plan_tool_calls = [
+        {"tool": "swarm.team_plan.set", "value": plan.to_trace_payload()},
+    ]
+
+    # ─── Phase 2: execute researchers in parallel, then analyzer + qa ─
+    swarm = AgentSwarm()
+    specs = [
+        AgentSpec(
+            role=pa.role,
+            persona=pa.persona,
+            tools=pa.tools,
+            temperature=0.3,
+            max_tokens=2500,
+        )
+        for pa in plan.agents
+    ]
+    team = swarm.assemble(specs)
+
+    # Research phase — run all researcher roles in parallel (they have
+    # different tool sets so they cover different angles)
+    research_roles = [
+        r for r in ("researcher", "macro_researcher", "regulatory_researcher")
+        if r in team.agents
+    ]
+    research_context = (
+        f"Asset: {symbol}\n"
+        f"Chart date range: {date_range_hint or '(not provided)'}\n"
+        f"User's request: {message}"
+    )
+
+    import asyncio
+    findings: List[str] = []
+    for role in research_roles:
+        agent = team.agents.get(role)
+        if agent is None:
+            continue
+        task = next(
+            (a.task for a in plan.agents if a.role == role),
+            f"Research historic news for {symbol}",
+        )
+        try:
+            resp = await asyncio.wait_for(
+                asyncio.to_thread(agent.speak, research_context, task),
+                timeout=180.0,
+            )
+            if resp.content and not resp.error:
+                findings.append(f"## From {role}\n{resp.content}")
+        except asyncio.TimeoutError:
+            swarm._event(
+                "warn", "historic_news",
+                f"{role} timed out — continuing without its findings",
+                role,
+            )
+
+    if not findings:
+        return SkillResponse(
+            reply=(
+                f"Couldn't gather any historic news for {symbol} — "
+                f"all researchers either timed out or returned nothing. "
+                f"Check your LLM provider config and try again."
+            ),
+            tool_calls=[
+                {"tool": "notify.toast",
+                 "value": {"level": "error", "message": "News research failed"}},
+            ],
+            data={"events": [e for e in swarm.events()]},
+        )
+
+    # Analyzer + QA loop via shared primitive
+    analyzer_context = research_context + "\n\n" + "\n\n".join(findings)
+
+    qa_result = await team.run_with_qa_loop(
+        task=(
+            f"Parse the findings into a strict-JSON list of news events "
+            f"for {symbol}. Each event object must have:\n"
+            '  {"timestamp": <unix_seconds>, "headline": "...", '
+            '"summary": "2-3 sentences", "source": "...", '
+            '"url": "..." (optional), "category": "earnings|regulatory|'
+            'macro|product|sentiment|geopolitical|technical", '
+            '"impact": "high|medium|low", '
+            '"direction": "bullish|bearish|neutral", '
+            '"price_impact_pct": <float, optional>}\n'
+            "Return ONLY a JSON object with shape:\n"
+            '  {"events": [...], "summary": "brief overview", '
+            '"key_themes": ["theme1", "theme2"]}\n'
+            "Drop events without a credible source or timestamp."
+        ),
+        context=analyzer_context,
+        producer_role="analyzer",
+        verifier_role="qa",
+        max_iterations=2,
+        spec=QASpec(
+            acceptance_criteria=(
+                "Each event has a valid unix-timestamp, a credible source "
+                "name, a non-empty headline, and belongs to one of the "
+                "allowed categories. No duplicates (same event listed "
+                "twice). Events with impact='high' must have a named "
+                "source, not just 'multiple outlets'."
+            ),
+        ),
+    )
+
+    # Parse the final artifact. Analyzer was instructed to return
+    # strict JSON; try to extract.
+    raw_content = qa_result.final_artifact.content or ""
+    cleaned = raw_content.strip()
+    if cleaned.startswith("```"):
+        nl = cleaned.index("\n") if "\n" in cleaned else len(cleaned)
+        cleaned = cleaned[nl + 1:]
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3]
+        cleaned = cleaned.strip()
+
+    events: List[Dict[str, Any]] = []
+    overview_summary = ""
+    key_themes: List[str] = []
+    try:
+        parsed = _json.loads(cleaned)
+        if isinstance(parsed, dict):
+            raw_events = parsed.get("events") or []
+            if isinstance(raw_events, list):
+                for e in raw_events:
+                    if not isinstance(e, dict):
+                        continue
+                    try:
+                        ts = int(e.get("timestamp") or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if ts <= 0:
+                        continue
+                    events.append({
+                        "id": f"ne_{ts}_{len(events)}",
+                        "timestamp": ts,
+                        "headline": str(e.get("headline", "")).strip(),
+                        "summary": str(e.get("summary", "")).strip(),
+                        "source": str(e.get("source", "")).strip(),
+                        "url": str(e.get("url", "")).strip() or None,
+                        "category": str(e.get("category", "sentiment")).strip() or "sentiment",
+                        "impact": str(e.get("impact", "medium")).strip() or "medium",
+                        "direction": str(e.get("direction", "neutral")).strip() or "neutral",
+                        "price_impact_pct": (
+                            float(e["price_impact_pct"])
+                            if "price_impact_pct" in e and isinstance(e.get("price_impact_pct"), (int, float))
+                            else None
+                        ),
+                    })
+            overview_summary = str(parsed.get("summary", "")).strip()
+            key_themes = [str(t) for t in (parsed.get("key_themes") or []) if t]
+    except (_json.JSONDecodeError, ValueError):
+        pass
+
+    if not events:
+        return SkillResponse(
+            reply=(
+                f"Researchers returned findings but the analyzer couldn't "
+                f"produce a valid event list. The underlying research is in "
+                f"the trace UI's events. Try re-running — sometimes the LLM "
+                f"malformats JSON on the first pass."
+            ),
+            tool_calls=[*plan_tool_calls,
+                {"tool": "notify.toast",
+                 "value": {"level": "warning", "message": "No structured events produced"}},
+            ],
+            data={"raw_findings": findings, "events": [e for e in swarm.events()]},
+        )
+
+    # Sort by timestamp descending (newest first) for the UI timeline
+    events.sort(key=lambda e: e["timestamp"], reverse=True)
+
+    # Build the reply
+    by_category: Dict[str, int] = {}
+    for e in events:
+        by_category[e["category"]] = by_category.get(e["category"], 0) + 1
+    category_breakdown = ", ".join(f"{k}:{v}" for k, v in by_category.items())
+    reply_parts = [
+        f"**Found {len(events)} historic news events** for **{symbol}** "
+        f"({category_breakdown}).",
+    ]
+    if overview_summary:
+        reply_parts.extend(["", overview_summary])
+    if key_themes:
+        reply_parts.extend(["", "**Key themes:**"])
+        for t in key_themes[:5]:
+            reply_parts.append(f"- {t}")
+    reply_parts.append("")
+    reply_parts.append(
+        "_Markers plotted on the chart — click an event in the Historic "
+        "News tab to zoom the chart and read the full summary._"
+    )
+
+    return SkillResponse(
+        reply="\n".join(reply_parts),
+        data={
+            "symbol": symbol,
+            "events_count": len(events),
+            "key_themes": key_themes,
+            "summary": overview_summary,
+            "agent_events": [
+                {"timestamp": ev.timestamp, "level": ev.level, "stage": ev.stage,
+                 "message": ev.message, "agent_role": ev.agent_role}
+                for ev in swarm.events()
+            ],
+        },
+        tool_calls=[
+            *plan_tool_calls,
+            {"tool": "news.events.set", "value": {"symbol": symbol, "events": events}},
+            {"tool": "bottom_panel.activate_tab", "value": "historic_news"},
+            {"tool": "notify.toast",
+             "value": {"level": "info",
+                       "message": f"Loaded {len(events)} news events for {symbol}"}},
+        ],
+    )
+
+
 # ─── Registry ────────────────────────────────────────────────────────────
 #
 # The predict_analysis skill is the renamed swarm_intelligence — it's
@@ -1071,6 +1462,7 @@ PROCESSORS: Dict[str, ProcessorFn] = {
     "strategy": _strategy_processor,
     "data_fetcher": _data_fetcher_processor,
     "predict_analysis": _predict_analysis_processor,
+    "historic_news": _historic_news_processor,
     # Backward-compat alias — old skill id routes to the new processor
     "swarm_intelligence": _predict_analysis_processor,
 }

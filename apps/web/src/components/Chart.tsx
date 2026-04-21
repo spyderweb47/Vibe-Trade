@@ -22,6 +22,7 @@ import { extractFingerprint } from "@/lib/patternFingerprint";
 import { PatternSelectorPrimitive } from "@/lib/chart-primitives/PatternSelectorPrimitive";
 import { DrawingToolsPrimitive } from "@/lib/chart-primitives/DrawingToolsPrimitive";
 import { PatternHighlightPrimitive } from "@/lib/chart-primitives/PatternHighlightPrimitive";
+import { NewsMarkersPrimitive } from "@/lib/chart-primitives/NewsMarkersPrimitive";
 import { PineDrawingsPrimitive } from "@/lib/chart-primitives/PineDrawingsPrimitive";
 import { TradeBoxPrimitive } from "@/lib/chart-primitives/TradeBoxPrimitive";
 import type { DrawingPhase } from "@/lib/chart-primitives/patternSelectorTypes";
@@ -65,6 +66,7 @@ export function Chart({
   const patternPrimitiveRef = useRef<PatternSelectorPrimitive | null>(null);
   const drawingPrimitiveRef = useRef<DrawingToolsPrimitive | null>(null);
   const highlightPrimitiveRef = useRef<PatternHighlightPrimitive | null>(null);
+  const newsMarkersRef = useRef<NewsMarkersPrimitive | null>(null);
   const pineDrawingsRef = useRef<PineDrawingsPrimitive | null>(null);
   const tradeBoxRef = useRef<TradeBoxPrimitive | null>(null);
   const spacerSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
@@ -174,6 +176,13 @@ export function Chart({
     const highlightPrimitive = new PatternHighlightPrimitive();
     series.attachPrimitive(highlightPrimitive);
     highlightPrimitiveRef.current = highlightPrimitive;
+
+    // Historic news markers primitive — vertical dashed lines + colored
+    // dots at each news event's timestamp, produced by the
+    // historic_news skill.
+    const newsMarkersPrimitive = new NewsMarkersPrimitive();
+    series.attachPrimitive(newsMarkersPrimitive);
+    newsMarkersRef.current = newsMarkersPrimitive;
 
     // Pine Script drawings primitive
     const pineDrawingsPrimitive = new PineDrawingsPrimitive();
@@ -497,6 +506,20 @@ export function Chart({
       prevCursorRef.current = -1;
     }
   }, [appModeTop]);
+
+  // Historic news markers — push store state into the primitive whenever
+  // it changes so the chart visuals stay in sync with HistoricNewsTab.
+  const newsEvents = useStore((s) => s.newsEvents);
+  const selectedNewsEventId = useStore((s) => s.selectedNewsEventId);
+  useEffect(() => {
+    const nm = newsMarkersRef.current;
+    if (!nm) return;
+    if (newsEvents.length === 0 || data.length === 0) {
+      nm.clear();
+      return;
+    }
+    nm.setEvents(newsEvents, data, selectedNewsEventId);
+  }, [newsEvents, selectedNewsEventId, data]);
 
   // Update pattern highlight boxes + auto-zoom to show matches
   useEffect(() => {

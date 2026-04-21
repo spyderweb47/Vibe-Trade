@@ -449,6 +449,44 @@ const executors: Record<string, ToolExecutor> = {
     useStore.getState().resetSimulation();
   },
 
+  // ─── news.* — historic_news skill output ────────────────────────────────
+  "news.events.set": (args, ctx) => {
+    // Payload shape (from historic_news processor):
+    //   { symbol: string, events: NewsEvent[] }
+    // Replaces the current event list and switches the symbol tag so the
+    // chart primitive + HistoricNewsTab both re-render. The store setter
+    // auto-selects the first event id so the detail panel is non-empty
+    // on first render.
+    if (!args || typeof args !== "object") {
+      console.warn(`[skill:${ctx.skillId}] news.events.set expected {symbol, events}`);
+      return;
+    }
+    const payload = args as { symbol?: string; events?: unknown };
+    if (!Array.isArray(payload.events)) {
+      console.warn(`[skill:${ctx.skillId}] news.events.set: events must be an array`);
+      return;
+    }
+    const symbol = String(payload.symbol || "").toUpperCase() || "ASSET";
+
+    // Normalise each event — backend produces snake_case price_impact_pct;
+    // the type uses snake_case too so we can mostly pass-through, but we
+    // still coerce strings→numbers and defend against missing fields.
+    const events = (payload.events as Array<Record<string, unknown>>).map((e, i) => ({
+      id: String(e.id || `ne_${i}_${Date.now()}`),
+      timestamp: Number(e.timestamp || 0),
+      headline: String(e.headline || "(untitled)"),
+      summary: String(e.summary || ""),
+      source: String(e.source || "Unknown"),
+      url: (e.url as string | null | undefined) ?? null,
+      category: String(e.category || "sentiment") as import("@/types").NewsCategory,
+      impact: (String(e.impact || "medium") as "high" | "medium" | "low"),
+      direction: (String(e.direction || "neutral") as "bullish" | "bearish" | "neutral"),
+      price_impact_pct: e.price_impact_pct != null ? Number(e.price_impact_pct) : null,
+    })) as import("@/types").NewsEvent[];
+
+    useStore.getState().setNewsEvents(events, symbol);
+  },
+
   // ─── swarm.* — Agent Swarm Service tools (plan-first flow) ─────────────
   "swarm.team_plan.set": (args, ctx) => {
     // The backend TeamPlanner emits this BEFORE a skill executes so

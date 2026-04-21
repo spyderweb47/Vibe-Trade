@@ -267,6 +267,18 @@ interface AppState {
   setPatternMatchesForDataset: (datasetId: string, matches: PatternMatch[]) => void;
   setLastScriptResult: (result: { ran: boolean; error?: string } | null) => void;
 
+  // Historic News (produced by the historic_news skill)
+  //   newsEvents           — current list from last skill run
+  //   newsEventsSymbol     — symbol the events belong to (cleared on dataset change)
+  //   selectedNewsEventId  — which row is "selected" in HistoricNewsTab,
+  //                          drives the detail view on the right side
+  newsEvents: import('@/types').NewsEvent[];
+  newsEventsSymbol: string | null;
+  selectedNewsEventId: string | null;
+  setNewsEvents: (events: import('@/types').NewsEvent[], symbol: string) => void;
+  setSelectedNewsEventId: (id: string | null) => void;
+  clearNewsEvents: () => void;
+
   // Analysis
   analysisResults: AnalysisResults | null;
   setAnalysisResults: (results: AnalysisResults | null) => void;
@@ -1048,6 +1060,28 @@ export const useStore = create<AppState>((set, get) => ({
       : { patternMatchesByDataset: nextByDataset, patternMatches: nextMatches };
   }),
   setLastScriptResult: (result) => set({ lastScriptResult: result }),
+
+  // Historic News — produced by the historic_news skill
+  newsEvents: [],
+  newsEventsSymbol: null,
+  selectedNewsEventId: null,
+  setNewsEvents: (events, symbol) => set((state) => {
+    // Auto-select the first event so the detail pane has something to
+    // show the moment the user opens the Historic News tab.
+    const firstId = events.length > 0 ? events[0].id : null;
+    const next = {
+      ...state,
+      newsEvents: events,
+      newsEventsSymbol: symbol,
+      selectedNewsEventId: firstId,
+    };
+    const conversations = _snapshotLiveStateInto(next, state.activeConversationId);
+    return conversations
+      ? { newsEvents: events, newsEventsSymbol: symbol, selectedNewsEventId: firstId, conversations }
+      : { newsEvents: events, newsEventsSymbol: symbol, selectedNewsEventId: firstId };
+  }),
+  setSelectedNewsEventId: (id) => set({ selectedNewsEventId: id }),
+  clearNewsEvents: () => set({ newsEvents: [], newsEventsSymbol: null, selectedNewsEventId: null }),
 
   // Analysis
   analysisResults: null,

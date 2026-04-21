@@ -519,6 +519,35 @@ export interface RunEvent {
 }
 
 /**
+ * One news event produced by the Historic News skill. Plotted on the
+ * chart as a vertical line + colored dot at `timestamp`, and listed in
+ * the Historic News bottom-panel tab.
+ */
+export type NewsCategory =
+  | 'earnings'
+  | 'regulatory'
+  | 'macro'
+  | 'product'
+  | 'sentiment'
+  | 'geopolitical'
+  | 'technical';
+
+export interface NewsEvent {
+  id: string;
+  /** Unix timestamp in SECONDS (matches OHLC bar timestamps). */
+  timestamp: number;
+  headline: string;
+  summary: string;
+  source: string;
+  url?: string | null;
+  category: NewsCategory;
+  impact: 'high' | 'medium' | 'low';
+  direction: 'bullish' | 'bearish' | 'neutral';
+  /** Rough estimate of the event's price effect (%). Optional. */
+  price_impact_pct?: number | null;
+}
+
+/**
  * Team plan emitted by the backend `TeamPlanner` before a skill actually
  * executes. Rendered in the trace UI so the user sees which agents are
  * being assembled and why — plan-first flow.
