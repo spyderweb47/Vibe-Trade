@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from core.agents.llm_client import chat_completion, is_available as llm_available
 from core.agents.backtest_agent import BacktestAgent
 from core.agents.vibe_trade_agent import vibe_trade
+from core.agents.api_error_handler import handle_api_error
 
 router = APIRouter(tags=["chat"])
 
@@ -86,8 +87,32 @@ async def chat(req: ChatRequest) -> ChatResponse:
             if plan_response is not None:
                 return _skill_response_to_chat(plan_response)
             return await _handle_general(message)
+    except HTTPException:
+        # Pass through HTTP exceptions raised intentionally by handlers
+        # (e.g. validation errors with proper status codes). Only the
+        # truly unexpected stuff goes through the error-handler agent.
+        raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        # Route every other exception through the ApiErrorHandlerAgent.
+        # It categorizes the failure (encoding, LLM provider, timeout,
+        # missing data, internal bug) and returns a structured chat
+        # reply so the user sees a helpful explanation instead of a raw
+        # 500. Full traceback always goes to the server log.
+        handled = handle_api_error(
+            exc,
+            user_message=message,
+            skill_id=mode if mode and mode != "auto" else None,
+            extra_context={"context_keys": list(context.keys())},
+        )
+        return ChatResponse(
+            reply=handled.reply,
+            data=handled.data,
+            tool_calls=[
+                {"tool": "notify.toast",
+                 "value": {"level": "error",
+                           "message": f"Skill failed ({handled.category}) — see chat for details"}},
+            ],
+        )
 
 
 PATTERN_ANALYSIS_PROMPT = """You are a trading pattern analyst. The user selected a region on their chart by drawing a single pattern box around it, and the frontend has extracted a mathematical fingerprint of that region.

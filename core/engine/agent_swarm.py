@@ -109,12 +109,31 @@ class AgentSwarm:
         message: str,
         agent_role: Optional[str] = None,
     ) -> None:
-        """Record an event AND print to the server console."""
+        """Record an event AND print to the server console.
+
+        The print is Unicode-safe — Windows' default console encoding
+        (cp1252) can't render symbols like → or ±, and a raw print()
+        crash here used to bubble up as a 500 in /chat. We try the full
+        unicode string first, then fall back to ASCII with replacement.
+        """
         ts_iso = time.strftime("%Y-%m-%dT%H:%M:%S")
         ts_hms = time.strftime("%H:%M:%S")
         prefix = {"info": "i", "warn": "!", "error": "x"}.get(level, "-")
         role = f"[{agent_role}]" if agent_role else ""
-        print(f"[{ts_hms}] [swarm.{stage}]{role} {prefix} {message}", flush=True)
+        line = f"[{ts_hms}] [swarm.{stage}]{role} {prefix} {message}"
+        try:
+            print(line, flush=True)
+        except UnicodeEncodeError:
+            # Re-encode using the actual stdout encoding with replacement
+            # so unprintable chars become "?" instead of crashing the
+            # whole request. Most common on Windows where the default
+            # console is cp1252.
+            import sys
+            enc = (getattr(sys.stdout, "encoding", None) or "ascii")
+            try:
+                print(line.encode(enc, errors="replace").decode(enc, errors="replace"), flush=True)
+            except Exception:  # noqa: BLE001
+                print(line.encode("ascii", errors="replace").decode("ascii"), flush=True)
         self._events.append(RunEvent(
             timestamp=ts_iso,
             level=level,

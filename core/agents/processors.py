@@ -359,9 +359,9 @@ async def _strategy_processor(
 ) -> SkillResponse:
     """
     Dispatcher for strategy requests:
-      mode == "analyze"  → analyse pre-computed backtest metrics (legacy)
-      mode == "generate" → plan-first team flow (Risk + Portfolio + Writer + QA)
-      opt-out            → context.strategy_use_qa_team = False forces the
+      mode == "analyze"  -> analyse pre-computed backtest metrics (legacy)
+      mode == "generate" -> plan-first team flow (Risk + Portfolio + Writer + QA)
+      opt-out            -> context.strategy_use_qa_team = False forces the
                            original single-call path even for generate mode
     """
     mode = context.get("mode", "generate")
@@ -421,11 +421,11 @@ async def _strategy_processor_with_team(
     """
     Plan-first team-based strategy generation:
       TeamPlanner picks the team (Writer + QA mandatory; Risk Manager and
-      Portfolio Manager optional) → plan rendered in trace UI → Risk and
+      Portfolio Manager optional) -> plan rendered in trace UI -> Risk and
       PM run first if included, feeding their analyses into the Writer's
-      context → Writer drafts the strategy script (uses
-      STRATEGY_GENERATE_PROMPT) → QA verifies via static analysis + LLM
-      reasoning → loop up to 3 iterations.
+      context -> Writer drafts the strategy script (uses
+      STRATEGY_GENERATE_PROMPT) -> QA verifies via static analysis + LLM
+      reasoning -> loop up to 3 iterations.
 
     On LLM/fixer failure, gracefully falls back to the legacy single-call
     path so the user always gets a script.
@@ -692,7 +692,7 @@ async def _strategy_processor_with_team(
         script_type="strategy",
         data=data,
         tool_calls=[
-            # Plan first → UI renders it before execution artefacts
+            # Plan first -> UI renders it before execution artefacts
             *plan_tool_calls,
             {"tool": "script_editor.load", "value": script},
             {"tool": "bottom_panel.activate_tab", "value": "portfolio"},
@@ -995,12 +995,12 @@ async def _swarm_intelligence_processor(
     price_targets = summary.get("price_targets", {})
 
     # Multi-chart reply annotation. Three cases:
-    #   a) len(loaded) > 1 → portfolio mode ran on N assets
-    #   b) len(loaded) == 1 but len(dataset_ids) > 1 → we were ASKED to
+    #   a) len(loaded) > 1 -> portfolio mode ran on N assets
+    #   b) len(loaded) == 1 but len(dataset_ids) > 1 -> we were ASKED to
     #      include multiple but only 1 made it into the store. Say so
     #      loudly in the reply body so the user doesn't wonder why only
     #      one asset is mentioned.
-    #   c) len(loaded) == 1 and len(dataset_ids) == 1 → plain single-
+    #   c) len(loaded) == 1 and len(dataset_ids) == 1 -> plain single-
     #      chart debate, no annotation.
     portfolio_note = ""
     if len(loaded) > 1:
@@ -1082,8 +1082,8 @@ async def _historic_news_processor(
           impact, direction, price_impact_pct}
       5. QA filters out duplicates, unsubstantiated claims,
          out-of-range timestamps
-      6. Tool-call pushes events to the frontend store → chart
-         renders markers → HistoricNewsTab shows timeline
+      6. Tool-call pushes events to the frontend store -> chart
+         renders markers -> HistoricNewsTab shows timeline
     """
     import json as _json
     from core.engine.agent_swarm import AgentSwarm
@@ -1251,7 +1251,7 @@ async def _historic_news_processor(
                 ),
             ),
         ],
-        default_execution_mode="sequential",  # researcher → analyzer → qa
+        default_execution_mode="sequential",  # researcher -> analyzer -> qa
     )
 
     plan_tool_calls = [
@@ -1562,10 +1562,10 @@ async def _historic_news_processor(
 
     if not events:
         # Distinguish the four real failure modes so the user can act:
-        #   A. JSON didn't parse at all                    → re-run usually fixes
-        #   B. JSON parsed but events list missing/empty   → analyzer found nothing
-        #   C. JSON parsed but every ts outside chart      → load wider chart data
-        #   D. JSON parsed but every ts unparseable        → prompt issue
+        #   A. JSON didn't parse at all                    -> re-run usually fixes
+        #   B. JSON parsed but events list missing/empty   -> analyzer found nothing
+        #   C. JSON parsed but every ts outside chart      -> load wider chart data
+        #   D. JSON parsed but every ts unparseable        -> prompt issue
         preview = raw_content.strip()[:600] or "(empty)"
         from datetime import datetime as _dt2, timezone as _tz2
         try:
@@ -1594,7 +1594,7 @@ async def _historic_news_processor(
         elif dropped_out_of_range == raw_event_count:
             why = (
                 f"All {raw_event_count} event(s) had timestamps outside the chart "
-                f"range ({chart_lo_str} → {chart_hi_str}, ±14d buffer)"
+                f"range ({chart_lo_str} -> {chart_hi_str}, +/-14d buffer)"
             )
             user_hint = (
                 f"The analyzer found events but they're all outside your chart's "
@@ -1609,7 +1609,7 @@ async def _historic_news_processor(
             why = (
                 f"All {raw_event_count} event(s) were filtered out — "
                 f"{dropped_out_of_range} outside chart range "
-                f"({chart_lo_str} → {chart_hi_str}), "
+                f"({chart_lo_str} -> {chart_hi_str}), "
                 f"{dropped_no_timestamp} with bad timestamps"
             )
             user_hint = "Mixed filtering issue — see counts above."
