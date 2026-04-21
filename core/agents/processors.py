@@ -1327,19 +1327,43 @@ async def _historic_news_processor(
 
     qa_result = await team.run_with_qa_loop(
         task=(
-            f"Parse the findings into a strict-JSON list of news events "
-            f"for {symbol}. Each event object must have:\n"
-            '  {"timestamp": <unix_seconds>, "headline": "...", '
-            '"summary": "2-3 sentences", "source": "...", '
-            '"url": "..." (optional), "category": "earnings|regulatory|'
-            'macro|product|sentiment|geopolitical|technical", '
-            '"impact": "high|medium|low", '
-            '"direction": "bullish|bearish|neutral", '
-            '"price_impact_pct": <float, optional>}\n'
-            "Return ONLY a JSON object with shape:\n"
-            '  {"events": [...], "summary": "brief overview", '
-            '"key_themes": ["theme1", "theme2"]}\n'
-            "Drop events without a credible source or timestamp."
+            f"Convert the researcher findings above into a strict-JSON "
+            f"event list for {symbol}.\n\n"
+            "**Output rules — read carefully:**\n"
+            "1. Return ONLY raw JSON. NO markdown fences (```), NO preamble "
+            "('Here is the JSON:'), NO postamble ('Hope this helps').\n"
+            "2. The very first character of your response MUST be `{` and the "
+            "very last character MUST be `}`.\n"
+            "3. `timestamp` MUST be an integer in unix SECONDS (e.g. "
+            "1704067200 for 2024-01-01). NOT milliseconds, NOT a date string.\n"
+            "4. Drop any event where you can't determine a precise date.\n"
+            "5. Drop any event without a credible named source.\n\n"
+            "**Required shape (copy this skeleton exactly):**\n"
+            "{\n"
+            '  "events": [\n'
+            "    {\n"
+            '      "timestamp": 1704067200,\n'
+            '      "headline": "Apple beats Q1 earnings estimates",\n'
+            '      "summary": "Apple reported Q1 FY2024 EPS of $2.18 vs $2.10 expected, '
+            'with iPhone revenue down 0.6% YoY but Services up 11.3%.",\n'
+            '      "source": "Reuters",\n'
+            '      "url": "https://example.com/article",\n'
+            '      "category": "earnings",\n'
+            '      "impact": "high",\n'
+            '      "direction": "bullish",\n'
+            '      "price_impact_pct": 2.4\n'
+            "    }\n"
+            "  ],\n"
+            '  "summary": "One-paragraph overview of the news landscape across the chart range.",\n'
+            '  "key_themes": ["AI strategy", "China demand", "Services growth"]\n'
+            "}\n\n"
+            "**Allowed values:**\n"
+            '- category: "earnings" | "regulatory" | "macro" | "product" | '
+            '"sentiment" | "geopolitical" | "technical"\n'
+            '- impact: "high" | "medium" | "low"\n'
+            '- direction: "bullish" | "bearish" | "neutral"\n\n'
+            f"Asset: {symbol}. Chart range: {date_range_hint or '(unknown)'}. "
+            f"Aim for 10-25 events spread across the range — quality over quantity."
         ),
         context=analyzer_context,
         producer_role="analyzer",
@@ -1357,15 +1381,85 @@ async def _historic_news_processor(
     )
 
     # Parse the final artifact. Analyzer was instructed to return
-    # strict JSON; try to extract.
+    # strict JSON, but real LLM output frequently has preamble text,
+    # markdown fences with various spacing, or both. Be liberal:
+    #   1. Strip ```json / ``` fences if present
+    #   2. If the result still doesn't parse, search for the first
+    #      balanced { ... } block and try that
     raw_content = qa_result.final_artifact.content or ""
     cleaned = raw_content.strip()
+
+    # Strip code fences (```json ... ```, ``` ... ```)
     if cleaned.startswith("```"):
         nl = cleaned.index("\n") if "\n" in cleaned else len(cleaned)
         cleaned = cleaned[nl + 1:]
         if cleaned.endswith("```"):
             cleaned = cleaned[:-3]
         cleaned = cleaned.strip()
+
+    def _extract_json_object(text: str) -> str | None:
+        """
+        Scan for the first balanced {...} or [...] block. Tolerates
+        preamble like 'Here is the JSON:\n\n{...}\n\nHope this helps.'
+        Returns the substring or None if no balanced block found.
+        """
+        for opener, closer in (("{", "}"), ("[", "]")):
+            start = text.find(opener)
+            if start < 0:
+                continue
+            depth = 0
+            in_str = False
+            esc = False
+            for i in range(start, len(text)):
+                ch = text[i]
+                if esc:
+                    esc = False
+                    continue
+                if ch == "\\":
+                    esc = True
+                    continue
+                if ch == '"':
+                    in_str = not in_str
+                    continue
+                if in_str:
+                    continue
+                if ch == opener:
+                    depth += 1
+                elif ch == closer:
+                    depth -= 1
+                    if depth == 0:
+                        return text[start:i + 1]
+            # unbalanced — fall through to next opener
+        return None
+
+    def _coerce_timestamp(v: Any) -> int:
+        """Accept unix seconds (int/float/str-of-int) OR ISO date string."""
+        if isinstance(v, (int, float)):
+            n = int(v)
+            # If the LLM gave us milliseconds, scale down
+            if n > 10**12:
+                n //= 1000
+            return n
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return 0
+            # Plain integer string
+            if s.lstrip("-").isdigit():
+                n = int(s)
+                if n > 10**12:
+                    n //= 1000
+                return n
+            # ISO date — try to parse
+            try:
+                from datetime import datetime as _dt
+                # Accept "2024-01-15", "2024-01-15T10:30:00", "2024-01-15T10:30:00Z"
+                s2 = s.replace("Z", "+00:00")
+                dt = _dt.fromisoformat(s2) if "T" in s2 or "+" in s2 or len(s2) > 10 else _dt.strptime(s2, "%Y-%m-%d")
+                return int(dt.timestamp())
+            except (ValueError, ImportError):
+                return 0
+        return 0
 
     # Bounds for the "is this timestamp inside the chart range" filter.
     # Allow a 14-day buffer on either side so pre-market news and
@@ -1384,58 +1478,111 @@ async def _historic_news_processor(
     events: List[Dict[str, Any]] = []
     overview_summary = ""
     key_themes: List[str] = []
+    parse_error: str | None = None
+    parsed: Any = None
+
+    # First attempt: parse as-is (post fence-strip)
     try:
         parsed = _json.loads(cleaned)
-        if isinstance(parsed, dict):
-            raw_events = parsed.get("events") or []
-            if isinstance(raw_events, list):
-                for e in raw_events:
-                    if not isinstance(e, dict):
-                        continue
+    except (_json.JSONDecodeError, ValueError) as exc:
+        parse_error = str(exc)
+        # Second attempt: extract first balanced JSON block (tolerates
+        # preamble/postamble text)
+        block = _extract_json_object(cleaned)
+        if block:
+            try:
+                parsed = _json.loads(block)
+                parse_error = None  # second attempt succeeded
+            except (_json.JSONDecodeError, ValueError) as exc2:
+                parse_error = f"after-extract: {exc2}"
+
+    # Some models return [..., ...] directly (the events array) instead
+    # of {"events": [...]}. Wrap for uniform handling.
+    if isinstance(parsed, list):
+        parsed = {"events": parsed}
+
+    if isinstance(parsed, dict):
+        raw_events = parsed.get("events") or []
+        # Some models nest one level deeper, e.g. {"data": {"events": [...]}}
+        if not raw_events and isinstance(parsed.get("data"), dict):
+            raw_events = parsed["data"].get("events") or []
+        if isinstance(raw_events, list):
+            dropped_out_of_range = 0
+            for e in raw_events:
+                if not isinstance(e, dict):
+                    continue
+                ts = _coerce_timestamp(e.get("timestamp") or e.get("date") or e.get("time"))
+                if ts <= 0:
+                    continue
+                # Drop events whose timestamp is outside the chart
+                # range — plotting them would be invisible anyway
+                # and they're usually LLM hallucinations about
+                # events the asset wasn't tradable for yet.
+                if ts < chart_min_ts or ts > chart_max_ts:
+                    dropped_out_of_range += 1
+                    continue
+                # price_impact_pct may arrive as int, float, str, or
+                # be missing entirely — coerce defensively.
+                pip_raw = e.get("price_impact_pct") if "price_impact_pct" in e else e.get("priceImpactPct")
+                pip_val: float | None = None
+                if isinstance(pip_raw, (int, float)):
+                    pip_val = float(pip_raw)
+                elif isinstance(pip_raw, str):
+                    s = pip_raw.replace("%", "").strip()
                     try:
-                        ts = int(e.get("timestamp") or 0)
-                    except (TypeError, ValueError):
-                        continue
-                    if ts <= 0:
-                        continue
-                    # Drop events whose timestamp is outside the chart
-                    # range — plotting them would be invisible anyway
-                    # and they're usually LLM hallucinations about
-                    # events the asset wasn't tradable for yet.
-                    if ts < chart_min_ts or ts > chart_max_ts:
-                        continue
-                    events.append({
-                        "id": f"ne_{ts}_{len(events)}",
-                        "timestamp": ts,
-                        "headline": str(e.get("headline", "")).strip(),
-                        "summary": str(e.get("summary", "")).strip(),
-                        "source": str(e.get("source", "")).strip(),
-                        "url": str(e.get("url", "")).strip() or None,
-                        "category": str(e.get("category", "sentiment")).strip() or "sentiment",
-                        "impact": str(e.get("impact", "medium")).strip() or "medium",
-                        "direction": str(e.get("direction", "neutral")).strip() or "neutral",
-                        "price_impact_pct": (
-                            float(e["price_impact_pct"])
-                            if "price_impact_pct" in e and isinstance(e.get("price_impact_pct"), (int, float))
-                            else None
-                        ),
-                    })
-            overview_summary = str(parsed.get("summary", "")).strip()
-            key_themes = [str(t) for t in (parsed.get("key_themes") or []) if t]
-    except (_json.JSONDecodeError, ValueError):
-        pass
+                        pip_val = float(s) if s else None
+                    except ValueError:
+                        pip_val = None
+
+                events.append({
+                    "id": f"ne_{ts}_{len(events)}",
+                    "timestamp": ts,
+                    "headline": str(e.get("headline") or e.get("title") or "").strip(),
+                    "summary": str(e.get("summary") or e.get("description") or "").strip(),
+                    "source": str(e.get("source") or "").strip(),
+                    "url": str(e.get("url") or e.get("link") or "").strip() or None,
+                    "category": str(e.get("category") or "sentiment").strip().lower() or "sentiment",
+                    "impact": str(e.get("impact") or "medium").strip().lower() or "medium",
+                    "direction": str(e.get("direction") or "neutral").strip().lower() or "neutral",
+                    "price_impact_pct": pip_val,
+                })
+            if dropped_out_of_range:
+                swarm._event(
+                    "warn", "historic_news",
+                    f"dropped {dropped_out_of_range} event(s) outside chart range "
+                    f"({chart_min_ts}..{chart_max_ts})",
+                    "analyzer",
+                )
+        overview_summary = str(parsed.get("summary") or "").strip()
+        key_themes = [str(t) for t in (parsed.get("key_themes") or parsed.get("keyThemes") or []) if t]
 
     if not events:
+        # Surface what actually went wrong + a preview of what the LLM
+        # returned so the user can see whether it's a JSON formatting
+        # issue, a content issue, or an empty-array issue.
+        preview = raw_content.strip()[:600] or "(empty)"
+        if parse_error:
+            why = f"JSON parse failed: {parse_error}"
+        elif parsed is None:
+            why = "Analyzer returned no parseable JSON"
+        elif not isinstance(parsed, dict):
+            why = f"Analyzer returned a {type(parsed).__name__}, expected an object"
+        else:
+            why = "Analyzer returned valid JSON but the events list was empty or malformed"
+        swarm._event("error", "historic_news", f"{why}. Raw: {preview!r}", "analyzer")
         return SkillResponse(
             reply=(
-                f"Researchers returned findings but the analyzer couldn't "
-                f"produce a valid event list. The underlying research is in "
-                f"the trace UI's events. Try re-running — sometimes the LLM "
-                f"malformats JSON on the first pass."
+                f"**Couldn't extract news events for {symbol}.**\n\n"
+                f"_{why}._\n\n"
+                f"Researcher findings ARE in the trace UI's events panel. "
+                f"This usually means the model returned prose instead of "
+                f"strict JSON — re-running often works. If it keeps failing, "
+                f"check the analyzer's raw output (first 600 chars below):\n\n"
+                f"```\n{preview}\n```"
             ),
             tool_calls=[*plan_tool_calls,
                 {"tool": "notify.toast",
-                 "value": {"level": "warning", "message": "No structured events produced"}},
+                 "value": {"level": "warning", "message": "No structured events — see chat for details"}},
             ],
             data={"raw_findings": findings, "events": [e for e in swarm.events()]},
         )
