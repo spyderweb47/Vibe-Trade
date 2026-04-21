@@ -64,10 +64,33 @@ input_hints:
 - **On chart**: colored vertical line + dot at each event's timestamp. Red for bearish, green for bullish, orange for neutral. Hover for tooltip.
 - **Bottom-panel tab**: timeline list of events sorted newest-first. Click an event → chart zooms to that time range + selected article detail appears on the right.
 
-## Input
+## Input — interactive directives
 
-- Natural language: "find historic news for AAPL", "what news drove BTC up last year", "historic news events for CL=F", "show me price-moving news"
-- Requires a dataset loaded on the chart (the skill queries around the chart's visible date range).
+The skill parses your message for steering directives so you can drive the swarm:
+
+| You say | What happens |
+|---|---|
+| `historic news for this chart` | Researches the chart's own asset over its date range (default) |
+| `fetch oil news on this chart` | Researches oil, plots markers on the loaded chart (different asset!) |
+| `plot AAPL news on the BTC chart` | Researches AAPL, tags markers for the BTC chart specifically |
+| `show macro news on all charts` | Broadcasts — same news set renders on every open chart |
+| `earnings news for TSLA` | Topic-filtered — only earnings queries run |
+| `regulatory + macro news for AAPL` | Multiple categories combined |
+
+Recognised category keywords: `earnings`, `regulatory`/`SEC`/`policy`, `macro`/`fed`/`fomc`/`inflation`/`cpi`, `product`/`launch`, `geopolitical`/`war`/`sanctions`. Recognised broadcast keywords: `all charts`, `every chart`, `multiple charts`, `broadcast`.
+
+Requires a dataset loaded on the chart (the skill queries around the chart's visible date range and uses the chart's symbol as the default plot target).
+
+## How real news is fetched
+
+The researcher does NOT hallucinate from training data. The processor:
+
+1. Generates 6-9 search queries from the topic + date range + categories
+2. Calls `web_search()` (DuckDuckGo, rate-limited) for each
+3. Aggregates real results — real titles, real URLs, real snippets
+4. Feeds those real findings to the analyzer agent
+
+The analyzer is then explicitly told: "use the EXACT URL from the search result. NEVER invent URLs." So every Reuters/Bloomberg link in the output is a link the search engine actually returned.
 
 ## Example
 

@@ -155,7 +155,11 @@ export function HistoricNewsTab() {
           style={{ background: "var(--surface-2)", borderBottom: "1px solid var(--border-subtle)" }}
         >
           <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>
-            {newsEventsSymbol ? `${newsEventsSymbol} — ${sorted.length} events` : `${sorted.length} events`}
+            {newsEventsSymbol === "*"
+              ? `All charts — ${sorted.length} events`
+              : newsEventsSymbol
+                ? `${newsEventsSymbol} — ${sorted.length} events`
+                : `${sorted.length} events`}
           </span>
           <span className="text-[9px]" style={{ color: "var(--text-muted)" }}>
             newest first

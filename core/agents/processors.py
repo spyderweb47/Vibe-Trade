@@ -1065,25 +1065,240 @@ async def _swarm_intelligence_processor(
 # Regulatory Researcher are added by the Team Planner when the asset
 # class benefits from them.
 
+# ─── Helpers for the historic_news skill ─────────────────────────────────
+
+
+def _parse_news_intent(message: str, chart_symbol: str) -> Dict[str, Any]:
+    """
+    Parse the user's message into a structured intent.
+
+    Examples:
+      "fetch oil news on this chart"          -> topic="oil",  plot_symbol=chart_symbol, broadcast=False
+      "plot AAPL news on the BTC chart"       -> topic="AAPL", plot_symbol="BTC",       broadcast=False
+      "show macro news on all charts"         -> topic="macro", plot_symbol=None,        broadcast=True
+      "find news for {chart_symbol}"          -> topic=chart_symbol, plot_symbol=chart_symbol, broadcast=False
+      "" (empty)                              -> defaults: topic=chart_symbol, plot_symbol=chart_symbol
+
+    Returns a dict with:
+      topic (str)              — what to research news ABOUT
+      plot_symbol (str|None)   — which chart's symbol to tag the events with
+      broadcast (bool)         — if True, plot on every chart regardless of symbol
+      categories (List[str])   — empty = all; else filter (e.g. ["earnings"])
+    """
+    low = (message or "").lower().strip()
+    intent: Dict[str, Any] = {
+        "topic": chart_symbol,
+        "plot_symbol": chart_symbol,
+        "broadcast": False,
+        "categories": [],
+    }
+
+    # Words that LOOK like an asset ticker in a regex but really refer
+    # to the current chart / all charts. When captured as plot_symbol,
+    # we map them back to the right thing instead of using the literal.
+    _SELF_REFS = {"this", "that", "the", "current", "active", "loaded", "my"}
+    _ALL_REFS = {"all", "every", "any", "each", "both"}
+
+    def _resolve_plot(captured: str) -> Optional[str]:
+        c = captured.lower()
+        if c in _SELF_REFS:
+            return chart_symbol
+        if c in _ALL_REFS:
+            intent["broadcast"] = True
+            return None
+        return captured.upper()
+
+    # Multi-chart intent — check FIRST so "on all charts" doesn't get
+    # parsed as a per-chart target.
+    if any(p in low for p in (
+        "all charts", "every chart", "all open charts", "multiple charts",
+        "across all", "on all", "broadcast", "every open chart",
+    )):
+        intent["broadcast"] = True
+        intent["plot_symbol"] = None
+
+    # Category filters — apply ALWAYS (additive on top of any topic
+    # match below) so "earnings news for TSLA" sets both topic=TSLA
+    # and categories=["earnings"].
+    cat_keywords = {
+        "earnings": ["earnings", "eps", "revenue report"],
+        "regulatory": ["regulatory", "regulation", "sec ", "policy"],
+        "macro": ["macro", "fed ", "fomc", "inflation", "cpi"],
+        "product": ["product", "launch", "release"],
+        "geopolitical": ["geopolitical", "war", "sanctions"],
+    }
+    for cat, kws in cat_keywords.items():
+        if any(kw in low for kw in kws):
+            intent["categories"].append(cat)
+
+    # "X news on Y chart" — topic X, plot on Y
+    import re as _re
+    m = _re.search(
+        r"(?:news|events)\s+(?:for|on|about)\s+([a-zA-Z][\w/\-=.]{0,12})\s+(?:on|to|in)\s+(?:the\s+)?([a-zA-Z][\w/\-=.]{0,12})\s+chart",
+        low,
+    )
+    if m:
+        intent["topic"] = m.group(1).upper()
+        resolved = _resolve_plot(m.group(2))
+        if resolved is not None or intent["broadcast"]:
+            intent["plot_symbol"] = resolved
+        return intent
+
+    # "plot X news on Y" / "X news on Y" / "X news on Y chart"
+    m = _re.search(
+        r"(?:plot\s+)?([a-zA-Z][\w/\-=.]{0,12})\s+news\s+on\s+(?:the\s+)?([a-zA-Z][\w/\-=.]{0,12})",
+        low,
+    )
+    if m:
+        cand = m.group(1)
+        if cand.lower() not in {*cat_keywords.keys(), "historic", "historical",
+                                "the", "some", "any", "all", "more", "this"}:
+            intent["topic"] = cand.upper()
+        resolved = _resolve_plot(m.group(2))
+        if resolved is not None or intent["broadcast"]:
+            intent["plot_symbol"] = resolved
+        return intent
+
+    # "fetch X news" / "find X news" / "get news for X" / "X news"
+    m = _re.search(
+        r"(?:fetch|find|get|show|load|pull)\s+([a-zA-Z][\w/\-=.]{0,12})\s+news",
+        low,
+    )
+    if m:
+        cand = m.group(1)
+        # Skip when the verb captured a category word like "earnings"
+        # ("show earnings news") — we want topic=chart_symbol then.
+        if cand.lower() not in {*cat_keywords.keys(), "historic", "historical",
+                                "macro", "the", "some", "any", "all"}:
+            intent["topic"] = cand.upper()
+        return intent
+    m = _re.search(r"news\s+(?:for|about|on)\s+([a-zA-Z][\w/\-=.]{0,12})", low)
+    if m:
+        cand = m.group(1)
+        if cand.lower() not in _SELF_REFS:
+            intent["topic"] = cand.upper()
+        return intent
+
+    return intent
+
+
+def _build_news_query_set(
+    topic: str,
+    chart_lo_iso: str,
+    chart_hi_iso: str,
+    categories: List[str],
+) -> List[str]:
+    """
+    Generate the search-query set for the real web_search calls.
+
+    Without an LLM call: template-based covering broad event types,
+    optionally filtered by user-requested categories. Returns 6-9
+    queries — DDG is rate-limited so we keep it bounded.
+    """
+    range_clause = f"{chart_lo_iso}..{chart_hi_iso}" if chart_lo_iso and chart_hi_iso else "recent"
+    base_queries = {
+        "earnings":     [f"{topic} earnings report {range_clause}",
+                         f"{topic} quarterly results revenue {range_clause}"],
+        "regulatory":   [f"{topic} SEC regulation news {range_clause}",
+                         f"{topic} regulatory ruling {range_clause}"],
+        "macro":        [f"{topic} macroeconomic news fed rate {range_clause}",
+                         f"{topic} inflation impact {range_clause}"],
+        "product":      [f"{topic} product launch announcement {range_clause}",
+                         f"{topic} new release feature {range_clause}"],
+        "geopolitical": [f"{topic} geopolitical risk sanctions {range_clause}",
+                         f"{topic} war supply chain disruption {range_clause}"],
+        "sentiment":    [f"{topic} analyst rating upgrade downgrade {range_clause}",
+                         f"{topic} institutional buying selling {range_clause}"],
+    }
+
+    if categories:
+        # User asked for specific kinds of news — only those.
+        out: List[str] = []
+        for cat in categories:
+            out.extend(base_queries.get(cat, []))
+        return out[:9]
+
+    # Default mix — one query per category, weighted toward earnings/macro
+    mix: List[str] = []
+    for cat in ("earnings", "regulatory", "macro", "product", "sentiment", "geopolitical"):
+        mix.append(base_queries[cat][0])
+    # Plus 2 broader catch-all queries so we don't miss the obvious headline
+    mix.append(f"{topic} major news price moving event {range_clause}")
+    mix.append(f"{topic} biggest news {range_clause}")
+    return mix
+
+
+def _run_real_research(
+    queries: List[str],
+    swarm,  # AgentSwarm — for event emission
+    max_results_per_query: int = 6,
+) -> str:
+    """
+    Actually invoke web_search for every query and assemble a findings
+    document with REAL urls + snippets that the analyzer can extract
+    structured events from.
+
+    Without this step the agents hallucinate news (including fake URLs
+    and dates) because Agent.speak() is just an LLM call — it never
+    invokes the search_web tool no matter how many times we tell it
+    to. This function bypasses that and feeds real search results to
+    the downstream analyzer.
+    """
+    from core.agents.swarm_tools import web_search
+
+    findings_blocks: List[str] = []
+    for i, q in enumerate(queries, start=1):
+        try:
+            results = web_search(q, max_results=max_results_per_query)
+        except Exception as exc:  # noqa: BLE001
+            swarm._event(
+                "warn", "historic_news",
+                f"web_search failed for {q!r}: {type(exc).__name__}: {str(exc)[:120]}",
+                "researcher",
+            )
+            continue
+        if not results:
+            swarm._event(
+                "warn", "historic_news",
+                f"web_search returned 0 results for {q!r}",
+                "researcher",
+            )
+            continue
+
+        block = [f"### Query {i}: {q}"]
+        for r in results:
+            title = (r.get("title") or "").strip()
+            url = (r.get("url") or "").strip()
+            snippet = (r.get("snippet") or "").strip()
+            if not title and not snippet:
+                continue
+            block.append(f"- **{title}** ({url})\n  {snippet}")
+        findings_blocks.append("\n".join(block))
+        swarm._event(
+            "info", "historic_news",
+            f"query {i}/{len(queries)} returned {len(results)} results",
+            "researcher",
+        )
+    return "\n\n".join(findings_blocks)
+
+
 async def _historic_news_processor(
     message: str,
     context: Dict[str, Any],
     tools: ToolContext,
 ) -> SkillResponse:
     """
-    Plan-first historic-news research:
-      1. Team Planner picks Researcher + Analyzer + QA (mandatory) +
-         optional Macro / Regulatory researchers based on asset class
-      2. Plan rendered in trace UI
-      3. Researchers run in parallel — web-search for news across the
-         chart's date range
-      4. Analyzer merges findings into structured NewsEvent list
-         {timestamp, headline, summary, source, url, category,
-          impact, direction, price_impact_pct}
-      5. QA filters out duplicates, unsubstantiated claims,
-         out-of-range timestamps
-      6. Tool-call pushes events to the frontend store -> chart
-         renders markers -> HistoricNewsTab shows timeline
+    Interactive historic-news research:
+      1. Parse user intent — topic asset (defaults to chart's), target
+         chart for plotting (defaults to chart's), broadcast flag,
+         category filters
+      2. Team Planner picks researcher roles
+      3. Real web_search loop — actually invokes the tool for 6-9
+         queries, returns real URLs/snippets (NOT hallucinated content)
+      4. Analyzer + QA convert real findings into structured events
+      5. Tool-call pushes events to the store with the right plot
+         symbol (chart symbol, OR special "*" for broadcast mode)
+      6. HistoricNewsTab + chart primitive render the markers
     """
     import json as _json
     from core.engine.agent_swarm import AgentSwarm
@@ -1152,6 +1367,22 @@ async def _historic_news_processor(
                  "value": {"level": "warning", "message": "Load a dataset first"}},
             ],
         )
+
+    # ─── Parse user intent ────────────────────────────────────────────
+    # Lets the user steer the swarm:
+    #   "fetch oil news on this chart"             -> topic=OIL, plot=chart_symbol
+    #   "plot AAPL news on the BTC chart"          -> topic=AAPL, plot=BTC
+    #   "show macro news on all charts"            -> broadcast=True
+    #   "earnings news for {chart_symbol}"         -> categories=["earnings"]
+    intent = _parse_news_intent(message, chart_symbol=symbol)
+    topic = intent["topic"]                       # what to RESEARCH
+    plot_symbol = intent["plot_symbol"] or symbol # what symbol to TAG events with
+    broadcast = bool(intent["broadcast"])
+    if broadcast:
+        # Special wildcard the frontend chart filter recognises as
+        # "render on every chart regardless of symbol match".
+        plot_symbol = "*"
+    user_categories = intent.get("categories") or []
 
     # ─── Build a reusable date-constraint banner ──────────────────────
     # The previous prompts said "between {date_range_hint}" but the LLM
@@ -1329,58 +1560,59 @@ async def _historic_news_processor(
     ]
     team = swarm.assemble(specs)
 
-    # Research phase — run all researcher roles in parallel (they have
-    # different tool sets so they cover different angles)
-    research_roles = [
-        r for r in ("researcher", "macro_researcher", "regulatory_researcher")
-        if r in team.agents
-    ]
-    research_context = (
-        f"Asset: {symbol}\n"
-        f"Chart date range: {date_range_hint or '(not provided)'}\n"
-        f"User's request: {message}"
+    # ─── Research phase — REAL web searches, not hallucinated ─────────
+    # Previous version called agent.speak() for each researcher, which
+    # is a single LLM call with no tool execution — the researchers'
+    # "I have access to search_web" was informational only. Result:
+    # 100% hallucinated articles, fake URLs, made-up dates.
+    #
+    # New flow:
+    #   1. Build a query set from user intent + topic + date range +
+    #      category filters. Template-based — no LLM call needed.
+    #   2. ACTUALLY invoke web_search() for each query (with the
+    #      existing rate limiter + retry + backend fallback).
+    #   3. Aggregate real results (real URLs, real titles, real
+    #      snippets) into a findings document.
+    #   4. Analyzer extracts structured events FROM the real
+    #      findings. URLs in the output are real because they came
+    #      out of the search engine, not the LLM's training data.
+    import asyncio
+    queries = _build_news_query_set(topic, chart_lo_iso, chart_hi_iso, user_categories)
+    swarm._event(
+        "info", "historic_news",
+        f"running {len(queries)} web searches for topic={topic!r}",
+        "researcher",
+    )
+    real_findings = await asyncio.to_thread(
+        _run_real_research, queries, swarm, 6,
     )
 
-    import asyncio
-    findings: List[str] = []
-    for role in research_roles:
-        agent = team.agents.get(role)
-        if agent is None:
-            continue
-        task = next(
-            (a.task for a in plan.agents if a.role == role),
-            f"Research historic news for {symbol}",
-        )
-        try:
-            resp = await asyncio.wait_for(
-                asyncio.to_thread(agent.speak, research_context, task),
-                timeout=180.0,
-            )
-            if resp.content and not resp.error:
-                findings.append(f"## From {role}\n{resp.content}")
-        except asyncio.TimeoutError:
-            swarm._event(
-                "warn", "historic_news",
-                f"{role} timed out — continuing without its findings",
-                role,
-            )
-
-    if not findings:
+    if not real_findings.strip():
         return SkillResponse(
             reply=(
-                f"Couldn't gather any historic news for {symbol} — "
-                f"all researchers either timed out or returned nothing. "
-                f"Check your LLM provider config and try again."
+                f"**No web search results** for {topic} in {chart_lo_iso}..{chart_hi_iso}.\n\n"
+                f"DuckDuckGo returned nothing for any of the {len(queries)} queries. "
+                f"This usually means: (a) the search backend is rate-limiting us — "
+                f"wait a minute and retry, (b) the topic+date combo is too narrow, "
+                f"or (c) the network is blocked.\n\n"
+                f"Tried queries:\n" + "\n".join(f"- {q}" for q in queries[:5])
             ),
             tool_calls=[
                 {"tool": "notify.toast",
-                 "value": {"level": "error", "message": "News research failed"}},
+                 "value": {"level": "warning", "message": "No web search results"}},
             ],
-            data={"events": [e for e in swarm.events()]},
+            data={"events": [e for e in swarm.events()], "queries": queries},
         )
 
-    # Analyzer + QA loop via shared primitive
-    analyzer_context = research_context + "\n\n" + "\n\n".join(findings)
+    # Build the analyzer's input. We include the real findings PLUS a
+    # short context line so the analyzer knows what's expected.
+    research_context = (
+        f"Topic researched: {topic}\n"
+        f"Plot symbol (chart asset): {symbol}\n"
+        f"Chart date range: {date_range_hint or '(not provided)'}\n"
+        f"User's original request: {message or '(default — historic news)'}\n"
+    )
+    analyzer_context = research_context + "\n\n## Real web search findings\n\n" + real_findings
 
     qa_result = await team.run_with_qa_loop(
         task=(
@@ -1399,7 +1631,14 @@ async def _historic_news_processor(
             "5. Drop any event without a credible named source.\n"
             f"6. Aim for {target_min}-{target_max} events spread evenly "
             f"across the date window. Cluster around earnings calendar "
-            f"dates and known macro events.\n\n"
+            f"dates and known macro events.\n"
+            "7. **NEVER invent URLs.** Use the EXACT url from the search "
+            "result you're extracting from. If the result has no URL, set "
+            'url to null — do NOT make one up like '
+            '\"https://reuters.com/markets/...\". Hallucinated URLs are '
+            "the #1 way this skill loses user trust.\n"
+            "8. Use the EXACT headline from the search result. Don't "
+            "rewrite or summarise it — copy it verbatim.\n\n"
             "**Required shape (copy this skeleton exactly):**\n"
             "{\n"
             '  "events": [\n'
@@ -1716,10 +1955,24 @@ async def _historic_news_processor(
     for e in events:
         by_category[e["category"]] = by_category.get(e["category"], 0) + 1
     category_breakdown = ", ".join(f"{k}:{v}" for k, v in by_category.items())
-    reply_parts = [
-        f"**Found {len(events)} historic news events** for **{symbol}** "
-        f"({category_breakdown}).",
-    ]
+    # Build header that reflects user's intent — "X news on Y chart"
+    # phrasing when they differ.
+    if broadcast:
+        header = (
+            f"**Found {len(events)} {topic} news events** "
+            f"({category_breakdown}) — plotted on **all open charts**."
+        )
+    elif topic.upper() != symbol.upper():
+        header = (
+            f"**Found {len(events)} {topic} news events** "
+            f"({category_breakdown}) — plotted on the **{symbol}** chart."
+        )
+    else:
+        header = (
+            f"**Found {len(events)} historic news events** for **{symbol}** "
+            f"({category_breakdown})."
+        )
+    reply_parts = [header]
     if overview_summary:
         reply_parts.extend(["", overview_summary])
     if key_themes:
@@ -1732,13 +1985,23 @@ async def _historic_news_processor(
         "News tab to zoom the chart and read the full summary._"
     )
 
+    toast_message = (
+        f"Loaded {len(events)} {topic} news events"
+        + (f" on all charts" if broadcast else f" for {symbol}")
+    )
+
     return SkillResponse(
         reply="\n".join(reply_parts),
         data={
             "symbol": symbol,
+            "topic": topic,
+            "plot_symbol": plot_symbol,
+            "broadcast": broadcast,
+            "categories": user_categories,
             "events_count": len(events),
             "key_themes": key_themes,
             "summary": overview_summary,
+            "queries": queries,
             "agent_events": [
                 {"timestamp": ev.timestamp, "level": ev.level, "stage": ev.stage,
                  "message": ev.message, "agent_role": ev.agent_role}
@@ -1747,11 +2010,12 @@ async def _historic_news_processor(
         },
         tool_calls=[
             *plan_tool_calls,
-            {"tool": "news.events.set", "value": {"symbol": symbol, "events": events}},
+            # plot_symbol is "*" in broadcast mode so the chart filter
+            # renders markers on every open chart regardless of asset.
+            {"tool": "news.events.set", "value": {"symbol": plot_symbol, "events": events}},
             {"tool": "bottom_panel.activate_tab", "value": "historic_news"},
             {"tool": "notify.toast",
-             "value": {"level": "info",
-                       "message": f"Loaded {len(events)} news events for {symbol}"}},
+             "value": {"level": "info", "message": toast_message}},
         ],
     )
 

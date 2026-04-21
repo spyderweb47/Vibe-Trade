@@ -530,10 +530,13 @@ export function Chart({
     const ownDs = datasets.find((d) => d.id === ownDsId);
     const ownSymbol = String(ownDs?.metadata?.symbol || "").toUpperCase();
     const newsSymbol = String(newsEventsSymbol || "").toUpperCase();
-    // When we can resolve BOTH sides and they disagree, this chart
-    // belongs to a different asset — clear any previously-drawn markers
-    // and skip this run.
-    if (ownSymbol && newsSymbol && ownSymbol !== newsSymbol) {
+    // Special "*" symbol = broadcast mode (user asked to plot the
+    // news on every open chart). Render here regardless of mismatch.
+    const isBroadcast = newsSymbol === "*";
+    // When we can resolve BOTH sides and they disagree (and we're not
+    // broadcasting), this chart belongs to a different asset — clear
+    // any previously-drawn markers and skip this run.
+    if (!isBroadcast && ownSymbol && newsSymbol && ownSymbol !== newsSymbol) {
       nm.clear();
       return;
     }
