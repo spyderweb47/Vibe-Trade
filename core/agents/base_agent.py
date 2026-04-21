@@ -140,18 +140,38 @@ class Agent:
                 error=f"{type(err).__name__}: {str(err)[:180]}",
             )
 
-    def reflect(self, prior_output: str, feedback: str) -> AgentResponse:
+    def reflect(
+        self,
+        prior_output: str,
+        feedback: str,
+        original_task: str = "",
+        original_context: str = "",
+    ) -> AgentResponse:
         """
         Revise prior output given feedback. Used by AgentSwarm's QA loop
         when a verifier agent has asked the producer to iterate.
+
+        `original_task` and `original_context` (when provided) are
+        re-included verbatim so format constraints from the first call
+        survive into subsequent iterations. Without this, a producer
+        asked for "strict JSON only" on iteration 1 will happily return
+        a prose changelog on iteration 2 because the JSON instructions
+        are no longer in scope.
         """
-        system, _ = self.build_prompt("", "")
-        user = (
+        # Rebuild the system+user prompts using the original task/context
+        # so the task-specific format rules (e.g. "return strict JSON
+        # only, no preamble") are still in scope on iteration 2+.
+        system, original_user = self.build_prompt(original_context, original_task)
+        revise_instruction = (
             f"## Your prior output\n{prior_output}\n\n"
             f"## Verifier feedback\n{feedback}\n\n"
-            f"## Task\nRevise your output to address the feedback above. "
-            f"Be concrete about what you changed and why."
+            f"## What to do now\n"
+            f"Re-do the original task above, applying the verifier's feedback. "
+            f"Return the FULL revised artifact in the SAME format as before — "
+            f"do NOT write a changelog, do NOT explain what you changed, do "
+            f"NOT add commentary. Just emit the new artifact."
         )
+        user = f"{original_user}\n\n---\n\n{revise_instruction}" if original_user else revise_instruction
         try:
             text = chat_completion(
                 system_prompt=system,

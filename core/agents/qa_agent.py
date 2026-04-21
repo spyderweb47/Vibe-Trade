@@ -214,9 +214,18 @@ def run_qa_loop(
         if iteration >= max_iterations:
             break
 
-        # Producer revises with verifier's feedback
+        # Producer revises with verifier's feedback. Pass original
+        # task/context so format constraints (e.g. "strict JSON only,
+        # no preamble") survive into iteration 2+ — without this the
+        # producer often replies with a prose changelog instead of
+        # regenerating the artifact.
         feedback_text = _format_feedback(struct, test_result)
-        artifact = producer.reflect(prior_output=artifact.content, feedback=feedback_text)
+        artifact = producer.reflect(
+            prior_output=artifact.content,
+            feedback=feedback_text,
+            original_task=task,
+            original_context=context,
+        )
         if artifact.error:
             return QAResult(
                 passed=False,
