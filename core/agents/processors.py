@@ -1117,6 +1117,10 @@ async def _historic_news_processor(
 
     symbol = "Unknown"
     date_range_hint = ""
+    chart_lo_unix = 0          # earliest bar timestamp (unix seconds)
+    chart_hi_unix = 0          # latest bar timestamp (unix seconds)
+    chart_lo_iso = ""          # YYYY-MM-DD
+    chart_hi_iso = ""          # YYYY-MM-DD
     if dataset_id:
         df = store.get_dataframe(dataset_id)
         if df is not None and len(df) > 0:
@@ -1127,12 +1131,12 @@ async def _historic_news_processor(
                 elif hasattr(meta, "symbol") and meta.symbol:
                     symbol = meta.symbol
             try:
-                first_t = int(df.iloc[0]["time"])
-                last_t = int(df.iloc[-1]["time"])
+                chart_lo_unix = int(df.iloc[0]["time"])
+                chart_hi_unix = int(df.iloc[-1]["time"])
                 from datetime import datetime as _dt, timezone as _tz
-                first_date = _dt.fromtimestamp(first_t, tz=_tz.utc).strftime("%Y-%m-%d")
-                last_date = _dt.fromtimestamp(last_t, tz=_tz.utc).strftime("%Y-%m-%d")
-                date_range_hint = f"{first_date} to {last_date}"
+                chart_lo_iso = _dt.fromtimestamp(chart_lo_unix, tz=_tz.utc).strftime("%Y-%m-%d")
+                chart_hi_iso = _dt.fromtimestamp(chart_hi_unix, tz=_tz.utc).strftime("%Y-%m-%d")
+                date_range_hint = f"{chart_lo_iso} to {chart_hi_iso}"
             except Exception:  # noqa: BLE001
                 pass
 
@@ -1147,6 +1151,43 @@ async def _historic_news_processor(
                 {"tool": "notify.toast",
                  "value": {"level": "warning", "message": "Load a dataset first"}},
             ],
+        )
+
+    # ─── Build a reusable date-constraint banner ──────────────────────
+    # The previous prompts said "between {date_range_hint}" but the LLM
+    # routinely ignored it and hallucinated events from training-data
+    # years (2023, 2024) — the analyzer's events would then all get
+    # filtered out by the chart-range guard. This banner is loud,
+    # explicit, and reused in every prompt so the constraint is
+    # impossible to miss.
+    if chart_lo_unix > 0 and chart_hi_unix > 0:
+        from datetime import datetime as _dt_b, timezone as _tz_b
+        # Approximate target count: 1 event per ~10 days, clamped 12-30
+        days_span = max(1, (chart_hi_unix - chart_lo_unix) // 86400)
+        target_min = max(12, min(20, days_span // 14))
+        target_max = max(target_min + 8, min(35, days_span // 7))
+        date_constraint = (
+            f"\n\n=== DATE CONSTRAINT (HARD RULE) ===\n"
+            f"Every event MUST be dated between {chart_lo_iso} and {chart_hi_iso}.\n"
+            f"Equivalent unix-second range: {chart_lo_unix} to {chart_hi_unix}.\n"
+            f"Span: {days_span} days. Target {target_min}-{target_max} events.\n"
+            f"\n"
+            f"ANY event outside this range will be dropped from the output\n"
+            f"and waste your research budget. Do NOT include events from\n"
+            f"earlier or later periods even if they're famous — only events\n"
+            f"that ACTUALLY happened in this window count.\n"
+            f"\n"
+            f"If you can't confirm an event's date is inside this window,\n"
+            f"omit it. Quality timestamps over quantity guesses.\n"
+            f"=== END DATE CONSTRAINT ===\n"
+        )
+    else:
+        target_min, target_max = 15, 25
+        date_constraint = (
+            "\n\n=== DATE CONSTRAINT ===\n"
+            "(Chart range unknown — focus on the most price-significant "
+            "events for this asset across the last 1-2 years.)\n"
+            "=== END DATE CONSTRAINT ===\n"
         )
 
     # ─── Phase 1: plan the team ──────────────────────────────────────
@@ -1170,10 +1211,17 @@ async def _historic_news_processor(
                 allowed_tools=["search_web", "fetch_news", "fetch_url"],
                 mandatory=True,
                 default_task=(
-                    f"Search for historic news events that moved {symbol} "
-                    f"between {date_range_hint or 'the chart range'}. Cover "
-                    f"earnings, product launches, macro shocks, regulatory "
-                    f"decisions, and geopolitical events."
+                    f"Find historic news events that moved {symbol}. "
+                    f"Cover ALL major drivers: earnings, product launches, "
+                    f"macro shocks, regulatory decisions, geopolitical events, "
+                    f"analyst upgrades/downgrades, partnerships, lawsuits.\n\n"
+                    f"Run AT LEAST 5-7 distinct search queries covering "
+                    f"different periods within the date window and different "
+                    f"event types. For each event found, capture the headline, "
+                    f"the EXACT publish date, the source name, and a 2-3 "
+                    f"sentence summary of what happened and how it affected "
+                    f"the price.\n"
+                    f"{date_constraint}"
                 ),
             ),
             RoleTemplate(
@@ -1229,8 +1277,12 @@ async def _historic_news_processor(
                 allowed_tools=["search_web", "fetch_policy"],
                 mandatory=False,
                 default_task=(
-                    f"Research macro events (Fed, inflation, geopolitical) "
-                    f"that moved {symbol} in {date_range_hint or 'the chart range'}"
+                    f"Research macro events (Fed decisions, FOMC meetings, "
+                    f"CPI prints, NFP reports, geopolitical shocks, central "
+                    f"bank surprises) that moved {symbol}. Run 4-6 distinct "
+                    f"searches covering different macro themes. Capture each "
+                    f"event's exact date and source.\n"
+                    f"{date_constraint}"
                 ),
             ),
             RoleTemplate(
@@ -1247,7 +1299,12 @@ async def _historic_news_processor(
                 allowed_tools=["fetch_policy", "fetch_url", "search_web"],
                 mandatory=False,
                 default_task=(
-                    f"Research regulatory decisions and policy news affecting {symbol}"
+                    f"Research regulatory decisions, agency actions, court "
+                    f"rulings, and policy news affecting {symbol}. Cite "
+                    f"specific agencies (SEC, FDA, EU, etc.), docket numbers, "
+                    f"or bill numbers where possible. Run 4-6 distinct "
+                    f"searches.\n"
+                    f"{date_constraint}"
                 ),
             ),
         ],
@@ -1328,21 +1385,26 @@ async def _historic_news_processor(
     qa_result = await team.run_with_qa_loop(
         task=(
             f"Convert the researcher findings above into a strict-JSON "
-            f"event list for {symbol}.\n\n"
+            f"event list for {symbol}.\n"
+            f"{date_constraint}\n"
             "**Output rules — read carefully:**\n"
             "1. Return ONLY raw JSON. NO markdown fences (```), NO preamble "
             "('Here is the JSON:'), NO postamble ('Hope this helps').\n"
             "2. The very first character of your response MUST be `{` and the "
             "very last character MUST be `}`.\n"
-            "3. `timestamp` MUST be an integer in unix SECONDS (e.g. "
-            "1704067200 for 2024-01-01). NOT milliseconds, NOT a date string.\n"
+            "3. `timestamp` MUST be an integer in unix SECONDS within the "
+            f"range above ({chart_lo_unix}-{chart_hi_unix}). NOT "
+            f"milliseconds, NOT a date string.\n"
             "4. Drop any event where you can't determine a precise date.\n"
-            "5. Drop any event without a credible named source.\n\n"
+            "5. Drop any event without a credible named source.\n"
+            f"6. Aim for {target_min}-{target_max} events spread evenly "
+            f"across the date window. Cluster around earnings calendar "
+            f"dates and known macro events.\n\n"
             "**Required shape (copy this skeleton exactly):**\n"
             "{\n"
             '  "events": [\n'
             "    {\n"
-            '      "timestamp": 1704067200,\n'
+            f'      "timestamp": {chart_lo_unix or 1704067200},\n'
             '      "headline": "Apple beats Q1 earnings estimates",\n'
             '      "summary": "Apple reported Q1 FY2024 EPS of $2.18 vs $2.10 expected, '
             'with iPhone revenue down 0.6% YoY but Services up 11.3%.",\n'
@@ -1362,8 +1424,7 @@ async def _historic_news_processor(
             '"sentiment" | "geopolitical" | "technical"\n'
             '- impact: "high" | "medium" | "low"\n'
             '- direction: "bullish" | "bearish" | "neutral"\n\n'
-            f"Asset: {symbol}. Chart range: {date_range_hint or '(unknown)'}. "
-            f"Aim for 10-25 events spread across the range — quality over quantity."
+            f"Asset: {symbol}. Chart range: {date_range_hint or '(unknown)'}."
         ),
         context=analyzer_context,
         producer_role="analyzer",
@@ -1371,11 +1432,21 @@ async def _historic_news_processor(
         max_iterations=2,
         spec=QASpec(
             acceptance_criteria=(
-                "Each event has a valid unix-timestamp, a credible source "
-                "name, a non-empty headline, and belongs to one of the "
-                "allowed categories. No duplicates (same event listed "
-                "twice). Events with impact='high' must have a named "
-                "source, not just 'multiple outlets'."
+                f"Each event MUST satisfy ALL of:\n"
+                f"1. timestamp is an integer in the range "
+                f"{chart_lo_unix}-{chart_hi_unix} (inclusive). REJECT any "
+                f"event whose unix timestamp is outside this window.\n"
+                f"2. credible named source (e.g. 'Reuters', 'Bloomberg', "
+                f"'WSJ' — NOT 'multiple outlets' or 'various reports').\n"
+                f"3. non-empty headline.\n"
+                f"4. category is one of: earnings|regulatory|macro|product|"
+                f"sentiment|geopolitical|technical.\n"
+                f"5. no duplicates (same event with different timestamps "
+                f"or wording).\n"
+                f"6. event count >= {target_min}. If under {target_min}, "
+                f"the producer needs to add more events from the research "
+                f"findings.\n"
+                f"Date window for reference: {chart_lo_iso} to {chart_hi_iso}."
             ),
         ),
     )
