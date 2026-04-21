@@ -1092,8 +1092,29 @@ async def _historic_news_processor(
     from core.agents.team_planner import TeamPlanner, RoleTemplate
     from services.api.store import store
 
-    # Resolve asset from context (focused chart's dataset)
+    # Resolve asset from context (focused chart's dataset). Fallback
+    # chain mirrors predict_analysis:
+    #   1. context.dataset_id / context.activeDataset (plan executor
+    #      wires these from the focused chart window)
+    #   2. most recent dataset in the backend store (for direct skill
+    #      invocations that bypass the plan executor, e.g. when the
+    #      user selects Historic News from the skill picker and types
+    #      a message without fetching new data)
+    # The goal is: "plot on whatever chart is currently loaded". The
+    # user shouldn't have to name the asset explicitly.
     dataset_id = context.get("dataset_id") or context.get("activeDataset")
+
+    if not dataset_id:
+        # No explicit id — take the last dataset in the store. This
+        # matches the user's intent of "the chart I just loaded".
+        try:
+            all_ds = store.list_datasets()
+            if all_ds:
+                last = all_ds[-1]
+                dataset_id = last if isinstance(last, str) else last.get("id")
+        except Exception:  # noqa: BLE001
+            pass
+
     symbol = "Unknown"
     date_range_hint = ""
     if dataset_id:
@@ -1346,6 +1367,20 @@ async def _historic_news_processor(
             cleaned = cleaned[:-3]
         cleaned = cleaned.strip()
 
+    # Bounds for the "is this timestamp inside the chart range" filter.
+    # Allow a 14-day buffer on either side so pre-market news and
+    # slightly-after-close aftershocks still land on the chart.
+    chart_min_ts = 0
+    chart_max_ts = 10**12
+    if dataset_id:
+        df_bounds = store.get_dataframe(dataset_id)
+        if df_bounds is not None and len(df_bounds) > 0:
+            try:
+                chart_min_ts = int(df_bounds.iloc[0]["time"]) - 14 * 86400
+                chart_max_ts = int(df_bounds.iloc[-1]["time"]) + 14 * 86400
+            except Exception:  # noqa: BLE001
+                pass
+
     events: List[Dict[str, Any]] = []
     overview_summary = ""
     key_themes: List[str] = []
@@ -1362,6 +1397,12 @@ async def _historic_news_processor(
                     except (TypeError, ValueError):
                         continue
                     if ts <= 0:
+                        continue
+                    # Drop events whose timestamp is outside the chart
+                    # range — plotting them would be invisible anyway
+                    # and they're usually LLM hallucinations about
+                    # events the asset wasn't tradable for yet.
+                    if ts < chart_min_ts or ts > chart_max_ts:
                         continue
                     events.append({
                         "id": f"ne_{ts}_{len(events)}",

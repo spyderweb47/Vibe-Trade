@@ -509,8 +509,14 @@ export function Chart({
 
   // Historic news markers — push store state into the primitive whenever
   // it changes so the chart visuals stay in sync with HistoricNewsTab.
+  // Scope: only plot on the chart whose dataset matches the news set's
+  // symbol. Otherwise a news set for AAPL would draw on an open MSFT
+  // chart too, which is confusing. We compare case-insensitively and
+  // fall back to "plot on every chart" when either side can't be
+  // resolved (legacy single-chart usage without a datasetId).
   const newsEvents = useStore((s) => s.newsEvents);
   const selectedNewsEventId = useStore((s) => s.selectedNewsEventId);
+  const newsEventsSymbol = useStore((s) => s.newsEventsSymbol);
   useEffect(() => {
     const nm = newsMarkersRef.current;
     if (!nm) return;
@@ -518,8 +524,21 @@ export function Chart({
       nm.clear();
       return;
     }
+    // Resolve this chart's symbol from its datasetId (multi-chart mode)
+    // or the active dataset (single-chart mode).
+    const ownDsId = datasetId ?? activeDatasetId;
+    const ownDs = datasets.find((d) => d.id === ownDsId);
+    const ownSymbol = String(ownDs?.metadata?.symbol || "").toUpperCase();
+    const newsSymbol = String(newsEventsSymbol || "").toUpperCase();
+    // When we can resolve BOTH sides and they disagree, this chart
+    // belongs to a different asset — clear any previously-drawn markers
+    // and skip this run.
+    if (ownSymbol && newsSymbol && ownSymbol !== newsSymbol) {
+      nm.clear();
+      return;
+    }
     nm.setEvents(newsEvents, data, selectedNewsEventId);
-  }, [newsEvents, selectedNewsEventId, data]);
+  }, [newsEvents, selectedNewsEventId, newsEventsSymbol, data, datasetId, activeDatasetId, datasets]);
 
   // Update pattern highlight boxes + auto-zoom to show matches
   useEffect(() => {
