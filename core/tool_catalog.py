@@ -27,6 +27,7 @@ Categories (prefixes):
   script_editor    — code editor load/run
   data             — read/write application data (indicators, datasets)
   simulation       — multi-agent debate / swarm intelligence
+  news             — historic news events (markers + bottom panel)
   notify           — user-facing notifications
 """
 
@@ -298,6 +299,25 @@ TOOL_CATALOG: List[ToolDef] = [
         category="simulation",
         description="Clear the current debate and history from the store.",
         input_schema={"type": "null"},
+    ),
+
+    # ─── news.* — historic news events ──────────────────────────────────
+    ToolDef(
+        id="news.events.set",
+        name="Set News Events",
+        category="news",
+        description="Push a list of historic news events into the store. The chart primitive "
+                    "renders them as markers, and the Historic News tab lists them. The payload "
+                    "is {symbol, events[]} where each event has timestamp (unix seconds), "
+                    "headline, summary, source, url, category, impact, direction.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "symbol": "string",
+                "events": "array<NewsEvent>",
+            },
+        },
+        arg_style="object",
     ),
 
     # ─── notify.* — notifications ───────────────────────────────────────
